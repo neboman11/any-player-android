@@ -178,16 +178,6 @@ dependencies {
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 
-    implementation("xyz.gianlu.librespot:librespot-player:1.6.5") {
-        artifact {
-            classifier = "thin"
-        }
-        exclude(group = "xyz.gianlu.librespot", module = "librespot-sink")
-        exclude(group = "com.lmax", module = "disruptor")
-        exclude(group = "org.apache.logging.log4j")
-    }
-    implementation("uk.uuid.slf4j:slf4j-android:1.7.30-0")
-
     implementation("androidx.car.app:app:1.4.0")
     implementation("androidx.car.app:app-projected:1.4.0")
 
