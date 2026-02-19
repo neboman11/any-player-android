@@ -35,10 +35,11 @@ val rustFfiArm64OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiArm64T
 val rustFfiX8664OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiX8664Target/release/$rustFfiSoName")
 val rustFfiArmv7OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiArmv7Target/release/$rustFfiSoName")
 val rustFfiX86OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiX86Target/release/$rustFfiSoName")
-val rustFfiArm64JniDir = project.layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a").asFile
-val rustFfiX8664JniDir = project.layout.projectDirectory.dir("src/main/jniLibs/x86_64").asFile
-val rustFfiArmv7JniDir = project.layout.projectDirectory.dir("src/main/jniLibs/armeabi-v7a").asFile
-val rustFfiX86JniDir = project.layout.projectDirectory.dir("src/main/jniLibs/x86").asFile
+val rustFfiJniRootDir = layout.buildDirectory.dir("generated/rustJniLibs").get().asFile
+val rustFfiArm64JniDir = rustFfiJniRootDir.resolve("arm64-v8a")
+val rustFfiX8664JniDir = rustFfiJniRootDir.resolve("x86_64")
+val rustFfiArmv7JniDir = rustFfiJniRootDir.resolve("armeabi-v7a")
+val rustFfiX86JniDir = rustFfiJniRootDir.resolve("x86")
 val skipRustFfiBuild =
     ((project.findProperty("skipRustFfiBuild") as String?)?.toBooleanStrictOrNull()) ?: false
 
@@ -93,6 +94,10 @@ android {
             abiFilters += "armeabi-v7a"
             abiFilters += "x86"
         }
+    }
+
+    sourceSets {
+        getByName("main").jniLibs.srcDir(rustFfiJniRootDir)
     }
 
     buildTypes {
