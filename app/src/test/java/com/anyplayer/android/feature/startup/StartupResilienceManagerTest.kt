@@ -5,6 +5,7 @@ import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.feature.auth.AuthRequest
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
+import com.anyplayer.android.feature.auth.StoredConnection
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -114,6 +115,14 @@ private class FakeAuthRepository(
         throw UnsupportedOperationException("Not needed in test")
     }
 
+    override suspend fun beginSpotifyAuth(clientId: String, redirectUri: String): String {
+        throw UnsupportedOperationException("Not needed in test")
+    }
+
+    override suspend fun completeSpotifyAuth(redirectUriWithCode: String): ProviderConnectionProfile {
+        throw UnsupportedOperationException("Not needed in test")
+    }
+
     override suspend fun restoreAll(): List<ProviderConnectionProfile> {
         restoreCallCount += 1
         if (restoreCallCount <= failRestoreAttempts) error("transient restore failure")
@@ -125,6 +134,8 @@ private class FakeAuthRepository(
         return restored.firstOrNull { it.source == sourceType }
             ?: ProviderConnectionProfile(source = sourceType, connected = false, hasToken = false)
     }
+
+    override suspend fun readStoredConnection(sourceType: SourceType): StoredConnection? = null
 }
 
 private class FakeStartupCatalogGateway(
