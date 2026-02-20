@@ -18,6 +18,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -78,7 +79,11 @@ class PlaybackQueueManager @Inject constructor(
             return
         }
 
-        val index = startIndex.coerceIn(0, tracks.lastIndex)
+        val index = resolveInitialStartIndex(
+            tracks = tracks,
+            requestedStartIndex = startIndex,
+            autoPlay = autoPlay
+        )
 
         if (spotifyMode) {
             media3PlaybackController.setQueue(emptyList(), 0, false)
@@ -480,5 +485,26 @@ class PlaybackQueueManager @Inject constructor(
         val volume: Int,
         val state: PlaybackStateType
     )
+
+    private fun resolveInitialStartIndex(
+        tracks: List<Track>,
+        requestedStartIndex: Int,
+        autoPlay: Boolean
+    ): Int {
+        val normalizedStartIndex = requestedStartIndex.coerceIn(0, tracks.lastIndex)
+        val shuffleEnabled = mutableStatus.value.shuffle
+        if (!autoPlay || !shuffleEnabled || requestedStartIndex != 0 || tracks.size <= 1) {
+            return normalizedStartIndex
+        }
+
+        if (spotifyMode) {
+            return Random.nextInt(tracks.size)
+        }
+
+        val playableIndices = tracks.mapIndexedNotNull { queueIndex, track ->
+            queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
+        }
+        return playableIndices.randomOrNull() ?: normalizedStartIndex
+    }
 
 }
