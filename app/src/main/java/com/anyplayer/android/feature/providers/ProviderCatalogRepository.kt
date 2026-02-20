@@ -127,8 +127,9 @@ class ProviderCatalogRepository @Inject constructor(
         limit: Int = 300,
         forceRefresh: Boolean = false
     ): List<Track> {
+        val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         if (!forceRefresh) {
-            val cached = getCachedPlaylistTracks(sourceType, playlistId)
+            val cached = getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
             if (cached.isNotEmpty()) {
                 return cached
             }
@@ -136,16 +137,16 @@ class ProviderCatalogRepository @Inject constructor(
 
         val remoteTracks = getPlaylistTracks(
             sourceType = sourceType,
-            playlistId = playlistId,
+            playlistId = resolvedPlaylistId,
             offset = offset,
             limit = limit
         )
         if (remoteTracks.isNotEmpty()) {
-            savePlaylistTrackCache(sourceType, playlistId, remoteTracks)
+            savePlaylistTrackCache(sourceType, resolvedPlaylistId, remoteTracks)
             return remoteTracks
         }
 
-        return getCachedPlaylistTracks(sourceType, playlistId)
+        return getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
     }
 
     suspend fun getPlaylistTracks(
@@ -154,16 +155,20 @@ class ProviderCatalogRepository @Inject constructor(
         offset: Int = 0,
         limit: Int = 300
     ): List<Track> = withContext(Dispatchers.IO) {
+        val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         val pageSize = limit.coerceAtLeast(1)
 
-        suspend fun loadAllPages(fetchPage: suspend (offset: Int, limit: Int) -> List<Track>): List<Track> {
+        suspend fun loadAllPages(
+            effectivePageSize: Int = pageSize,
+            fetchPage: suspend (offset: Int, limit: Int) -> List<Track>
+        ): List<Track> {
             val allTracks = mutableListOf<Track>()
             var currentOffset = offset.coerceAtLeast(0)
             while (true) {
-                val page = fetchPage(currentOffset, pageSize)
+                val page = fetchPage(currentOffset, effectivePageSize)
                 if (page.isEmpty()) break
                 allTracks += page
-                if (page.size < pageSize) break
+                if (page.size < effectivePageSize) break
                 currentOffset += page.size
             }
             return allTracks
@@ -177,7 +182,7 @@ class ProviderCatalogRepository @Inject constructor(
                         jellyfinClient.getPlaylistTracks(
                             jelly.serverUrl,
                             jelly.token,
-                            playlistId,
+                            resolvedPlaylistId,
                             jelly.refreshToken,
                             offset = pageOffset,
                             limit = pageLimit
@@ -195,7 +200,7 @@ class ProviderCatalogRepository @Inject constructor(
                         plexClient.getPlaylistTracks(
                             plex.serverUrl,
                             plex.token,
-                            playlistId,
+                            resolvedPlaylistId,
                             offset = pageOffset,
                             limit = pageLimit
                         )
@@ -208,12 +213,13 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.SPOTIFY -> {
                 val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
                 if (!spotify?.token.isNullOrBlank()) {
-                    loadAllPages { pageOffset, pageLimit ->
+                    val spotifyPageSize = pageSize.coerceAtMost(100)
+                    loadAllPages(effectivePageSize = spotifyPageSize) { pageOffset, pageLimit ->
                         spotifyClient.getPlaylistTracks(
                             accessToken = spotify.token,
-                            playlistId = playlistId,
+                            playlistId = resolvedPlaylistId,
                             offset = pageOffset,
-                            limit = pageLimit.coerceAtMost(100)
+                            limit = pageLimit
                         )
                     }
                 } else {
@@ -269,6 +275,28 @@ class ProviderCatalogRepository @Inject constructor(
 
     private fun playlistTrackCacheKey(sourceType: SourceType, playlistId: String): String =
         "provider_playlist_tracks_${sourceType.name.lowercase()}_$playlistId"
+
+    private fun normalizePlaylistId(sourceType: SourceType, playlistId: String): String {
+        if (sourceType != SourceType.SPOTIFY) return playlistId
+        val trimmed = playlistId.trim()
+        if (trimmed.isBlank()) return trimmed
+
+        val uriPrefix = "spotify:playlist:"
+        if (trimmed.startsWith(uriPrefix, ignoreCase = true)) {
+            return trimmed.substringAfterLast(':')
+        }
+
+        val marker = "/playlist/"
+        val markerIndex = trimmed.indexOf(marker)
+        if (markerIndex >= 0) {
+            return trimmed
+                .substring(markerIndex + marker.length)
+                .substringBefore('?')
+                .substringBefore('/')
+        }
+
+        return trimmed
+    }
 
     suspend fun search(
         query: String,

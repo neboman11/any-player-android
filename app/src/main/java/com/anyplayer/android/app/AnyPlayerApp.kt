@@ -255,6 +255,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     var newUnionName by remember { mutableStateOf("") }
 
     val selectedProviderPlaylist = state.selectedProviderPlaylist
+    val selectedCustomPlaylist = state.customPlaylists.firstOrNull { it.id == state.selectedCustomPlaylistId }
 
     if (selectedProviderPlaylist != null) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -294,6 +295,104 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     itemsIndexed(state.selectedProviderPlaylistTracks) { index, track ->
                         Text("${index + 1}. ${track.title} • ${track.artist}")
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    if (selectedCustomPlaylist != null) {
+        val unionSourceLabels = if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
+            state.selectedCustomUnionSources.map { source ->
+                val normalizedSpotifySourceId = if (source.sourceType == SourceType.SPOTIFY) {
+                    source.sourcePlaylistId
+                        .substringAfter("spotify:playlist:", source.sourcePlaylistId)
+                        .let { value ->
+                            value.substringAfter("/playlist/", value)
+                                .substringBefore('?')
+                                .substringBefore('/')
+                        }
+                } else {
+                    source.sourcePlaylistId
+                }
+                val playlistName = when (source.sourceType) {
+                    SourceType.CUSTOM -> {
+                        state.customPlaylists.firstOrNull { it.id == source.sourcePlaylistId }?.name
+                    }
+                    SourceType.JELLYFIN,
+                    SourceType.PLEX,
+                    SourceType.SPOTIFY -> {
+                        state.providerPlaylists.firstOrNull {
+                            it.source == source.sourceType && (
+                                it.id == source.sourcePlaylistId ||
+                                    (source.sourceType == SourceType.SPOTIFY && it.id == normalizedSpotifySourceId)
+                                )
+                        }?.name
+                    }
+                    SourceType.ALL -> null
+                } ?: source.sourcePlaylistId
+                "$playlistName (${source.sourceType.name.lowercase()})"
+            }
+        } else {
+            emptyList()
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = viewModel::closeCustomPlaylistDetails) { Text("Back") }
+                Button(onClick = { viewModel.playCustomPlaylist(selectedCustomPlaylist.id) }) { Text("Play") }
+                if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
+                    Button(onClick = viewModel::materializeSelectedUnion) { Text("Refresh") }
+                }
+            }
+
+            Text("${selectedCustomPlaylist.name} (${selectedCustomPlaylist.playlistType.name.lowercase()})")
+            Text("Tracks: ${state.activeCustomPlaylistTracks.size}")
+
+            if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
+                Text("Source playlists")
+                if (unionSourceLabels.isEmpty()) {
+                    Text("No source playlists added")
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        unionSourceLabels.forEachIndexed { index, label ->
+                            Text("${index + 1}. $label")
+                        }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    state.providerPlaylists.take(3).forEach { providerPlaylist ->
+                        Button(onClick = {
+                            viewModel.addProviderPlaylistSourceToSelectedUnion(
+                                sourcePlaylistId = providerPlaylist.id,
+                                sourceType = providerPlaylist.source
+                            )
+                        }) {
+                            Text("+ ${providerPlaylist.name.take(10)}")
+                        }
+                    }
+                }
+            }
+
+            if (state.activeCustomPlaylistTracks.isEmpty()) {
+                Text("No tracks found for this playlist")
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    itemsIndexed(state.activeCustomPlaylistTracks) { index, track ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(onClick = {
+                                viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, index)
+                            }) {
+                                Text("${index + 1}. ${track.title}")
+                            }
+                            if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
+                                Button(onClick = { viewModel.removeTrackFromSelectedCustom(index) }) {
+                                    Text("Remove")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -348,40 +447,6 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     }
                     Button(onClick = { viewModel.playCustomPlaylist(playlist.id) }) { Text("Play") }
                     Button(onClick = { viewModel.deleteCustomPlaylist(playlist.id) }) { Text("Delete") }
-                }
-
-                if (state.selectedCustomPlaylistId == playlist.id) {
-                    if (playlist.playlistType == PlaylistType.UNION) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            state.providerPlaylists.take(3).forEach { providerPlaylist ->
-                                Button(onClick = {
-                                    viewModel.addProviderPlaylistSourceToSelectedUnion(
-                                        sourcePlaylistId = providerPlaylist.id,
-                                        sourceType = providerPlaylist.source
-                                    )
-                                }) {
-                                    Text("+ ${providerPlaylist.name.take(10)}")
-                                }
-                            }
-                        }
-                    }
-
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        state.activeCustomPlaylistTracks.forEachIndexed { index, track ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Button(onClick = {
-                                    viewModel.playFromCustomPlaylistTrack(playlist.id, index)
-                                }) {
-                                    Text("${index + 1}. ${track.title}")
-                                }
-                                if (playlist.playlistType == PlaylistType.STANDARD) {
-                                    Button(onClick = { viewModel.removeTrackFromSelectedCustom(index) }) {
-                                        Text("Remove")
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }

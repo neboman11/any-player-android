@@ -23,6 +23,9 @@ class CustomPlaylistEngine @Inject constructor(
 ) {
     fun observeCustomPlaylists(): Flow<List<CustomPlaylist>> = storageRepository.observeCustomPlaylists()
 
+    suspend fun getUnionSources(unionPlaylistId: String): List<UnionPlaylistSource> =
+        storageRepository.getUnionSources(unionPlaylistId).sortedBy { it.position }
+
     suspend fun createPlaylist(name: String, playlistType: PlaylistType): CustomPlaylist {
         val now = Instant.now().toString()
         val playlist = CustomPlaylist(

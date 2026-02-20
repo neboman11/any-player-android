@@ -10,6 +10,7 @@ import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.network.SpotifyClientIds
 import com.anyplayer.android.feature.auth.AuthRequest
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
@@ -68,6 +69,7 @@ class MainViewModel @Inject constructor(
     private val customPlaylists = MutableStateFlow<List<com.anyplayer.android.core.model.CustomPlaylist>>(emptyList())
     private val activeCustomPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
     private val selectedCustomPlaylistId = MutableStateFlow<String?>(null)
+    private val selectedCustomUnionSources = MutableStateFlow<List<UnionPlaylistSource>>(emptyList())
     private val stateTransferStatus = MutableStateFlow("State transfer idle")
     private val providerConnectionFeedback = MutableStateFlow<String?>(null)
     private val providerConnectionInProgress = MutableStateFlow(false)
@@ -128,6 +130,7 @@ class MainViewModel @Inject constructor(
         val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist>,
         val activeCustomPlaylistTracks: List<Track>,
         val selectedCustomPlaylistId: String?,
+        val selectedCustomUnionSources: List<UnionPlaylistSource>,
         val stateTransferStatus: String,
         val providerConnectionFeedback: String?,
         val providerConnectionInProgress: Boolean,
@@ -143,6 +146,7 @@ class MainViewModel @Inject constructor(
         val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist>,
         val activeCustomPlaylistTracks: List<Track>,
         val selectedCustomPlaylistId: String?,
+        val selectedCustomUnionSources: List<UnionPlaylistSource>,
         val stateTransferStatus: String
     )
 
@@ -150,12 +154,14 @@ class MainViewModel @Inject constructor(
         customPlaylists,
         activeCustomPlaylistTracks,
         selectedCustomPlaylistId,
+        selectedCustomUnionSources,
         stateTransferStatus
-    ) { localPlaylists, localTracks, selectedLocalId, transferStatus ->
+    ) { localPlaylists, localTracks, selectedLocalId, localUnionSources, transferStatus ->
         LocalCoreUiState(
             customPlaylists = localPlaylists,
             activeCustomPlaylistTracks = localTracks,
             selectedCustomPlaylistId = selectedLocalId,
+            selectedCustomUnionSources = localUnionSources,
             stateTransferStatus = transferStatus
         )
     }
@@ -249,6 +255,7 @@ class MainViewModel @Inject constructor(
                 customPlaylists = localCore.customPlaylists,
                 activeCustomPlaylistTracks = localCore.activeCustomPlaylistTracks,
                 selectedCustomPlaylistId = localCore.selectedCustomPlaylistId,
+                selectedCustomUnionSources = localCore.selectedCustomUnionSources,
                 stateTransferStatus = localCore.stateTransferStatus,
                 providerConnectionFeedback = connectionState.first,
                 providerConnectionInProgress = connectionState.second,
@@ -281,6 +288,7 @@ class MainViewModel @Inject constructor(
             customPlaylists = local.customPlaylists,
             activeCustomPlaylistTracks = local.activeCustomPlaylistTracks,
             selectedCustomPlaylistId = local.selectedCustomPlaylistId,
+            selectedCustomUnionSources = local.selectedCustomUnionSources,
             stateTransferStatus = local.stateTransferStatus,
             providerConnectionFeedback = local.providerConnectionFeedback,
             providerConnectionInProgress = local.providerConnectionInProgress,
@@ -595,6 +603,7 @@ class MainViewModel @Inject constructor(
             if (selectedCustomPlaylistId.value == playlistId) {
                 selectedCustomPlaylistId.value = null
                 activeCustomPlaylistTracks.value = emptyList()
+                selectedCustomUnionSources.value = emptyList()
             }
         }
     }
@@ -608,15 +617,33 @@ class MainViewModel @Inject constructor(
     fun selectCustomPlaylist(playlistId: String) {
         selectedCustomPlaylistId.value = playlistId
         viewModelScope.launch {
+            val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId }
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            selectedCustomUnionSources.value = if (selectedPlaylist?.playlistType == PlaylistType.UNION) {
+                customPlaylistEngine.getUnionSources(playlistId)
+            } else {
+                emptyList()
+            }
         }
+    }
+
+    fun closeCustomPlaylistDetails() {
+        selectedCustomPlaylistId.value = null
+        activeCustomPlaylistTracks.value = emptyList()
+        selectedCustomUnionSources.value = emptyList()
     }
 
     fun playCustomPlaylist(playlistId: String) {
         viewModelScope.launch {
+            val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId }
             customPlaylistEngine.playPlaylist(playlistId)
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
             selectedCustomPlaylistId.value = playlistId
+            selectedCustomUnionSources.value = if (selectedPlaylist?.playlistType == PlaylistType.UNION) {
+                customPlaylistEngine.getUnionSources(playlistId)
+            } else {
+                emptyList()
+            }
         }
     }
 
@@ -646,11 +673,23 @@ class MainViewModel @Inject constructor(
     fun addProviderPlaylistSourceToSelectedUnion(sourcePlaylistId: String, sourceType: SourceType) {
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
+            val normalizedSourcePlaylistId = if (sourceType == SourceType.SPOTIFY) {
+                sourcePlaylistId
+                    .substringAfter("spotify:playlist:", sourcePlaylistId)
+                    .let { value ->
+                        value.substringAfter("/playlist/", value)
+                            .substringBefore('?')
+                            .substringBefore('/')
+                    }
+            } else {
+                sourcePlaylistId
+            }
             customPlaylistEngine.addUnionSource(
                 unionPlaylistId = playlistId,
                 sourceType = sourceType,
-                sourcePlaylistId = sourcePlaylistId
+                sourcePlaylistId = normalizedSourcePlaylistId
             )
+            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId)
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
         }
     }
@@ -667,6 +706,7 @@ class MainViewModel @Inject constructor(
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
             customPlaylistEngine.reorderUnionSources(playlistId, orderedSourceIds)
+            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId)
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
         }
     }
@@ -864,6 +904,7 @@ data class MainUiState(
     val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist> = emptyList(),
     val activeCustomPlaylistTracks: List<Track> = emptyList(),
     val selectedCustomPlaylistId: String? = null,
+    val selectedCustomUnionSources: List<UnionPlaylistSource> = emptyList(),
     val stateTransferStatus: String = "State transfer idle",
     val providerConnectionFeedback: String? = null,
     val providerConnectionInProgress: Boolean = false,

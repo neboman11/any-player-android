@@ -29,6 +29,7 @@ class PlaybackQueueManager @Inject constructor(
     private val playbackStateStore: PlaybackStateStore,
     private val json: Json
 ) {
+    private val maxPersistedQueueTracks = 500
     private val errorHandler = CoroutineExceptionHandler { _, _ -> }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playableQueueIndices: List<Int> = emptyList()
@@ -463,9 +464,15 @@ class PlaybackQueueManager @Inject constructor(
         val currentQueueIndex = state.currentTrack?.let { currentTrack ->
             state.queue.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 }
         }
+        val persistedQueue = if (state.queue.size > maxPersistedQueueTracks) {
+            emptyList()
+        } else {
+            state.queue
+        }
+        val persistedCurrentQueueIndex = currentQueueIndex?.takeIf { it < persistedQueue.size }
         val payload = PersistedPlaybackState(
-            queue = state.queue,
-            currentQueueIndex = currentQueueIndex,
+            queue = persistedQueue,
+            currentQueueIndex = persistedCurrentQueueIndex,
             positionMs = state.position,
             shuffle = state.shuffle,
             repeatMode = state.repeatMode,
