@@ -35,9 +35,10 @@ class CustomPlaylistEngineTest {
             unionSource(id = "src-1", sourceType = SourceType.SPOTIFY, sourcePlaylistId = "sp-playlist", position = 0)
         ))
         whenever(
-            providerCatalogRepository.getPlaylistTracks(
+            providerCatalogRepository.getPlaylistTracksWithCache(
                 eq(SourceType.SPOTIFY),
                 eq("sp-playlist"),
+                any(),
                 any(),
                 any()
             )
@@ -56,9 +57,10 @@ class CustomPlaylistEngineTest {
             unionSource(id = "src-1", sourceType = SourceType.SPOTIFY, sourcePlaylistId = "sp-playlist", position = 0)
         ))
         whenever(
-            providerCatalogRepository.getPlaylistTracks(
+            providerCatalogRepository.getPlaylistTracksWithCache(
                 eq(SourceType.SPOTIFY),
                 eq("sp-playlist"),
+                any(),
                 any(),
                 any()
             )
@@ -89,17 +91,19 @@ class CustomPlaylistEngineTest {
         val duplicate = sampleTrack(id = "dup-track", source = SourceType.SPOTIFY)
 
         whenever(
-            providerCatalogRepository.getPlaylistTracks(
+            providerCatalogRepository.getPlaylistTracksWithCache(
                 eq(SourceType.SPOTIFY),
                 eq("sp-a"),
+                any(),
                 any(),
                 any()
             )
         ).thenReturn(listOf(duplicate))
         whenever(
-            providerCatalogRepository.getPlaylistTracks(
+            providerCatalogRepository.getPlaylistTracksWithCache(
                 eq(SourceType.SPOTIFY),
                 eq("sp-b"),
+                any(),
                 any(),
                 any()
             )
@@ -134,9 +138,10 @@ class CustomPlaylistEngineTest {
             )
         ))
         whenever(
-            providerCatalogRepository.getPlaylistTracks(
+            providerCatalogRepository.getPlaylistTracksWithCache(
                 eq(SourceType.SPOTIFY),
                 eq("sp-1"),
+                any(),
                 any(),
                 any()
             )

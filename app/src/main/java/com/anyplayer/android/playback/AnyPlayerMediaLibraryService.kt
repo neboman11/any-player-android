@@ -16,6 +16,7 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
+import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.AnyPlayerApplication
 import com.anyplayer.android.MainActivity
 import com.anyplayer.android.R
@@ -34,6 +35,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
+@UnstableApi
 class AnyPlayerMediaLibraryService : MediaLibraryService() {
     @Inject
     lateinit var playerBridge: MediaSessionPlayerBridge
@@ -87,6 +89,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_PLAY_PAUSE -> playbackQueueManager.togglePlayPause()
             ACTION_NEXT -> playbackQueueManager.next()

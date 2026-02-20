@@ -10,6 +10,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.playback.Media3PlaybackController
@@ -39,6 +40,7 @@ import javax.inject.Singleton
  *   PlaybackQueueManager StateFlow instead.
  */
 @Singleton
+@UnstableApi
 class MediaSessionPlayerBridge @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
     private val playbackQueueManager: PlaybackQueueManager
@@ -272,6 +274,7 @@ private fun Track.toMediaItem(): MediaItem =
         )
         .build()
 
+@UnstableApi
 private class QueueTimeline(
     private val tracks: List<Track>
 ) : Timeline() {

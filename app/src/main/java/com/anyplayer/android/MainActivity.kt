@@ -6,11 +6,13 @@ import com.anyplayer.android.app.SpotifyAuthRedirectBus
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
+import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.app.AnyPlayerApp
 import com.anyplayer.android.playback.AnyPlayerMediaLibraryService
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
+@UnstableApi
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
