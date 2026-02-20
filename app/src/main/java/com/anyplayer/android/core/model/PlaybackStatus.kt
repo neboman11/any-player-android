@@ -12,5 +12,7 @@ data class PlaybackStatus(
     val position: Long,
     val duration: Long,
     val queue: List<Track>,
+    /** Tracks in actual playback order — equals [queue] when shuffle is off, reordered when on. */
+    val orderedQueue: List<Track> = emptyList(),
     val errorMessage: String? = null
 )

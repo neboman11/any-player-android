@@ -20,6 +20,8 @@ import com.anyplayer.android.feature.auth.StoredConnection
 import androidx.room.withTransaction
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
@@ -38,6 +40,17 @@ class StateTransferManager @Inject constructor(
     private val crypto = StateTransferCrypto()
 
     suspend fun exportToFile(target: File, options: ExportOptions, playbackStatus: PlaybackStatus?): File {
+        val output = buildExportString(options, playbackStatus)
+        target.writeText(output)
+        return target
+    }
+
+    suspend fun exportToStream(stream: OutputStream, options: ExportOptions, playbackStatus: PlaybackStatus?) {
+        val output = buildExportString(options, playbackStatus)
+        stream.writer(Charsets.UTF_8).use { it.write(output) }
+    }
+
+    private suspend fun buildExportString(options: ExportOptions, playbackStatus: PlaybackStatus?): String {
         val playlists = customPlaylistDao.getAll().map { it.toModel() }
         val tracks = playlistTrackDao.getAll().map { it.toModel() }
         val unionSources = unionPlaylistSourceDao.getAll().map { it.toModel() }
@@ -68,7 +81,7 @@ class StateTransferManager @Inject constructor(
         val finalEnvelope = seedEnvelope.copy(integrity = integrity)
         val plainJson = json.encodeToString(AnyPlayerStateEnvelope.serializer(), finalEnvelope)
 
-        val output = when (options.mode) {
+        return when (options.mode) {
             ExportMode.PORTABLE -> plainJson
             ExportMode.PRIVATE -> {
                 val passphrase = requireNotNull(options.passphrase) { "Passphrase is required for private exports" }
@@ -76,13 +89,19 @@ class StateTransferManager @Inject constructor(
                 json.encodeToString(EncryptedStateFile.serializer(), encrypted)
             }
         }
-
-        target.writeText(output)
-        return target
     }
 
     suspend fun importFromFile(source: File, options: ImportOptions): ImportSummary {
         val raw = source.readText()
+        return importFromRaw(raw, options)
+    }
+
+    suspend fun importFromStream(stream: InputStream, options: ImportOptions): ImportSummary {
+        val raw = stream.reader(Charsets.UTF_8).readText()
+        return importFromRaw(raw, options)
+    }
+
+    private suspend fun importFromRaw(raw: String, options: ImportOptions): ImportSummary {
         val envelope = decodeEnvelope(raw, options.passphrase)
         validateEnvelope(envelope)
         return importEnvelope(envelope, options)

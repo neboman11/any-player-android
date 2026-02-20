@@ -55,7 +55,7 @@ class PlaybackQueueManager @Inject constructor(
             while (true) {
                 syncFromPlaybackEngine()
                 persistState()
-                delay(1000)
+                delay(500)
             }
         }
     }
@@ -68,6 +68,7 @@ class PlaybackQueueManager @Inject constructor(
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
                 queue = emptyList(),
+                orderedQueue = emptyList(),
                 currentTrack = null,
                 state = PlaybackStateType.IDLE,
                 position = 0,
@@ -83,6 +84,7 @@ class PlaybackQueueManager @Inject constructor(
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
                 queue = tracks,
+                orderedQueue = tracks,
                 currentTrack = tracks[index],
                 state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
                 position = 0,
@@ -110,6 +112,7 @@ class PlaybackQueueManager @Inject constructor(
         if (mappedIndex < 0) {
             mutableStatus.value = mutableStatus.value.copy(
                 queue = tracks,
+                orderedQueue = tracks,
                 currentTrack = null,
                 state = PlaybackStateType.ERROR,
                 position = 0,
@@ -121,6 +124,7 @@ class PlaybackQueueManager @Inject constructor(
         val selectedTrack = tracks.getOrNull(playableQueueIndices.getOrNull(mappedIndex) ?: index) ?: tracks[index]
         mutableStatus.value = mutableStatus.value.copy(
             queue = tracks,
+            orderedQueue = tracks,
             currentTrack = selectedTrack,
             state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
             position = 0,
@@ -175,7 +179,17 @@ class PlaybackQueueManager @Inject constructor(
                 val success = if (state.state == PlaybackStateType.PLAYING) {
                     spotifyPlaybackController.pause()
                 } else {
-                    spotifyPlaybackController.play()
+                    // Try to resume first (works if track is already loaded/paused).
+                    // If that fails (e.g. player is in Stopped state after app restart),
+                    // fall back to reloading the queue and playing from the current track.
+                    var ok = spotifyPlaybackController.play()
+                    if (!ok && state.queue.isNotEmpty()) {
+                        val currentIndex = state.currentTrack
+                            ?.let { ct -> state.queue.indexOfFirst { it.id == ct.id } }
+                            ?.takeIf { it >= 0 } ?: 0
+                        ok = spotifyPlaybackController.startQueue(state.queue.map { it.id }, currentIndex)
+                    }
+                    ok
                 }
                 val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
                 mutableStatus.value = state.copy(
@@ -202,8 +216,18 @@ class PlaybackQueueManager @Inject constructor(
 
     fun play() {
         if (spotifyMode) {
+            val state = mutableStatus.value
             scope.launch {
-                val success = spotifyPlaybackController.play()
+                // Try to resume first (works if track is already loaded/paused).
+                // If that fails (e.g. player is in Stopped state after app restart),
+                // fall back to reloading the queue and playing from the current track.
+                var success = spotifyPlaybackController.play()
+                if (!success && state.queue.isNotEmpty()) {
+                    val currentIndex = state.currentTrack
+                        ?.let { ct -> state.queue.indexOfFirst { it.id == ct.id } }
+                        ?.takeIf { it >= 0 } ?: 0
+                    success = spotifyPlaybackController.startQueue(state.queue.map { it.id }, currentIndex)
+                }
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     errorMessage = if (success) null else spotifyPlaybackController.lastError
@@ -340,6 +364,13 @@ class PlaybackQueueManager @Inject constructor(
         if (spotifyMode) {
             val spotifySnapshot = spotifyPlaybackController.snapshot() ?: return
             val state = mutableStatus.value
+            // Auto-advance to the next track when a track ends naturally.
+            // The endOfTrack flag is a consume-once signal from the Rust event
+            // loop — it is only true for a single snapshot poll cycle.
+            if (spotifySnapshot.endOfTrack) {
+                next()
+                return
+            }
             val mappedTrack = spotifySnapshot.currentTrackId?.let { id ->
                 state.queue.firstOrNull { it.id == id }
             }
@@ -350,7 +381,9 @@ class PlaybackQueueManager @Inject constructor(
                 currentTrack = mappedTrack ?: state.currentTrack,
                 volume = spotifySnapshot.volumePercent,
                 shuffle = spotifySnapshot.shuffleEnabled,
-                repeatMode = spotifySnapshot.repeatMode
+                repeatMode = spotifySnapshot.repeatMode,
+                // Spotify manages shuffle internally — we cannot read its shuffled order
+                orderedQueue = state.queue
             )
             return
         }
@@ -361,6 +394,14 @@ class PlaybackQueueManager @Inject constructor(
 
         val queueIndex = playableQueueIndices.getOrNull(snapshot.currentMediaIndex)
         val mappedTrack = queueIndex?.let { state.queue.getOrNull(it) }
+        val orderedQueue: List<Track> = if (snapshot.shuffle && snapshot.shuffledMediaIndices.isNotEmpty()) {
+            snapshot.shuffledMediaIndices.mapNotNull { mediaIdx ->
+                playableQueueIndices.getOrNull(mediaIdx)?.let { queueIdx ->
+                    state.queue.getOrNull(queueIdx)
+                }
+            }
+        } else state.queue
+
         mutableStatus.value = state.copy(
             state = snapshot.state,
             position = snapshot.positionMs,
@@ -368,7 +409,8 @@ class PlaybackQueueManager @Inject constructor(
             currentTrack = mappedTrack ?: state.currentTrack,
             volume = snapshot.volume,
             shuffle = snapshot.shuffle,
-            repeatMode = snapshot.repeatMode
+            repeatMode = snapshot.repeatMode,
+            orderedQueue = orderedQueue
         )
     }
 

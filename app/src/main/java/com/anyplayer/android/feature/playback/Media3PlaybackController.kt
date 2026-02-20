@@ -1,6 +1,7 @@
 package com.anyplayer.android.feature.playback
 
 import android.content.Context
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -118,6 +119,19 @@ class Media3PlaybackController @Inject constructor(
             else -> RepeatMode.OFF
         }
 
+        val windowCount = playerInstance.mediaItemCount
+        val shuffleEnabled = playerInstance.shuffleModeEnabled
+        val shuffledMediaIndices: List<Int> = if (windowCount > 0) {
+            val timeline = playerInstance.currentTimeline
+            val list = mutableListOf<Int>()
+            var idx = timeline.getFirstWindowIndex(shuffleEnabled)
+            while (idx != C.INDEX_UNSET && list.size < windowCount) {
+                list.add(idx)
+                idx = timeline.getNextWindowIndex(idx, Player.REPEAT_MODE_OFF, shuffleEnabled)
+            }
+            if (list.size == windowCount) list else (0 until windowCount).toList()
+        } else emptyList()
+
         return PlaybackSnapshot(
             state = state,
             positionMs = playerInstance.currentPosition.coerceAtLeast(0L),
@@ -125,7 +139,8 @@ class Media3PlaybackController @Inject constructor(
             currentMediaIndex = playerInstance.currentMediaItemIndex,
             volume = (playerInstance.volume * 100f).toInt().coerceIn(0, 100),
             shuffle = playerInstance.shuffleModeEnabled,
-            repeatMode = repeat
+            repeatMode = repeat,
+            shuffledMediaIndices = shuffledMediaIndices
         )
     }
 }
@@ -137,5 +152,6 @@ data class PlaybackSnapshot(
     val currentMediaIndex: Int,
     val volume: Int,
     val shuffle: Boolean,
-    val repeatMode: RepeatMode
+    val repeatMode: RepeatMode,
+    val shuffledMediaIndices: List<Int>
 )

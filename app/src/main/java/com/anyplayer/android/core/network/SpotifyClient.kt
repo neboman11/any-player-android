@@ -444,6 +444,7 @@ private val JsonElement?.jsonPrimitiveBooleanOrFalse: Boolean
 data class SpotifyPlaybackState(
     val isPlaying: Boolean,
     val progressMs: Long,
+    val endOfTrack: Boolean = false,
     val volumePercent: Int,
     val shuffleEnabled: Boolean,
     val repeatMode: RepeatMode,

@@ -15,6 +15,10 @@ class RustBridge @Inject constructor() {
         private const val TAG = "RustBridge"
     }
 
+    @Volatile
+    var lastError: String? = null
+        private set
+
     fun isAvailable(): Boolean = RustBridgeNative.isLoaded
 
     fun spotifyBeginAuth(configJson: String): String? =
@@ -162,6 +166,7 @@ class RustBridge @Inject constructor() {
         return SpotifyPlaybackState(
             isPlaying = data.optBoolean("is_playing", false),
             progressMs = data.optLong("progress_ms", 0L).coerceAtLeast(0L),
+            endOfTrack = data.optBoolean("end_of_track", false),
             volumePercent = data.optInt("volume_percent", 100).coerceIn(0, 100),
             shuffleEnabled = data.optBoolean("shuffle_enabled", false),
             repeatMode = repeatModeFromWireValue(data.optString("repeat_mode", "off")),
@@ -184,6 +189,7 @@ class RustBridge @Inject constructor() {
     private fun callBoolean(methodName: String, block: () -> String): Boolean? {
         val response = callJson(methodName, block) ?: return null
         if (response.optBoolean("ok", false)) {
+            lastError = null
             return true
         }
         logBridgeError(methodName, response)
@@ -194,6 +200,7 @@ class RustBridge @Inject constructor() {
         if (!RustBridgeNative.isLoaded) return null
         return runCatching(block)
             .onFailure { error ->
+                lastError = "JNI call failed for $methodName: ${error.message ?: error::class.java.simpleName}"
                 Log.w(TAG, "Rust JNI call failed for $methodName", error)
             }
             .getOrNull()
@@ -203,6 +210,7 @@ class RustBridge @Inject constructor() {
         val raw = callRaw(methodName, block) ?: return null
         return runCatching { JSONObject(raw) }
             .onFailure { error ->
+                lastError = "Invalid JSON from Rust bridge method $methodName"
                 Log.w(TAG, "Invalid JSON from Rust bridge method $methodName: $raw", error)
             }
             .getOrNull()
@@ -212,6 +220,9 @@ class RustBridge @Inject constructor() {
         val error = response.optJSONObject("error")
         val code = error?.optString("code").orEmpty()
         val message = error?.optString("message").orEmpty()
+        lastError = listOf(code.takeIf { it.isNotBlank() }, message.takeIf { it.isNotBlank() })
+            .joinToString(separator = ": ")
+            .ifBlank { "Unknown Rust bridge error in $methodName" }
         Log.w(TAG, "Rust bridge method $methodName returned error: $code $message")
     }
 }

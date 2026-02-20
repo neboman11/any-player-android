@@ -208,7 +208,7 @@ if (!skipRustFfiBuild) {
         doFirst {
             val ndkDir = resolveNdkDir()
             val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("aarch64-linux-android21-clang")
+            val linker = toolchainBin.resolve("aarch64-linux-android26-clang")
             val ar = toolchainBin.resolve("llvm-ar")
             if (!rustSharedWorkspaceDir.exists()) {
                 throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
@@ -247,7 +247,7 @@ if (!skipRustFfiBuild) {
         doFirst {
             val ndkDir = resolveNdkDir()
             val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("x86_64-linux-android21-clang")
+            val linker = toolchainBin.resolve("x86_64-linux-android26-clang")
             val ar = toolchainBin.resolve("llvm-ar")
             if (!rustSharedWorkspaceDir.exists()) {
                 throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
@@ -286,7 +286,7 @@ if (!skipRustFfiBuild) {
         doFirst {
             val ndkDir = resolveNdkDir()
             val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("armv7a-linux-androideabi21-clang")
+            val linker = toolchainBin.resolve("armv7a-linux-androideabi26-clang")
             val ar = toolchainBin.resolve("llvm-ar")
             if (!rustSharedWorkspaceDir.exists()) {
                 throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
@@ -325,7 +325,7 @@ if (!skipRustFfiBuild) {
         doFirst {
             val ndkDir = resolveNdkDir()
             val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("i686-linux-android21-clang")
+            val linker = toolchainBin.resolve("i686-linux-android26-clang")
             val ar = toolchainBin.resolve("llvm-ar")
             if (!rustSharedWorkspaceDir.exists()) {
                 throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")

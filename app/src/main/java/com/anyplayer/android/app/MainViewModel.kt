@@ -1,5 +1,7 @@
 package com.anyplayer.android.app
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyplayer.android.core.model.PlaybackStateType
@@ -21,8 +23,12 @@ import com.anyplayer.android.feature.state.transfer.ExportOptions
 import com.anyplayer.android.feature.state.transfer.ImportOptions
 import com.anyplayer.android.feature.state.transfer.ImportSummary
 import com.anyplayer.android.feature.state.transfer.MergePolicy
+import com.anyplayer.android.feature.state.transfer.ConfigFileImporter
 import com.anyplayer.android.feature.state.transfer.StateTransferManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,14 +37,15 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val authRepository: ProviderAuthRepository,
     private val playbackQueueManager: PlaybackQueueManager,
     private val stateTransferManager: StateTransferManager,
+    private val configFileImporter: ConfigFileImporter,
     private val providerCatalogRepository: ProviderCatalogRepository,
     private val customPlaylistEngine: CustomPlaylistEngine,
     private val startupResilienceManager: StartupResilienceManager
@@ -679,58 +686,72 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun exportState(path: String, mode: ExportMode, includePlayback: Boolean, passphrase: String?) {
+    fun exportStateToUri(uri: Uri, mode: ExportMode, includePlayback: Boolean, passphrase: String?) {
         viewModelScope.launch {
             runCatching {
-                val file = stateTransferManager.exportToFile(
-                    target = File(path),
-                    options = ExportOptions(
-                        mode = mode,
-                        includePlaybackState = includePlayback,
-                        passphrase = passphrase?.takeIf { it.isNotBlank() }
-                    ),
-                    playbackStatus = uiState.value.playbackStatus
-                )
-                "Export complete: ${file.absolutePath}"
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)
+                        ?.use { stream ->
+                            stateTransferManager.exportToStream(
+                                stream = stream,
+                                options = ExportOptions(
+                                    mode = mode,
+                                    includePlaybackState = includePlayback,
+                                    passphrase = passphrase
+                                ),
+                                playbackStatus = uiState.value.playbackStatus
+                            )
+                        } ?: error("Could not open output stream for export")
+                }
+                "Export complete"
             }.onSuccess { stateTransferStatus.value = it }
                 .onFailure { stateTransferStatus.value = "Export failed: ${it.message}" }
         }
     }
 
-    fun dryRunImport(path: String, policy: MergePolicy, passphrase: String?) {
+    fun importStateFromUri(uri: Uri, policy: MergePolicy, passphrase: String?, dryRun: Boolean) {
         viewModelScope.launch {
             runCatching {
-                stateTransferManager.importFromFile(
-                    source = File(path),
-                    options = ImportOptions(
-                        mergePolicy = policy,
-                        passphrase = passphrase?.takeIf { it.isNotBlank() },
-                        dryRun = true
-                    )
-                )
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)
+                        ?.use { stream ->
+                            stateTransferManager.importFromStream(
+                                stream = stream,
+                                options = ImportOptions(
+                                    mergePolicy = policy,
+                                    passphrase = passphrase,
+                                    dryRun = dryRun
+                                )
+                            )
+                        } ?: error("Could not open input stream for import")
+                }
             }.onSuccess { summary ->
-                stateTransferStatus.value = formatSummary("Dry run", summary)
+                stateTransferStatus.value = formatSummary(if (dryRun) "Dry run" else "Import", summary)
             }.onFailure {
-                stateTransferStatus.value = "Dry run failed: ${it.message}"
+                stateTransferStatus.value = "${if (dryRun) "Dry run" else "Import"} failed: ${it.message}"
             }
         }
     }
 
-    fun importState(path: String, policy: MergePolicy, passphrase: String?) {
+    fun importConfigFromUri(uri: Uri, policy: MergePolicy, dryRun: Boolean) {
         viewModelScope.launch {
             runCatching {
-                stateTransferManager.importFromFile(
-                    source = File(path),
-                    options = ImportOptions(
-                        mergePolicy = policy,
-                        passphrase = passphrase?.takeIf { it.isNotBlank() },
-                        dryRun = false
-                    )
-                )
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)
+                        ?.use { stream ->
+                            configFileImporter.importFromStream(
+                                stream = stream,
+                                mergePolicy = policy,
+                                dryRun = dryRun
+                            )
+                        } ?: error("Could not open input stream for config import")
+                }
             }.onSuccess { summary ->
-                stateTransferStatus.value = formatSummary("Import", summary)
+                val prefix = if (dryRun) "Config dry run" else "Config import"
+                stateTransferStatus.value = formatSummary(prefix, summary)
+                if (!dryRun) loadSavedProviderInputs()
             }.onFailure {
-                stateTransferStatus.value = "Import failed: ${it.message}"
+                stateTransferStatus.value = "Config import failed: ${it.message}"
             }
         }
     }
