@@ -7,7 +7,9 @@ import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.playback.Media3PlaybackController
@@ -33,8 +35,8 @@ import javax.inject.Singleton
  *   has no media loaded when Spotify is active). DefaultMediaNotificationProvider
  *   receives those, stops the foreground service, kills the notification, and Auto
  *   grays out controls. By owning the listener list ourselves, ExoPlayer's internal
- android-companion-implementation-spec.md app build build.gradle.kts docs gradle gradle.properties gradlew gradlew.bat local.properties settings.gradle.kts    state changes never reach the session layer. All events come from the
- android-companion-implementation-spec.md app build build.gradle.kts docs gradle gradle.properties gradlew gradlew.bat local.properties settings.gradle.kts    PlaybackQueueManager StateFlow instead.
+ *   state changes never reach the session layer. All events come from the
+ *   PlaybackQueueManager StateFlow instead.
  */
 @Singleton
 class MediaSessionPlayerBridge @Inject constructor(
@@ -113,14 +115,14 @@ class MediaSessionPlayerBridge @Inject constructor(
         listener.onMediaMetadataChanged(getMediaMetadata())
         listener.onAvailableCommandsChanged(buildCommands(hasTrack))
         val bootstrapEvents = Player.Events(
-            FlagSet.Builder()
-                .addAll(
-                    Player.EVENT_PLAYBACK_STATE_CHANGED,
-                    Player.EVENT_IS_PLAYING_CHANGED,
-                    Player.EVENT_MEDIA_ITEM_TRANSITION,
-                    Player.EVENT_MEDIA_METADATA_CHANGED,
-                    Player.EVENT_AVAILABLE_COMMANDS_CHANGED
-                ).build()
+            FlagSet.Builder().apply {
+                add(Player.EVENT_PLAYBACK_STATE_CHANGED)
+                add(Player.EVENT_IS_PLAYING_CHANGED)
+                if (hasTrack) add(Player.EVENT_MEDIA_ITEM_TRANSITION)
+                add(Player.EVENT_MEDIA_METADATA_CHANGED)
+                add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                add(Player.EVENT_TIMELINE_CHANGED)
+            }.build()
         )
         listener.onEvents(this, bootstrapEvents)
     }
@@ -135,10 +137,13 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun getPlayWhenReady(): Boolean = isPlaying()
 
     override fun getCurrentMediaItem(): MediaItem? =
-        playbackQueueManager.status.value.currentTrack?.toMediaItem()
+        currentTrackOrFallback()?.toMediaItem()
 
     override fun getMediaMetadata(): MediaMetadata =
         getCurrentMediaItem()?.mediaMetadata ?: MediaMetadata.EMPTY
+
+    override fun getCurrentTimeline(): Timeline =
+        QueueTimeline(timelineTracks())
 
     override fun getDuration(): Long {
         val d = playbackQueueManager.status.value.duration
@@ -149,14 +154,39 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun getBufferedPosition(): Long = playbackQueueManager.status.value.position
 
     override fun getMediaItemCount(): Int =
-        playbackQueueManager.status.value.queue.size
-            .coerceAtLeast(if (getCurrentMediaItem() != null) 1 else 0)
+        timelineTracks().size
 
     override fun getCurrentMediaItemIndex(): Int {
+        val tracks = timelineTracks()
+        if (tracks.isEmpty()) return 0
         val s  = playbackQueueManager.status.value
         val id = s.currentTrack?.id ?: return 0
-        val i  = s.queue.indexOfFirst { it.id == id }
+        val i  = tracks.indexOfFirst { it.id == id }
         return if (i >= 0) i else 0
+    }
+
+    override fun getCurrentPeriodIndex(): Int = getCurrentMediaItemIndex()
+
+    override fun getNextMediaItemIndex(): Int {
+        val count = getMediaItemCount()
+        if (count <= 0) return C.INDEX_UNSET
+        val next = getCurrentMediaItemIndex() + 1
+        return if (next in 0 until count) next else C.INDEX_UNSET
+    }
+
+    override fun getPreviousMediaItemIndex(): Int {
+        val count = getMediaItemCount()
+        if (count <= 0) return C.INDEX_UNSET
+        val prev = getCurrentMediaItemIndex() - 1
+        return if (prev in 0 until count) prev else C.INDEX_UNSET
+    }
+
+    override fun getPlayerError(): PlaybackException? {
+        val status = playbackQueueManager.status.value
+        if (status.state != PlaybackStateType.ERROR) return null
+        val message = status.errorMessage?.takeIf { it.isNotBlank() }
+            ?: "Playback failed"
+        return PlaybackException(message, null, PlaybackException.ERROR_CODE_UNSPECIFIED)
     }
 
     override fun getAvailableCommands(): Player.Commands =
@@ -214,6 +244,17 @@ class MediaSessionPlayerBridge @Inject constructor(
         )
         return b.build()
     }
+
+    private fun currentTrackOrFallback(): Track? {
+        val status = playbackQueueManager.status.value
+        return status.currentTrack ?: status.queue.firstOrNull()
+    }
+
+    private fun timelineTracks(): List<Track> {
+        val status = playbackQueueManager.status.value
+        if (status.queue.isNotEmpty()) return status.queue
+        return status.currentTrack?.let(::listOf).orEmpty()
+    }
 }
 
 private fun Track.toMediaItem(): MediaItem =
@@ -230,3 +271,54 @@ private fun Track.toMediaItem(): MediaItem =
                 .build()
         )
         .build()
+
+private class QueueTimeline(
+    private val tracks: List<Track>
+) : Timeline() {
+    override fun getWindowCount(): Int = tracks.size
+
+    override fun getPeriodCount(): Int = tracks.size
+
+    override fun getWindow(windowIndex: Int, window: Window, defaultPositionProjectionUs: Long): Window {
+        val track = tracks[windowIndex]
+        val durationUs = track.durationMs
+            ?.takeIf { it > 0 }
+            ?.let(C::msToUs)
+            ?: C.TIME_UNSET
+        return window.set(
+            Window.SINGLE_WINDOW_UID,
+            track.toMediaItem(),
+            null,
+            C.TIME_UNSET,
+            C.TIME_UNSET,
+            C.TIME_UNSET,
+            false,
+            true,
+            null,
+            0,
+            durationUs,
+            0,
+            0,
+            0
+        )
+    }
+
+    override fun getPeriod(periodIndex: Int, period: Period, setIds: Boolean): Period {
+        val id = tracks[periodIndex].id
+        return period.set(
+            if (setIds) id else null,
+            if (setIds) id else null,
+            periodIndex,
+            C.TIME_UNSET,
+            0
+        )
+    }
+
+    override fun getIndexOfPeriod(uid: Any): Int {
+        val stringUid = uid as? String ?: return C.INDEX_UNSET
+        val index = tracks.indexOfFirst { it.id == stringUid }
+        return if (index >= 0) index else C.INDEX_UNSET
+    }
+
+    override fun getUidOfPeriod(periodIndex: Int): Any = tracks[periodIndex].id
+}

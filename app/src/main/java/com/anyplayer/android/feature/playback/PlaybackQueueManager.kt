@@ -29,12 +29,13 @@ class PlaybackQueueManager @Inject constructor(
     private val playbackStateStore: PlaybackStateStore,
     private val json: Json
 ) {
-    private val maxPersistedQueueTracks = 500
+    private val maxPersistedQueueTracks = 5000
     private val errorHandler = CoroutineExceptionHandler { _, _ -> }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playableQueueIndices: List<Int> = emptyList()
     private var isRestoring = false
     private var spotifyMode = false
+    private var mixedMode = false
 
     private val mutableStatus = MutableStateFlow(
         PlaybackStatus(
@@ -63,7 +64,10 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setQueue(tracks: List<Track>, startIndex: Int = 0, autoPlay: Boolean = true) {
+        val hasSpotify = tracks.any { it.source == SourceType.SPOTIFY }
+        val hasNonSpotify = tracks.any { it.source != SourceType.SPOTIFY }
         spotifyMode = tracks.isNotEmpty() && tracks.all { it.source == SourceType.SPOTIFY }
+        mixedMode = hasSpotify && hasNonSpotify
 
         if (tracks.isEmpty()) {
             playableQueueIndices = emptyList()
@@ -102,10 +106,37 @@ class PlaybackQueueManager @Inject constructor(
                     if (!started) {
                         mutableStatus.value = mutableStatus.value.copy(
                             state = PlaybackStateType.ERROR,
-                            errorMessage = spotifyPlaybackController.lastError
+                            errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
                         )
                     }
                 }
+            }
+            persistStateAsync()
+            return
+        }
+
+        if (mixedMode) {
+            media3PlaybackController.setQueue(emptyList(), 0, false)
+            val clampedIndex = index.coerceIn(0, tracks.lastIndex)
+            val selectedTrack = tracks[clampedIndex]
+            if (!autoPlay && selectedTrack.source != SourceType.SPOTIFY) {
+                media3PlaybackController.setQueue(listOf(selectedTrack), 0, false)
+            }
+            mutableStatus.value = mutableStatus.value.copy(
+                queue = tracks,
+                orderedQueue = buildOrderedQueue(
+                    queue = tracks,
+                    currentTrackId = selectedTrack.id,
+                    shuffleEnabled = mutableStatus.value.shuffle
+                ),
+                currentTrack = selectedTrack,
+                state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
+                position = 0,
+                duration = selectedTrack.durationMs ?: 0,
+                errorMessage = null
+            )
+            if (autoPlay) {
+                playMixedTrackAtIndex(clampedIndex)
             }
             persistStateAsync()
             return
@@ -157,11 +188,16 @@ class PlaybackQueueManager @Inject constructor(
                 } else {
                     state.copy(
                         state = PlaybackStateType.ERROR,
-                        errorMessage = spotifyPlaybackController.lastError
+                        errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
                     )
                 }
                 persistStateAsync()
             }
+            return
+        }
+
+        if (mixedMode) {
+            playMixedTrackAtIndex(target)
             return
         }
 
@@ -179,6 +215,31 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun togglePlayPause() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            val currentTrack = state.currentTrack
+            if (currentTrack == null) return
+            scope.launch {
+                val isPlaying = state.state == PlaybackStateType.PLAYING
+                val success = when {
+                    currentTrack.source == SourceType.SPOTIFY && isPlaying -> spotifyPlaybackController.pause()
+                    currentTrack.source == SourceType.SPOTIFY && !isPlaying -> spotifyPlaybackController.play()
+                    isPlaying -> {
+                        media3PlaybackController.pause(); true
+                    }
+                    else -> {
+                        media3PlaybackController.play(); true
+                    }
+                }
+                mutableStatus.value = state.copy(
+                    state = if (!success) PlaybackStateType.ERROR else if (isPlaying) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING,
+                    errorMessage = if (!success) spotifyErrorOrDefault("Playback command failed") else null
+                )
+                persistStateAsync()
+            }
+            return
+        }
+
         if (spotifyMode) {
             val state = mutableStatus.value
             scope.launch {
@@ -200,7 +261,7 @@ class PlaybackQueueManager @Inject constructor(
                 val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
                 mutableStatus.value = state.copy(
                     state = nextState,
-                    errorMessage = if (!success) spotifyPlaybackController.lastError else null
+                    errorMessage = if (!success) spotifyErrorOrDefault("Spotify command failed") else null
                 )
                 persistStateAsync()
             }
@@ -221,6 +282,25 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun play() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            val currentTrack = state.currentTrack ?: return
+            scope.launch {
+                val success = if (currentTrack.source == SourceType.SPOTIFY) {
+                    spotifyPlaybackController.play()
+                } else {
+                    media3PlaybackController.play()
+                    true
+                }
+                mutableStatus.value = mutableStatus.value.copy(
+                    state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Failed to resume playback")
+                )
+                persistStateAsync()
+            }
+            return
+        }
+
         if (spotifyMode) {
             val state = mutableStatus.value
             scope.launch {
@@ -236,7 +316,7 @@ class PlaybackQueueManager @Inject constructor(
                 }
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
-                    errorMessage = if (success) null else spotifyPlaybackController.lastError
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to resume playback")
                 )
                 persistStateAsync()
             }
@@ -249,12 +329,31 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun pause() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            val currentTrack = state.currentTrack ?: return
+            scope.launch {
+                val success = if (currentTrack.source == SourceType.SPOTIFY) {
+                    spotifyPlaybackController.pause()
+                } else {
+                    media3PlaybackController.pause()
+                    true
+                }
+                mutableStatus.value = mutableStatus.value.copy(
+                    state = if (success) PlaybackStateType.PAUSED else PlaybackStateType.ERROR,
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Failed to pause playback")
+                )
+                persistStateAsync()
+            }
+            return
+        }
+
         if (spotifyMode) {
             scope.launch {
                 val success = spotifyPlaybackController.pause()
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PAUSED else PlaybackStateType.ERROR,
-                    errorMessage = if (success) null else spotifyPlaybackController.lastError
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to pause")
                 )
                 persistStateAsync()
             }
@@ -267,6 +366,22 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun seekTo(positionMs: Long) {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            val currentTrack = state.currentTrack ?: return
+            scope.launch {
+                if (currentTrack.source == SourceType.SPOTIFY) {
+                    spotifyPlaybackController.seekTo(positionMs)
+                } else {
+                    media3PlaybackController.seekTo(positionMs)
+                }
+                val duration = if (state.duration <= 0) Long.MAX_VALUE else state.duration
+                mutableStatus.value = state.copy(position = positionMs.coerceIn(0, duration))
+                persistStateAsync()
+            }
+            return
+        }
+
         if (spotifyMode) {
             scope.launch {
                 spotifyPlaybackController.seekTo(positionMs)
@@ -301,6 +416,20 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setShuffle(enabled: Boolean) {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            mutableStatus.value = state.copy(
+                shuffle = enabled,
+                orderedQueue = buildOrderedQueue(
+                    queue = state.queue,
+                    currentTrackId = state.currentTrack?.id,
+                    shuffleEnabled = enabled
+                )
+            )
+            persistStateAsync()
+            return
+        }
+
         if (spotifyMode) {
             scope.launch {
                 spotifyPlaybackController.setShuffle(enabled)
@@ -331,12 +460,24 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun next() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            if (state.queue.isEmpty()) return
+            val sequence = mixedPlaybackSequence(state)
+            if (sequence.isEmpty()) return
+            val currentId = state.currentTrack?.id
+            val currentIndex = sequence.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: 0
+            val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
+            playMixedTrackById(nextTrack.id)
+            return
+        }
+
         if (spotifyMode) {
             scope.launch {
                 val success = spotifyPlaybackController.next()
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
-                    errorMessage = if (success) null else spotifyPlaybackController.lastError
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
                 )
                 persistStateAsync()
             }
@@ -349,12 +490,24 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun previous() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            if (state.queue.isEmpty()) return
+            val sequence = mixedPlaybackSequence(state)
+            if (sequence.isEmpty()) return
+            val currentId = state.currentTrack?.id
+            val currentIndex = sequence.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: 0
+            val prevTrack = sequence.getOrNull(currentIndex - 1) ?: return
+            playMixedTrackById(prevTrack.id)
+            return
+        }
+
         if (spotifyMode) {
             scope.launch {
                 val success = spotifyPlaybackController.previous()
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
-                    errorMessage = if (success) null else spotifyPlaybackController.lastError
+                    errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to go to previous track")
                 )
                 persistStateAsync()
             }
@@ -367,6 +520,44 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     private suspend fun syncFromPlaybackEngine() {
+        if (mixedMode) {
+            val state = mutableStatus.value
+            val currentTrack = state.currentTrack ?: return
+            if (currentTrack.source == SourceType.SPOTIFY) {
+                val spotifySnapshot = spotifyPlaybackController.snapshot() ?: return
+                val duration = currentTrack.durationMs ?: state.duration
+                mutableStatus.value = state.copy(
+                    state = if (spotifySnapshot.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
+                    position = spotifySnapshot.progressMs,
+                    duration = duration,
+                    volume = spotifySnapshot.volumePercent,
+                    shuffle = state.shuffle,
+                    repeatMode = spotifySnapshot.repeatMode,
+                    orderedQueue = mixedPlaybackSequence(state)
+                )
+                if (spotifySnapshot.endOfTrack) {
+                    val sequence = mixedPlaybackSequence(state)
+                    val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 } ?: 0
+                    val nextTrack = sequence.getOrNull(currentIndex + 1)
+                    if (nextTrack != null) {
+                        playMixedTrackById(nextTrack.id)
+                    }
+                }
+            } else {
+                val snapshot = media3PlaybackController.snapshot()
+                mutableStatus.value = state.copy(
+                    state = snapshot.state,
+                    position = snapshot.positionMs,
+                    duration = snapshot.durationMs.takeIf { it > 0 } ?: (currentTrack.durationMs ?: state.duration),
+                    volume = snapshot.volume,
+                    shuffle = state.shuffle,
+                    repeatMode = snapshot.repeatMode,
+                    orderedQueue = mixedPlaybackSequence(state)
+                )
+            }
+            return
+        }
+
         if (spotifyMode) {
             val spotifySnapshot = spotifyPlaybackController.snapshot() ?: return
             val state = mutableStatus.value
@@ -378,7 +569,7 @@ class PlaybackQueueManager @Inject constructor(
                 return
             }
             val mappedTrack = spotifySnapshot.currentTrackId?.let { id ->
-                state.queue.firstOrNull { it.id == id }
+                state.queue.firstOrNull { spotifyTrackIdsMatch(it.id, id) }
             }
             mutableStatus.value = state.copy(
                 state = if (spotifySnapshot.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
@@ -432,7 +623,7 @@ class PlaybackQueueManager @Inject constructor(
 
         isRestoring = true
         val startIndex = persisted.currentQueueIndex?.coerceIn(0, persisted.queue.lastIndex) ?: 0
-        val shouldAutoPlay = persisted.state == PlaybackStateType.PLAYING
+        val shouldAutoPlay = false
 
         setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
         setVolume(persisted.volume)
@@ -512,6 +703,71 @@ class PlaybackQueueManager @Inject constructor(
             queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
         }
         return playableIndices.randomOrNull() ?: normalizedStartIndex
+    }
+
+    private fun spotifyTrackIdsMatch(queueTrackId: String, snapshotTrackId: String): Boolean {
+        if (queueTrackId == snapshotTrackId) return true
+        return normalizeSpotifyTrackId(queueTrackId) == normalizeSpotifyTrackId(snapshotTrackId)
+    }
+
+    private fun normalizeSpotifyTrackId(value: String): String =
+        value.removePrefix("spotify:track:").trim()
+
+    private fun spotifyErrorOrDefault(defaultMessage: String): String =
+        spotifyPlaybackController.lastError?.takeIf { it.isNotBlank() } ?: defaultMessage
+
+    private fun currentQueueIndex(state: PlaybackStatus): Int {
+        val currentId = state.currentTrack?.id ?: return 0
+        val idx = state.queue.indexOfFirst { it.id == currentId }
+        return if (idx >= 0) idx else 0
+    }
+
+    private fun mixedPlaybackSequence(state: PlaybackStatus): List<Track> =
+        state.orderedQueue.takeIf { it.isNotEmpty() } ?: state.queue
+
+    private fun buildOrderedQueue(
+        queue: List<Track>,
+        currentTrackId: String?,
+        shuffleEnabled: Boolean
+    ): List<Track> {
+        if (!shuffleEnabled || queue.size <= 1) return queue
+        val current = currentTrackId?.let { id -> queue.firstOrNull { it.id == id } }
+        val remainder = if (current != null) queue.filterNot { it.id == current.id } else queue
+        val shuffledRemainder = remainder.shuffled()
+        return if (current != null) listOf(current) + shuffledRemainder else shuffledRemainder
+    }
+
+    private fun playMixedTrackAtIndex(index: Int) {
+        val state = mutableStatus.value
+        if (state.queue.isEmpty()) return
+        val target = index.coerceIn(0, state.queue.lastIndex)
+        val track = state.queue[target]
+
+        scope.launch {
+            val success = if (track.source == SourceType.SPOTIFY) {
+                media3PlaybackController.setQueue(emptyList(), 0, false)
+                spotifyPlaybackController.startQueue(listOf(track.id), 0)
+            } else {
+                val mappedIndex = media3PlaybackController.setQueue(listOf(track), 0, true)
+                mappedIndex >= 0
+            }
+
+            mutableStatus.value = mutableStatus.value.copy(
+                currentTrack = track,
+                state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
+                position = 0,
+                duration = track.durationMs ?: 0,
+                errorMessage = if (success) null else spotifyErrorOrDefault("Failed to start track")
+            )
+            persistStateAsync()
+        }
+    }
+
+    private fun playMixedTrackById(trackId: String) {
+        val state = mutableStatus.value
+        val target = state.queue.indexOfFirst { it.id == trackId }
+        if (target < 0) return
+        playMixedTrackAtIndex(target)
     }
 
 }

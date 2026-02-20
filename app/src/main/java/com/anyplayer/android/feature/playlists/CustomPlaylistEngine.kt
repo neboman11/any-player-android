@@ -179,7 +179,11 @@ class CustomPlaylistEngine @Inject constructor(
                 SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
                 SourceType.JELLYFIN,
                 SourceType.PLEX,
-                SourceType.SPOTIFY -> providerCatalogRepository.getPlaylistTracks(source.sourceType, source.sourcePlaylistId)
+                SourceType.SPOTIFY -> providerCatalogRepository.getPlaylistTracksWithCache(
+                    sourceType = source.sourceType,
+                    playlistId = source.sourcePlaylistId,
+                    forceRefresh = false
+                )
                 SourceType.ALL -> emptyList()
             }
             materialized += tracks

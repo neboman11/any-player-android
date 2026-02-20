@@ -1,6 +1,7 @@
 package com.anyplayer.android.feature.playback
 
 import android.content.Context
+import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -32,7 +33,7 @@ class Media3PlaybackController @Inject constructor(
         get() = playerInstance
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
-        val playableTracks = tracks.filter { !it.url.isNullOrBlank() }
+        val playableTracks = tracks.filter(::isMedia3Playable)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()
             playerInstance.stop()
@@ -62,6 +63,20 @@ class Media3PlaybackController @Inject constructor(
         playerInstance.playWhenReady = autoPlay
 
         return mappedIndex
+    }
+
+    private fun isMedia3Playable(track: Track): Boolean {
+        if (track.source == com.anyplayer.android.core.model.SourceType.SPOTIFY) {
+            return false
+        }
+        val raw = track.url?.trim().orEmpty()
+        if (raw.isEmpty()) return false
+        val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
+        val scheme = parsed.scheme?.lowercase().orEmpty()
+        return when (scheme) {
+            "http", "https", "file", "content", "android.resource" -> true
+            else -> false
+        }
     }
 
     fun playFromIndex(index: Int) {
