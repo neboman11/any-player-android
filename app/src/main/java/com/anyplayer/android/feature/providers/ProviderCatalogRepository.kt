@@ -67,7 +67,7 @@ class ProviderCatalogRepository @Inject constructor(
             emptyList()
         }
 
-        val spotifyPlaylists = if (!spotify?.token.isNullOrBlank() && spotify.spotifyPremium == true && spotify.playbackReady == true) {
+        val spotifyPlaylists = if (!spotify?.token.isNullOrBlank()) {
             spotifyClient.getPlaylists(spotify.token, offset = offset, limit = limit.coerceAtMost(50))
         } else {
             emptyList()
@@ -207,7 +207,7 @@ class ProviderCatalogRepository @Inject constructor(
 
             SourceType.SPOTIFY -> {
                 val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
-                if (!spotify?.token.isNullOrBlank() && spotify.spotifyPremium == true && spotify.playbackReady == true) {
+                if (!spotify?.token.isNullOrBlank()) {
                     loadAllPages { pageOffset, pageLimit ->
                         spotifyClient.getPlaylistTracks(
                             accessToken = spotify.token,
@@ -327,13 +327,13 @@ class ProviderCatalogRepository @Inject constructor(
             emptyList()
         }
 
-        val spotifyTracks = if (includeSpotify && !spotify?.token.isNullOrBlank() && spotify.spotifyPremium == true && spotify.playbackReady == true) {
+        val spotifyTracks = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
             spotifyClient.searchTracks(spotify.token, normalizedQuery, offset = offset, limit = limit.coerceAtMost(50))
         } else {
             emptyList()
         }
 
-        val spotifyPlaylists = if (includeSpotify && !spotify?.token.isNullOrBlank() && spotify.spotifyPremium == true && spotify.playbackReady == true) {
+        val spotifyPlaylists = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
             spotifyClient.searchPlaylists(spotify.token, normalizedQuery, offset = offset, limit = limit.coerceAtMost(50))
         } else {
             emptyList()
