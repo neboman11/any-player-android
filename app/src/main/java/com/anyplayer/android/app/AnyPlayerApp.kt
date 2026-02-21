@@ -5,6 +5,7 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -60,6 +62,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
+import coil.compose.AsyncImage
 
 private enum class TabSection { NOW_PLAYING, PLAYLISTS, SEARCH, SETTINGS }
 
@@ -162,6 +165,22 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
+            ElevatedCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f),
+                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                AsyncImage(
+                    model = artworkUrl,
+                    contentDescription = "Album artwork",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
         Text("Track: ${status.currentTrack?.title ?: "-"}")
         Text("Artist: ${status.currentTrack?.artist ?: "-"}")
         Text("State: ${status.state}")

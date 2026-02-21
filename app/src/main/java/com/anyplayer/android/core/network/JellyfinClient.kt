@@ -209,7 +209,11 @@ class JellyfinClient @Inject constructor(
                 durationMs = runtimeTicks?.div(10_000),
                 source = SourceType.JELLYFIN,
                 url = streamUrl,
-                imageUrl = null,
+                imageUrl = buildImageUrl(
+                    normalizedUrl = normalizedUrl,
+                    item = obj,
+                    apiKey = apiKey
+                ),
                 bitrateKbps = null,
                 sampleRateHz = null,
                 enriched = true
@@ -256,10 +260,44 @@ class JellyfinClient @Inject constructor(
                     userId = userId,
                     apiKey = apiKey
                 ),
-                imageUrl = null,
+                imageUrl = buildImageUrl(
+                    normalizedUrl = normalized,
+                    item = obj,
+                    apiKey = apiKey
+                ),
                 enriched = true
             )
         }
+    }
+
+    private fun buildImageUrl(
+        normalizedUrl: String,
+        item: JsonObject,
+        apiKey: String
+    ): String? {
+        val imageTags = item["ImageTags"].jsonObject
+        val primaryTag = imageTags["Primary"].jsonPrimitiveStringOrNull
+            ?: item["PrimaryImageTag"].jsonPrimitiveStringOrNull
+
+        val primaryItemId = when {
+            !item["Id"].jsonPrimitiveStringOrNull.isNullOrBlank() -> item["Id"].jsonPrimitiveStringOrNull
+            !item["PrimaryImageItemId"].jsonPrimitiveStringOrNull.isNullOrBlank() -> item["PrimaryImageItemId"].jsonPrimitiveStringOrNull
+            !item["AlbumId"].jsonPrimitiveStringOrNull.isNullOrBlank() -> item["AlbumId"].jsonPrimitiveStringOrNull
+            else -> null
+        } ?: return null
+
+        val base = "$normalizedUrl/Items/$primaryItemId/Images/Primary".toHttpUrlOrNull()
+            ?: return "$normalizedUrl/Items/$primaryItemId/Images/Primary?api_key=$apiKey"
+
+        return base.newBuilder()
+            .addQueryParameter("api_key", apiKey)
+            .addQueryParameter("fillWidth", "512")
+            .addQueryParameter("fillHeight", "512")
+            .apply {
+                primaryTag?.takeIf { it.isNotBlank() }?.let { addQueryParameter("tag", it) }
+            }
+            .build()
+            .toString()
     }
 
     private fun buildStreamUrl(

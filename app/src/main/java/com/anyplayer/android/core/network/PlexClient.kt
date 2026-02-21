@@ -115,7 +115,7 @@ class PlexClient @Inject constructor(
                 durationMs = obj["duration"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.PLEX,
                 url = streamUrl,
-                imageUrl = null,
+                imageUrl = buildArtworkUrl(normalized, obj, token),
                 enriched = true
             )
         }
@@ -170,10 +170,23 @@ class PlexClient @Inject constructor(
                 durationMs = obj["duration"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.PLEX,
                 url = null,
-                imageUrl = null,
+                imageUrl = buildArtworkUrl(normalized, obj, token),
                 enriched = false
             )
         }
+    }
+
+    private fun buildArtworkUrl(baseUrl: String, trackObject: JsonObject, token: String): String? {
+        val thumbPath = trackObject["thumb"].jsonPrimitiveStringOrNull
+            ?: trackObject["parentThumb"].jsonPrimitiveStringOrNull
+            ?: trackObject["grandparentThumb"].jsonPrimitiveStringOrNull
+
+        if (!thumbPath.isNullOrBlank()) {
+            return buildAuthenticatedUrl(baseUrl, thumbPath, token)
+        }
+
+        val ratingKey = trackObject["ratingKey"].jsonPrimitiveStringOrNull ?: return null
+        return buildAuthenticatedUrl(baseUrl, "library/metadata/$ratingKey/thumb", token)
     }
 
     fun searchPlaylists(url: String, token: String, query: String, offset: Int = 0, limit: Int = 100): List<Playlist> {

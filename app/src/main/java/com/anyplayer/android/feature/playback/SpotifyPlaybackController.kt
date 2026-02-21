@@ -44,20 +44,8 @@ class SpotifyPlaybackController @Inject constructor(
                 return@withContext false
             }
 
-            val accessToken = resolveAccessToken()
+            val accessToken = requireReadyAccessToken()
             if (accessToken == null) {
-                if (lastError == null) {
-                    lastError = "Spotify access token unavailable. Reconnect Spotify and retry."
-                }
-                return@withContext false
-            }
-
-            val sessionReady = rustBridge.validateAndInitSpotifySession(
-                accessToken,
-                SpotifyClientIds.ACTIVE
-            )
-            if (sessionReady != true) {
-                lastError = "Spotify session could not be initialised. ${rustBridge.lastError ?: ""}"
                 return@withContext false
             }
 
@@ -104,18 +92,7 @@ class SpotifyPlaybackController @Inject constructor(
         action: String,
         block: () -> Boolean?
     ): Boolean = withContext(Dispatchers.IO) {
-        val accessToken = resolveAccessToken()
-        if (accessToken == null) {
-            lastError = "Spotify access token unavailable. Reconnect Spotify and retry."
-            return@withContext false
-        }
-
-        val sessionReady = rustBridge.validateAndInitSpotifySession(
-            accessToken,
-            SpotifyClientIds.ACTIVE
-        )
-        if (sessionReady != true) {
-            lastError = "Spotify session could not be initialised. ${rustBridge.lastError ?: ""}"
+        if (requireReadyAccessToken() == null) {
             return@withContext false
         }
 
@@ -128,6 +105,27 @@ class SpotifyPlaybackController @Inject constructor(
 
         lastError = null
         true
+    }
+
+    private fun requireReadyAccessToken(): String? {
+        val accessToken = resolveAccessToken()
+        if (accessToken == null) {
+            if (lastError == null) {
+                lastError = "Spotify access token unavailable. Reconnect Spotify and retry."
+            }
+            return null
+        }
+
+        val sessionReady = rustBridge.validateAndInitSpotifySession(
+            accessToken,
+            SpotifyClientIds.ACTIVE
+        )
+        if (sessionReady != true) {
+            lastError = "Spotify session could not be initialised. ${rustBridge.lastError ?: ""}"
+            return null
+        }
+
+        return accessToken
     }
 
     private fun resolveAccessToken(): String? {
