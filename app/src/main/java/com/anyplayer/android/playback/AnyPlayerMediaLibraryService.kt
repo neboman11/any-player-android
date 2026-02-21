@@ -9,6 +9,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.LibraryResult
@@ -136,6 +137,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         val currentTrack = status.currentTrack
         val hasTrack = currentTrack != null
         val isPlaying = status.state == PlaybackStateType.PLAYING
+        val mediaStyle = MediaStyle()
+            .setShowActionsInCompactView(0, 1, 2)
+        mediaLibrarySession?.sessionCompatToken?.let { mediaStyle.setMediaSession(it) }
         return NotificationCompat.Builder(this, AnyPlayerApplication.PLAYBACK_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(currentTrack?.title ?: getString(R.string.app_name))
@@ -150,9 +154,13 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
             )
+            .setStyle(mediaStyle)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setShowWhen(false)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setOngoing(hasTrack)
+            .setOngoing(hasTrack && isPlaying)
             .addAction(
                 android.R.drawable.ic_media_previous,
                 "Previous",

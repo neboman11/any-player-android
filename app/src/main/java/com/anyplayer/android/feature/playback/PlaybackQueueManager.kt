@@ -36,6 +36,9 @@ class PlaybackQueueManager @Inject constructor(
     private var isRestoring = false
     private var spotifyMode = false
     private var mixedMode = false
+    private var spotifyAutoAdvanceInFlight = false
+    private var spotifyAutoAdvanceTrackId: String? = null
+    private var spotifyAutoAdvanceLastAttemptMs = 0L
 
     private val mutableStatus = MutableStateFlow(
         PlaybackStatus(
@@ -70,6 +73,7 @@ class PlaybackQueueManager @Inject constructor(
         mixedMode = hasSpotify && hasNonSpotify
 
         if (tracks.isEmpty()) {
+            resetSpotifyAutoAdvanceState()
             playableQueueIndices = emptyList()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
@@ -91,6 +95,7 @@ class PlaybackQueueManager @Inject constructor(
         )
 
         if (spotifyMode) {
+            resetSpotifyAutoAdvanceState()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
                 queue = tracks,
@@ -116,6 +121,7 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         if (mixedMode) {
+            resetSpotifyAutoAdvanceState()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             val clampedIndex = index.coerceIn(0, tracks.lastIndex)
             val selectedTrack = tracks[clampedIndex]
@@ -145,6 +151,7 @@ class PlaybackQueueManager @Inject constructor(
         playableQueueIndices = tracks.mapIndexedNotNull { queueIndex, track ->
             queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
         }
+        resetSpotifyAutoAdvanceState()
         val mappedIndex = media3PlaybackController.setQueue(tracks, index, autoPlay)
         if (mappedIndex < 0) {
             mutableStatus.value = mutableStatus.value.copy(
@@ -475,6 +482,9 @@ class PlaybackQueueManager @Inject constructor(
         if (spotifyMode) {
             scope.launch {
                 val success = spotifyPlaybackController.next()
+                if (!success) {
+                    spotifyAutoAdvanceInFlight = false
+                }
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
@@ -565,8 +575,21 @@ class PlaybackQueueManager @Inject constructor(
             // The endOfTrack flag is a consume-once signal from the Rust event
             // loop — it is only true for a single snapshot poll cycle.
             if (spotifySnapshot.endOfTrack) {
-                next()
+                val nowMs = System.currentTimeMillis()
+                val currentTrackId = state.currentTrack?.id
+                val sameTrackPending = spotifyAutoAdvanceInFlight && spotifyAutoAdvanceTrackId == currentTrackId
+                val cooldownElapsed = (nowMs - spotifyAutoAdvanceLastAttemptMs) >= 1500L
+                if (!sameTrackPending || cooldownElapsed) {
+                    spotifyAutoAdvanceInFlight = true
+                    spotifyAutoAdvanceTrackId = currentTrackId
+                    spotifyAutoAdvanceLastAttemptMs = nowMs
+                    next()
+                }
                 return
+            }
+            if (spotifyAutoAdvanceInFlight) {
+                spotifyAutoAdvanceInFlight = false
+                spotifyAutoAdvanceTrackId = null
             }
             val mappedTrack = spotifySnapshot.currentTrackId?.let { id ->
                 state.queue.firstOrNull { spotifyTrackIdsMatch(it.id, id) }
@@ -715,6 +738,12 @@ class PlaybackQueueManager @Inject constructor(
 
     private fun spotifyErrorOrDefault(defaultMessage: String): String =
         spotifyPlaybackController.lastError?.takeIf { it.isNotBlank() } ?: defaultMessage
+
+    private fun resetSpotifyAutoAdvanceState() {
+        spotifyAutoAdvanceInFlight = false
+        spotifyAutoAdvanceTrackId = null
+        spotifyAutoAdvanceLastAttemptMs = 0L
+    }
 
     private fun currentQueueIndex(state: PlaybackStatus): Int {
         val currentId = state.currentTrack?.id ?: return 0
