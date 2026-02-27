@@ -63,7 +63,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         source = SourceType.JELLYFIN,
                         session = buildJellyfinSession(normalizedServerUrl, apiKey)
                     ) ?: ProviderConnectionCheck.Failed(
-                        rustBridge.lastError ?: "Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                        buildString {
+                            append("Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
+                            rustBridge.lastError?.takeIf { it.isNotBlank() }?.let { append(". $it") }
+                        }
                     )
 
                     when (check) {
@@ -90,7 +93,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         source = SourceType.PLEX,
                         session = buildPlexSession(normalizedServerUrl, token)
                     ) ?: ProviderConnectionCheck.Failed(
-                        rustBridge.lastError ?: "Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                        buildString {
+                            append("Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
+                            rustBridge.lastError?.takeIf { it.isNotBlank() }?.let { append(". $it") }
+                        }
                     )
 
                     when (check) {

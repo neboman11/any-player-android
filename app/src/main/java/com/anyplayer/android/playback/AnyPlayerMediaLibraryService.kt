@@ -36,7 +36,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -55,7 +54,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        runBlocking {
+        serviceScope.launch {
             playbackQueueManager.restorePersistedStateNowIfNeeded()
         }
 
@@ -128,9 +127,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     startIndex: Int,
                     startPositionMs: Long
                 ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-                    runBlocking {
-                        playbackQueueManager.restorePersistedStateNowIfNeeded()
-                    }
                     playbackQueueManager.ensureWarmSessionState()
 
                     val displayQueue = currentDisplayQueue()
