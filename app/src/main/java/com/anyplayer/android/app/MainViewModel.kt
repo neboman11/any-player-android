@@ -1157,9 +1157,6 @@ class MainViewModel @Inject constructor(
                             }
                         }
                     }
-
-                    wsJob.join()
-                    pushJob.cancel()
                 }
             }
         }
@@ -1196,7 +1193,7 @@ class MainViewModel @Inject constructor(
         val remotePlaylistCount = remotePlaylists?.size ?: 0
         val localPlaylistCount = customPlaylists.value.size
 
-        if (includePlaylists && localPlaylistCount > remotePlaylistCount && !confirmPlaylistOverwrite) {
+        if (includePlaylists && localPlaylistCount > 0 && !confirmPlaylistOverwrite) {
             syncStatus.value = "Sync cancelled: playlist overwrite requires confirmation."
             return false
         }

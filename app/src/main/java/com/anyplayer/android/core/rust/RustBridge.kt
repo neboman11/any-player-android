@@ -370,7 +370,9 @@ class RustBridge @Inject constructor() {
         if (!isAvailable()) return null
 
         val sourceName = source.name.lowercase()
-        if (sourceName != "jellyfin" && sourceName != "plex") return null
+        if (sourceName != "jellyfin" && sourceName != "plex") {
+            throw IllegalArgumentException("Unsupported source for providerCall: $source")
+        }
 
         val sessionJson = JSONObject().apply {
             session.forEach { (key, value) ->

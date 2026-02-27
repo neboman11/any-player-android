@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.PlaylistType
 import com.anyplayer.android.core.model.SourceType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.util.Locale
 
 const val CONFIG_EXPORT_VERSION = 1
 
@@ -91,13 +92,13 @@ data class ConfigUnionSource(
     @SerialName("added_at") val addedAt: Long
 )
 
-fun String.toConfigPlaylistTypeOrNull(): PlaylistType? = when (trim().lowercase()) {
+fun String.toConfigPlaylistTypeOrNull(): PlaylistType? = when (trim().lowercase(Locale.ROOT)) {
     "standard" -> PlaylistType.STANDARD
     "union" -> PlaylistType.UNION
     else -> null
 }
 
-fun String.toConfigSourceTypeOrNull(): SourceType? = when (trim().lowercase()) {
+fun String.toConfigSourceTypeOrNull(): SourceType? = when (trim().lowercase(Locale.ROOT)) {
     "spotify" -> SourceType.SPOTIFY
     "jellyfin" -> SourceType.JELLYFIN
     "plex" -> SourceType.PLEX
