@@ -48,7 +48,7 @@ class ConfigFileImporter @Inject constructor(
 
     private suspend fun importFromRaw(raw: String, mergePolicy: MergePolicy, dryRun: Boolean): ImportSummary {
         val configFile = json.decodeFromString(ConfigFile.serializer(), raw)
-        require(configFile.exportVersion == CONFIG_FILE_VERSION) {
+        require(configFile.exportVersion == CONFIG_EXPORT_VERSION) {
             "Unsupported config file version: ${configFile.exportVersion}"
         }
         return importConfig(configFile, mergePolicy, dryRun)
@@ -60,13 +60,14 @@ class ConfigFileImporter @Inject constructor(
         dryRun: Boolean
     ): ImportSummary {
         val existingPlaylists = customPlaylistDao.getAll().associateBy { it.id }
+        val warnings = mutableListOf<String>()
 
         val remap = mutableMapOf<String, String>()
         var playlistsAdded = 0
         var playlistsUpdated = 0
 
         val importedPlaylists = config.customPlaylists.map { entry ->
-            val incoming = entry.playlist.toModel()
+            val incoming = entry.playlist.toModel(warnings)
             val existing = existingPlaylists[incoming.id]
             if (existing == null) {
                 playlistsAdded += 1
@@ -95,15 +96,15 @@ class ConfigFileImporter @Inject constructor(
 
         // Flatten all tracks and union sources from every playlist entry.
         val allTracks = config.customPlaylists.flatMap { entry ->
-            entry.tracks.map { track ->
+            entry.tracks.mapNotNull { track ->
                 val resolvedPlaylistId = remap[track.playlistId] ?: track.playlistId
-                track.toModel(resolvedPlaylistId)
+                track.toModel(resolvedPlaylistId, warnings)
             }
         }
         val allUnionSources = config.customPlaylists.flatMap { entry ->
-            entry.unionSources.map { source ->
+            entry.unionSources.mapNotNull { source ->
                 val resolvedUnionId = remap[source.unionPlaylistId] ?: source.unionPlaylistId
-                source.toModel(resolvedUnionId)
+                source.toModel(resolvedUnionId, warnings)
             }
         }
 
@@ -115,7 +116,6 @@ class ConfigFileImporter @Inject constructor(
         val linksAdded = allUnionSources.count { !existingUnionSources.containsKey(it.id) }
         val linksUpdated = allUnionSources.size - linksAdded
 
-        val warnings = mutableListOf<String>()
         var connectionsImported = 0
         try {
             connectionsImported = applyProviderConfigs(config, dryRun, warnings)
@@ -186,43 +186,72 @@ class ConfigFileImporter @Inject constructor(
 
     // ── Converters ───────────────────────────────────────────────────────────────────────────────
 
-    private fun ConfigPlaylistEntry.toModel(): CustomPlaylist = CustomPlaylist(
-        id = id,
-        name = name,
-        description = description,
-        imageUrl = imageUrl,
-        createdAt = epochSecToIso(createdAt),
-        updatedAt = epochSecToIso(updatedAt),
-        trackCount = trackCount,
-        playlistType = playlistType
-    )
+    private fun ConfigPlaylistEntry.toModel(warnings: MutableList<String>): CustomPlaylist {
+        val parsedPlaylistType = playlistType.toConfigPlaylistTypeOrNull()
+        if (parsedPlaylistType == null) {
+            warnings += "Unknown playlist_type '$playlistType' for playlist '$id'; defaulted to 'standard'"
+        }
+
+        return CustomPlaylist(
+            id = id,
+            name = name,
+            description = description,
+            imageUrl = imageUrl,
+            createdAt = epochSecToIso(createdAt),
+            updatedAt = epochSecToIso(updatedAt),
+            trackCount = trackCount,
+            playlistType = parsedPlaylistType ?: com.anyplayer.android.core.model.PlaylistType.STANDARD
+        )
+    }
 
     /**
      * Converts a config track to the app model.  The integer row [id] from the config is not
      * globally unique so we derive a stable UUID from the natural key instead.
      */
-    private fun ConfigTrack.toModel(resolvedPlaylistId: String): PlaylistTrack = PlaylistTrack(
-        id = stableTrackId(resolvedPlaylistId, trackSource, trackId),
-        playlistId = resolvedPlaylistId,
-        trackSource = trackSource,
-        trackId = trackId,
-        position = position,
-        addedAt = epochSecToIso(addedAt),
-        title = title,
-        artist = artist,
-        album = album,
-        durationMs = durationMs,
-        imageUrl = imageUrl
-    )
+    private fun ConfigTrack.toModel(
+        resolvedPlaylistId: String,
+        warnings: MutableList<String>
+    ): PlaylistTrack? {
+        val parsedTrackSource = trackSource.toConfigSourceTypeOrNull()
+        if (parsedTrackSource == null) {
+            warnings += "Unknown track_source '$trackSource' for track '$trackId'; skipped"
+            return null
+        }
 
-    private fun ConfigUnionSource.toModel(resolvedUnionId: String): UnionPlaylistSource = UnionPlaylistSource(
-        id = stableUnionSourceId(resolvedUnionId, sourceType, sourcePlaylistId),
-        unionPlaylistId = resolvedUnionId,
-        sourceType = sourceType,
-        sourcePlaylistId = sourcePlaylistId,
-        position = position,
-        addedAt = epochSecToIso(addedAt)
-    )
+        return PlaylistTrack(
+            id = stableTrackId(resolvedPlaylistId, parsedTrackSource, trackId),
+            playlistId = resolvedPlaylistId,
+            trackSource = parsedTrackSource,
+            trackId = trackId,
+            position = position,
+            addedAt = epochSecToIso(addedAt),
+            title = title,
+            artist = artist,
+            album = album,
+            durationMs = durationMs,
+            imageUrl = imageUrl
+        )
+    }
+
+    private fun ConfigUnionSource.toModel(
+        resolvedUnionId: String,
+        warnings: MutableList<String>
+    ): UnionPlaylistSource? {
+        val parsedSourceType = sourceType.toConfigSourceTypeOrNull()
+        if (parsedSourceType == null) {
+            warnings += "Unknown source_type '$sourceType' for union source '$sourcePlaylistId'; skipped"
+            return null
+        }
+
+        return UnionPlaylistSource(
+            id = stableUnionSourceId(resolvedUnionId, parsedSourceType, sourcePlaylistId),
+            unionPlaylistId = resolvedUnionId,
+            sourceType = parsedSourceType,
+            sourcePlaylistId = sourcePlaylistId,
+            position = position,
+            addedAt = epochSecToIso(addedAt)
+        )
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────────
 

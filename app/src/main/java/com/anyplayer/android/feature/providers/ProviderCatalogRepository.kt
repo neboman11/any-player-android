@@ -3,10 +3,9 @@ package com.anyplayer.android.feature.providers
 import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
-import com.anyplayer.android.core.network.JellyfinClient
-import com.anyplayer.android.core.network.PlexClient
 import com.anyplayer.android.core.network.ProviderSearchResult
 import com.anyplayer.android.core.network.SpotifyClient
+import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.core.storage.entity.AppCacheEntryEntity
 import com.anyplayer.android.feature.auth.SecureConnectionStore
@@ -24,9 +23,8 @@ import javax.inject.Singleton
 @Singleton
 class ProviderCatalogRepository @Inject constructor(
     private val secureConnectionStore: SecureConnectionStore,
-    private val jellyfinClient: JellyfinClient,
-    private val plexClient: PlexClient,
     private val spotifyClient: SpotifyClient,
+    private val rustBridge: RustBridge,
     private val appCacheEntryDao: AppCacheEntryDao,
     private val json: Json
 ) : StartupCatalogGateway {
@@ -41,28 +39,52 @@ class ProviderCatalogRepository @Inject constructor(
     }
 
     override suspend fun getAllProviderPlaylistsWithCache(offset: Int, limit: Int): List<Playlist> {
+        val cached = getCachedProviderPlaylists()
+        if (cached.isNotEmpty()) {
+            return cached
+        }
+
         val remote = getAllProviderPlaylists(offset = offset, limit = limit)
         if (remote.isNotEmpty()) {
             saveProviderPlaylistCache(remote)
-            return remote
         }
-        return getCachedProviderPlaylists()
+        return remote
+    }
+
+    suspend fun clearProviderPlaylistCacheData() = withContext(Dispatchers.IO) {
+        appCacheEntryDao.delete(PROVIDER_PLAYLIST_CACHE_KEY)
+        appCacheEntryDao.deleteByPrefix(PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX)
     }
 
     suspend fun getAllProviderPlaylists(offset: Int = 0, limit: Int = 100): List<Playlist> = withContext(Dispatchers.IO) {
+        // Rust provider bridge is the canonical path for Jellyfin/Plex.
+        // If JNI is unavailable, we intentionally degrade to Spotify-only data.
+        if (!isRustProviderBridgeEnabled()) {
+            return@withContext loadSpotifyPlaylistsOnly(offset, limit)
+        }
+
         val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
         val plex = secureConnectionStore.read(SourceType.PLEX)
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
 
         val jellyPlaylists = if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            val userId = jelly.refreshToken
-            jellyfinClient.getPlaylists(jelly.serverUrl, jelly.token, userId, offset = offset, limit = limit)
+            rustBridge.providerGetPlaylists(
+                source = SourceType.JELLYFIN,
+                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
+                offset = offset,
+                limit = limit
+            ) ?: emptyList()
         } else {
             emptyList()
         }
 
         val plexPlaylists = if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            plexClient.getPlaylists(plex.serverUrl, plex.token, offset = offset, limit = limit)
+            rustBridge.providerGetPlaylists(
+                source = SourceType.PLEX,
+                session = buildPlexSession(plex.serverUrl, plex.token),
+                offset = offset,
+                limit = limit
+            ) ?: emptyList()
         } else {
             emptyList()
         }
@@ -155,6 +177,19 @@ class ProviderCatalogRepository @Inject constructor(
         offset: Int = 0,
         limit: Int = 300
     ): List<Track> = withContext(Dispatchers.IO) {
+        // Rust provider bridge is required for non-Spotify provider tracks.
+        // Without JNI we only keep Spotify behavior available.
+        if (!isRustProviderBridgeEnabled()) {
+            if (sourceType == SourceType.SPOTIFY) {
+                return@withContext loadSpotifyPlaylistTracksOnly(
+                    playlistId = normalizePlaylistId(sourceType, playlistId),
+                    offset = offset,
+                    limit = limit
+                )
+            }
+            return@withContext emptyList()
+        }
+
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         val pageSize = limit.coerceAtLeast(1)
 
@@ -178,16 +213,13 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.JELLYFIN -> {
                 val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-                    loadAllPages { pageOffset, pageLimit ->
-                        jellyfinClient.getPlaylistTracks(
-                            jelly.serverUrl,
-                            jelly.token,
-                            resolvedPlaylistId,
-                            jelly.refreshToken,
-                            offset = pageOffset,
-                            limit = pageLimit
-                        )
-                    }
+                    rustBridge.providerGetPlaylistTracks(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
+                        playlistId = resolvedPlaylistId,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
                 } else {
                     emptyList()
                 }
@@ -196,15 +228,13 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.PLEX -> {
                 val plex = secureConnectionStore.read(SourceType.PLEX)
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-                    loadAllPages { pageOffset, pageLimit ->
-                        plexClient.getPlaylistTracks(
-                            plex.serverUrl,
-                            plex.token,
-                            resolvedPlaylistId,
-                            offset = pageOffset,
-                            limit = pageLimit
-                        )
-                    }
+                    rustBridge.providerGetPlaylistTracks(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token),
+                        playlistId = resolvedPlaylistId,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
                 } else {
                     emptyList()
                 }
@@ -309,6 +339,17 @@ class ProviderCatalogRepository @Inject constructor(
             return@withContext ProviderSearchResult()
         }
 
+        // Rust provider bridge is required for Jellyfin/Plex search.
+        // Without JNI we intentionally return Spotify-only results.
+        if (!isRustProviderBridgeEnabled()) {
+            return@withContext loadSpotifySearchOnly(
+                source = source,
+                normalizedQuery = normalizedQuery,
+                offset = offset,
+                limit = limit
+            )
+        }
+
         val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
         val plex = secureConnectionStore.read(SourceType.PLEX)
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
@@ -318,39 +359,49 @@ class ProviderCatalogRepository @Inject constructor(
         val includeSpotify = source == SourceType.ALL || source == SourceType.SPOTIFY
 
         val jellyTracks = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            jellyfinClient.searchTracks(
-                jelly.serverUrl,
-                jelly.token,
-                jelly.refreshToken,
-                normalizedQuery,
+            rustBridge.providerSearchTracks(
+                source = SourceType.JELLYFIN,
+                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
+                query = normalizedQuery,
                 offset = offset,
                 limit = limit
-            )
+            ) ?: emptyList()
         } else {
             emptyList()
         }
 
         val jellyPlaylists = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            jellyfinClient.searchPlaylists(
-                jelly.serverUrl,
-                jelly.token,
-                jelly.refreshToken,
-                normalizedQuery,
+            rustBridge.providerSearchPlaylists(
+                source = SourceType.JELLYFIN,
+                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
+                query = normalizedQuery,
                 offset = offset,
                 limit = limit
-            )
+            ) ?: emptyList()
         } else {
             emptyList()
         }
 
         val plexTracks = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            plexClient.searchTracks(plex.serverUrl, plex.token, normalizedQuery, offset = offset, limit = limit)
+            rustBridge.providerSearchTracks(
+                source = SourceType.PLEX,
+                session = buildPlexSession(plex.serverUrl, plex.token),
+                query = normalizedQuery,
+                offset = offset,
+                limit = limit
+            ) ?: emptyList()
         } else {
             emptyList()
         }
 
         val plexPlaylists = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            plexClient.searchPlaylists(plex.serverUrl, plex.token, normalizedQuery, offset = offset, limit = limit)
+            rustBridge.providerSearchPlaylists(
+                source = SourceType.PLEX,
+                session = buildPlexSession(plex.serverUrl, plex.token),
+                query = normalizedQuery,
+                offset = offset,
+                limit = limit
+            ) ?: emptyList()
         } else {
             emptyList()
         }
@@ -372,11 +423,92 @@ class ProviderCatalogRepository @Inject constructor(
             playlists = jellyPlaylists + plexPlaylists + spotifyPlaylists
         )
     }
+
+    private fun buildJellyfinSession(url: String, apiKey: String, userId: String?): Map<String, String> {
+        val session = mutableMapOf(
+            "url" to url,
+            "api_key" to apiKey
+        )
+        if (!userId.isNullOrBlank()) {
+            session["user_id"] = userId
+        }
+        return session
+    }
+
+    private fun buildPlexSession(url: String, token: String): Map<String, String> = mapOf(
+        "url" to url,
+        "token" to token
+    )
+
+    private fun isRustProviderBridgeEnabled(): Boolean = rustBridge.isAvailable()
+
+    private suspend fun loadSpotifyPlaylistsOnly(offset: Int, limit: Int): List<Playlist> {
+        val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
+        return if (!spotify?.token.isNullOrBlank()) {
+            spotifyClient.getPlaylists(spotify.token, offset = offset, limit = limit.coerceAtMost(50))
+        } else {
+            emptyList()
+        }
+    }
+
+    private suspend fun loadSpotifyPlaylistTracksOnly(
+        playlistId: String,
+        offset: Int,
+        limit: Int
+    ): List<Track> {
+        val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
+        if (spotify?.token.isNullOrBlank()) {
+            return emptyList()
+        }
+
+        val pageSize = limit.coerceAtLeast(1).coerceAtMost(100)
+        val allTracks = mutableListOf<Track>()
+        var currentOffset = offset.coerceAtLeast(0)
+        while (true) {
+            val page = spotifyClient.getPlaylistTracks(
+                accessToken = spotify.token,
+                playlistId = playlistId,
+                offset = currentOffset,
+                limit = pageSize
+            )
+            if (page.isEmpty()) break
+            allTracks += page
+            if (page.size < pageSize) break
+            currentOffset += page.size
+        }
+        return allTracks
+    }
+
+    private suspend fun loadSpotifySearchOnly(
+        source: SourceType,
+        normalizedQuery: String,
+        offset: Int,
+        limit: Int
+    ): ProviderSearchResult {
+        val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
+        val includeSpotify = source == SourceType.ALL || source == SourceType.SPOTIFY
+        val spotifyTracks = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+            spotifyClient.searchTracks(spotify.token, normalizedQuery, offset = offset, limit = limit.coerceAtMost(50))
+        } else {
+            emptyList()
+        }
+        val spotifyPlaylists = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+            spotifyClient.searchPlaylists(spotify.token, normalizedQuery, offset = offset, limit = limit.coerceAtMost(50))
+        } else {
+            emptyList()
+        }
+
+        return ProviderSearchResult(
+            tracks = spotifyTracks,
+            playlists = spotifyPlaylists
+        )
+    }
 }
 
 private const val PROVIDER_PLAYLIST_CACHE_KEY = "provider_playlists"
 private const val PROVIDER_PLAYLIST_CACHE_VERSION = 1
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 1
+private const val PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX = "provider_playlist_tracks_"
 private const val MAX_CACHE_JSON_CHARS = 500_000
 
 @Serializable

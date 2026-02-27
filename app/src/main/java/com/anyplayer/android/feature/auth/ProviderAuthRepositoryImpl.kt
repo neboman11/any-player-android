@@ -4,8 +4,6 @@ import android.net.Uri
 import android.util.Log
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
-import com.anyplayer.android.core.network.JellyfinClient
-import com.anyplayer.android.core.network.PlexClient
 import com.anyplayer.android.core.network.ProviderConnectionCheck
 import com.anyplayer.android.core.network.SpotifyClient
 import com.anyplayer.android.core.network.SpotifyClientIds
@@ -21,13 +19,13 @@ import javax.inject.Singleton
 class ProviderAuthRepositoryImpl @Inject constructor(
     private val secureConnectionStore: SecureConnectionStore,
     private val spotifyAuthSessionStore: SpotifyAuthSessionStore,
-    private val jellyfinClient: JellyfinClient,
-    private val plexClient: PlexClient,
     private val spotifyClient: SpotifyClient,
     private val rustBridge: RustBridge
 ) : ProviderAuthRepository {
     companion object {
         private const val TAG = "ProviderAuthRepository"
+        private const val RUST_PROVIDER_BRIDGE_UNAVAILABLE =
+            "validation unavailable (Rust bridge not loaded)"
     }
 
     override suspend fun connect(request: AuthRequest): ProviderConnectionProfile {
@@ -61,7 +59,17 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     val normalizedServerUrl = normalizeServerUrl(request.serverUrl)
                     val apiKey = request.apiKey.trim()
                     require(apiKey.isNotBlank()) { "Jellyfin API key is required" }
-                    when (val check = jellyfinClient.validate(normalizedServerUrl, apiKey)) {
+                    val check = rustBridge.providerValidateConnection(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(normalizedServerUrl, apiKey)
+                    ) ?: ProviderConnectionCheck.Failed(
+                        buildString {
+                            append("Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
+                            rustBridge.lastError?.takeIf { it.isNotBlank() }?.let { append(". $it") }
+                        }
+                    )
+
+                    when (check) {
                         is ProviderConnectionCheck.Connected -> StoredConnection(
                             source = SourceType.JELLYFIN,
                             serverUrl = normalizedServerUrl,
@@ -81,7 +89,17 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     val normalizedServerUrl = normalizeServerUrl(request.serverUrl)
                     val token = request.token.trim()
                     require(token.isNotBlank()) { "Plex token is required" }
-                    when (val check = plexClient.validate(normalizedServerUrl, token)) {
+                    val check = rustBridge.providerValidateConnection(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(normalizedServerUrl, token)
+                    ) ?: ProviderConnectionCheck.Failed(
+                        buildString {
+                            append("Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
+                            rustBridge.lastError?.takeIf { it.isNotBlank() }?.let { append(". $it") }
+                        }
+                    )
+
+                    when (check) {
                         is ProviderConnectionCheck.Connected -> StoredConnection(
                             source = SourceType.PLEX,
                             serverUrl = normalizedServerUrl,
@@ -206,7 +224,14 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     SourceType.JELLYFIN -> {
                         val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
                         if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
-                            when (jellyfinClient.validate(normalizedServerUrl, stored.token)) {
+                            val check = rustBridge.providerValidateConnection(
+                                source = SourceType.JELLYFIN,
+                                session = buildJellyfinSession(normalizedServerUrl, stored.token)
+                            ) ?: ProviderConnectionCheck.Failed(
+                                rustBridge.lastError ?: "Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                            )
+
+                            when (check) {
                                 is ProviderConnectionCheck.Connected -> stored.toStatus()
                                 is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
                             }
@@ -218,7 +243,14 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     SourceType.PLEX -> {
                         val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
                         if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
-                            when (plexClient.validate(normalizedServerUrl, stored.token)) {
+                            val check = rustBridge.providerValidateConnection(
+                                source = SourceType.PLEX,
+                                session = buildPlexSession(normalizedServerUrl, stored.token)
+                            ) ?: ProviderConnectionCheck.Failed(
+                                rustBridge.lastError ?: "Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                            )
+
+                            when (check) {
                                 is ProviderConnectionCheck.Connected -> stored.toStatus()
                                 is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
                             }
@@ -328,6 +360,16 @@ class ProviderAuthRepositoryImpl @Inject constructor(
             "http://$trimmed"
         }
     }
+
+    private fun buildJellyfinSession(serverUrl: String, apiKey: String): Map<String, String> = mapOf(
+        "url" to serverUrl,
+        "api_key" to apiKey
+    )
+
+    private fun buildPlexSession(serverUrl: String, token: String): Map<String, String> = mapOf(
+        "url" to serverUrl,
+        "token" to token
+    )
 
     private fun resolveSpotifyPlaybackReady(accessToken: String?): Boolean {
         val token = accessToken?.trim().orEmpty()

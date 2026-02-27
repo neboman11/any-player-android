@@ -16,4 +16,7 @@ interface AppCacheEntryDao {
 
     @Query("DELETE FROM app_cache_entries WHERE key = :key")
     suspend fun delete(key: String)
+
+    @Query("DELETE FROM app_cache_entries WHERE key LIKE :prefix || '%'")
+    suspend fun deleteByPrefix(prefix: String)
 }

@@ -55,6 +55,15 @@ internal object RustBridgeNative {
     external fun spotifySetVolume(configJson: String): String
 
     @JvmStatic
+    external fun getAudioNormalizationSettings(): String
+
+    @JvmStatic
+    external fun setAudioNormalizationSettings(configJson: String): String
+
+    @JvmStatic
+    external fun applyAudioNormalizationVolume(configJson: String): String
+
+    @JvmStatic
     external fun spotifySetShuffle(configJson: String): String
 
     @JvmStatic
@@ -62,4 +71,7 @@ internal object RustBridgeNative {
 
     @JvmStatic
     external fun spotifySnapshot(): String
+
+    @JvmStatic
+    external fun providerApiCall(configJson: String): String
 }

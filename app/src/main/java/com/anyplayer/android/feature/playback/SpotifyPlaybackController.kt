@@ -1,6 +1,7 @@
 package com.anyplayer.android.feature.playback
 
 import android.util.Log
+import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.network.SpotifyClientIds
@@ -73,6 +74,26 @@ class SpotifyPlaybackController @Inject constructor(
 
     suspend fun setVolume(volume: Int): Boolean =
         runRustCommand("setVolume") { rustBridge.spotifySetVolume(volume) }
+
+    fun normalizeVolumeForSource(volume: Int, source: SourceType): Int {
+        val normalized = rustBridge.applyAudioNormalizationVolume(volume, source)
+        // If the Rust bridge returns null (e.g. normalization disabled or unavailable),
+        // fall back to the original volume clamped to the valid range.
+        return (normalized ?: volume).coerceIn(0, 100)
+    }
+
+    fun getAudioNormalizationSettings(): AudioNormalizationSettings =
+        rustBridge.getAudioNormalizationSettings() ?: AudioNormalizationSettings()
+
+    fun setAudioNormalizationSettings(enabled: Boolean, strictMode: Boolean): Boolean {
+        val result = rustBridge.setAudioNormalizationSettings(enabled, strictMode)
+        if (result != null) return result
+        val errorMessage =
+            "Failed to set audio normalization settings. ${rustBridge.lastError ?: ""}".trim()
+        Log.e(TAG, errorMessage)
+        lastError = errorMessage
+        return false
+    }
 
     suspend fun setShuffle(enabled: Boolean): Boolean =
         runRustCommand("setShuffle") { rustBridge.spotifySetShuffle(enabled) }
