@@ -12,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.model.PlaybackStateType
+import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
@@ -48,15 +49,18 @@ class MediaSessionPlayerBridge @Inject constructor(
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    @Volatile
+    private var currentStatusSnapshot: PlaybackStatus = playbackQueueManager.status.value
 
     init {
         scope.launch {
-            var prev = playbackQueueManager.status.value
+            var prev = currentStatusSnapshot
             Log.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
             playbackQueueManager.status.collect { status ->
                 if (status === prev) return@collect
                 val prevSnap = prev
                 prev = status
+                currentStatusSnapshot = status
                 Log.d(TAG, "StateFlow emitted: ${prevSnap.state}->${status.state} track=${status.currentTrack?.id} listeners=${listeners.size}")
 
                 val newState    = mapState(status.state)
@@ -64,7 +68,9 @@ class MediaSessionPlayerBridge @Inject constructor(
                 val nowPlaying  = status.state == PlaybackStateType.PLAYING
                 val wasPlaying  = prevSnap.state == PlaybackStateType.PLAYING
                 val trackChanged    = status.currentTrack?.id != prevSnap.currentTrack?.id
-                val commandsChanged = (status.currentTrack != null) != (prevSnap.currentTrack != null)
+                val hasItemsNow = status.currentTrack != null || status.queue.isNotEmpty()
+                val hadItemsBefore = prevSnap.currentTrack != null || prevSnap.queue.isNotEmpty()
+                val commandsChanged = hasItemsNow != hadItemsBefore
                 val timelineChanged = status.queue.map { it.id } != prevSnap.queue.map { it.id }
                 val metadataChanged = trackChanged
 
@@ -90,7 +96,7 @@ class MediaSessionPlayerBridge @Inject constructor(
                         )
                     }
                     if (metadataChanged) l.onMediaMetadataChanged(getMediaMetadata())
-                    if (commandsChanged) l.onAvailableCommandsChanged(buildCommands(status.currentTrack != null))
+                    if (commandsChanged) l.onAvailableCommandsChanged(buildCommands(hasItemsNow))
                     l.onEvents(this@MediaSessionPlayerBridge, playerEvents)
                 }
             }
@@ -103,8 +109,8 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun addListener(listener: Player.Listener) {
         Log.d(TAG, "addListener: ${listener.javaClass.simpleName} (total after=${listeners.size + 1})")
         listeners.add(listener)
-        val status   = playbackQueueManager.status.value
-        val hasTrack = status.currentTrack != null
+        val status   = currentStatus()
+        val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
         val state    = mapState(status.state)
         val playing  = status.state == PlaybackStateType.PLAYING
         Log.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
@@ -134,8 +140,8 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     // State — always from PlaybackQueueManager
-    override fun getPlaybackState(): Int = mapState(playbackQueueManager.status.value.state)
-    override fun isPlaying(): Boolean = playbackQueueManager.status.value.state == PlaybackStateType.PLAYING
+    override fun getPlaybackState(): Int = mapState(currentStatus().state)
+    override fun isPlaying(): Boolean = currentStatus().state == PlaybackStateType.PLAYING
     override fun getPlayWhenReady(): Boolean = isPlaying()
 
     override fun getCurrentMediaItem(): MediaItem? =
@@ -148,12 +154,12 @@ class MediaSessionPlayerBridge @Inject constructor(
         QueueTimeline(timelineTracks())
 
     override fun getDuration(): Long {
-        val d = playbackQueueManager.status.value.duration
+        val d = currentStatus().duration
         return if (d > 0L) d else C.TIME_UNSET
     }
 
-    override fun getCurrentPosition(): Long  = playbackQueueManager.status.value.position
-    override fun getBufferedPosition(): Long = playbackQueueManager.status.value.position
+    override fun getCurrentPosition(): Long  = currentStatus().position
+    override fun getBufferedPosition(): Long = currentStatus().position
 
     override fun getMediaItemCount(): Int =
         timelineTracks().size
@@ -161,7 +167,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun getCurrentMediaItemIndex(): Int {
         val tracks = timelineTracks()
         if (tracks.isEmpty()) return 0
-        val s  = playbackQueueManager.status.value
+        val s  = currentStatus()
         val id = s.currentTrack?.id ?: return 0
         val i  = tracks.indexOfFirst { it.id == id }
         return if (i >= 0) i else 0
@@ -184,7 +190,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     override fun getPlayerError(): PlaybackException? {
-        val status = playbackQueueManager.status.value
+        val status = currentStatus()
         if (status.state != PlaybackStateType.ERROR) return null
         val message = status.errorMessage?.takeIf { it.isNotBlank() }
             ?: "Playback failed"
@@ -192,7 +198,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     override fun getAvailableCommands(): Player.Commands =
-        buildCommands(playbackQueueManager.status.value.currentTrack != null)
+        buildCommands(currentStatus().currentTrack != null || currentStatus().queue.isNotEmpty())
 
     // Transport commands — delegate to PlaybackQueueManager
     override fun play()  { playbackQueueManager.play() }
@@ -206,7 +212,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun seekToPreviousMediaItem() { playbackQueueManager.previous() }
     override fun seekTo(positionMs: Long)  { playbackQueueManager.seekTo(positionMs) }
     override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
-        val s = playbackQueueManager.status.value
+        val s = currentStatus()
         val targetId = s.queue.getOrNull(mediaItemIndex)?.id
         if (targetId != null && targetId != s.currentTrack?.id) {
             playbackQueueManager.playFromIndex(mediaItemIndex)
@@ -248,15 +254,17 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     private fun currentTrackOrFallback(): Track? {
-        val status = playbackQueueManager.status.value
+        val status = currentStatus()
         return status.currentTrack ?: status.queue.firstOrNull()
     }
 
     private fun timelineTracks(): List<Track> {
-        val status = playbackQueueManager.status.value
+        val status = currentStatus()
         if (status.queue.isNotEmpty()) return status.queue
         return status.currentTrack?.let(::listOf).orEmpty()
     }
+
+    private fun currentStatus(): PlaybackStatus = currentStatusSnapshot
 }
 
 private fun Track.toMediaItem(): MediaItem =

@@ -3,9 +3,8 @@ package com.anyplayer.android.feature.providers
 import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
-import com.anyplayer.android.core.network.JellyfinClient
-import com.anyplayer.android.core.network.PlexClient
 import com.anyplayer.android.core.network.SpotifyClient
+import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.auth.StoredConnection
@@ -24,17 +23,15 @@ import org.mockito.kotlin.whenever
 
 class ProviderCatalogRepositoryTest {
     private val secureConnectionStore: SecureConnectionStore = mock()
-    private val jellyfinClient: JellyfinClient = mock()
-    private val plexClient: PlexClient = mock()
     private val spotifyClient: SpotifyClient = mock()
+    private val rustBridge: RustBridge = mock()
     private val appCacheEntryDao: AppCacheEntryDao = mock()
     private val json = Json { ignoreUnknownKeys = true }
 
     private val repository = ProviderCatalogRepository(
         secureConnectionStore = secureConnectionStore,
-        jellyfinClient = jellyfinClient,
-        plexClient = plexClient,
         spotifyClient = spotifyClient,
+        rustBridge = rustBridge,
         appCacheEntryDao = appCacheEntryDao,
         json = json
     )

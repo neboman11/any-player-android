@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -53,13 +56,21 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.PlaylistType
+import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.search.SearchType
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material3.rememberTooltipState
+import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 import coil.compose.AsyncImage
@@ -272,9 +283,19 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
 private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     var newStandardName by remember { mutableStateOf("") }
     var newUnionName by remember { mutableStateOf("") }
+    var providerTrackSortColumnName by rememberSaveable("playlist_provider_track_sort_column") { mutableStateOf<String?>(null) }
+    var providerTrackSortAscending by rememberSaveable("playlist_provider_track_sort_ascending") { mutableStateOf(true) }
+    var customTrackSortColumnName by rememberSaveable("playlist_custom_track_sort_column") { mutableStateOf<String?>(null) }
+    var customTrackSortAscending by rememberSaveable("playlist_custom_track_sort_ascending") { mutableStateOf(true) }
 
     val selectedProviderPlaylist = state.selectedProviderPlaylist
     val selectedCustomPlaylist = state.customPlaylists.firstOrNull { it.id == state.selectedCustomPlaylistId }
+    val providerTrackSortColumn = providerTrackSortColumnName?.let { sortName ->
+        TrackSortColumn.entries.firstOrNull { it.name == sortName }
+    }
+    val customTrackSortColumn = customTrackSortColumnName?.let { sortName ->
+        TrackSortColumn.entries.firstOrNull { it.name == sortName }
+    }
 
     if (selectedProviderPlaylist != null) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -311,9 +332,37 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             if (!state.selectedProviderPlaylistLoading && state.selectedProviderPlaylistTracks.isEmpty()) {
                 Text("No tracks found for this playlist")
             } else {
+                val sortedProviderTracks = remember(
+                    state.selectedProviderPlaylistTracks,
+                    providerTrackSortColumnName,
+                    providerTrackSortAscending
+                ) {
+                    sortTracksWithOriginalIndex(
+                        tracks = state.selectedProviderPlaylistTracks,
+                        sortColumn = providerTrackSortColumn,
+                        sortAscending = providerTrackSortAscending
+                    )
+                }
+
+                TrackSortableHeaderRow(
+                    sortColumn = providerTrackSortColumn,
+                    sortAscending = providerTrackSortAscending,
+                    onSort = { column ->
+                        if (providerTrackSortColumn != column) {
+                            providerTrackSortColumnName = column.name
+                            providerTrackSortAscending = true
+                        } else if (providerTrackSortAscending) {
+                            providerTrackSortAscending = false
+                        } else {
+                            providerTrackSortColumnName = null
+                            providerTrackSortAscending = true
+                        }
+                    }
+                )
+
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(state.selectedProviderPlaylistTracks) { index, track ->
-                        Text("${index + 1}. ${track.title} • ${track.artist}")
+                    itemsIndexed(sortedProviderTracks) { _, row ->
+                        TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.")
                     }
                 }
             }
@@ -398,16 +447,49 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             if (state.activeCustomPlaylistTracks.isEmpty()) {
                 Text("No tracks found for this playlist")
             } else {
+                val sortedCustomTracks = remember(
+                    state.activeCustomPlaylistTracks,
+                    customTrackSortColumnName,
+                    customTrackSortAscending
+                ) {
+                    sortTracksWithOriginalIndex(
+                        tracks = state.activeCustomPlaylistTracks,
+                        sortColumn = customTrackSortColumn,
+                        sortAscending = customTrackSortAscending
+                    )
+                }
+
+                TrackSortableHeaderRow(
+                    sortColumn = customTrackSortColumn,
+                    sortAscending = customTrackSortAscending,
+                    onSort = { column ->
+                        if (customTrackSortColumn != column) {
+                            customTrackSortColumnName = column.name
+                            customTrackSortAscending = true
+                        } else if (customTrackSortAscending) {
+                            customTrackSortAscending = false
+                        } else {
+                            customTrackSortColumnName = null
+                            customTrackSortAscending = true
+                        }
+                    }
+                )
+
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(state.activeCustomPlaylistTracks) { index, track ->
+                    itemsIndexed(sortedCustomTracks) { _, row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(onClick = {
-                                viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, index)
+                                viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, row.originalIndex)
                             }) {
-                                Text("${index + 1}. ${track.title}")
+                                Text("Play")
                             }
+                            TrackRow(
+                                track = row.track,
+                                indexLabel = "${row.originalIndex + 1}.",
+                                modifier = Modifier.weight(1f)
+                            )
                             if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
-                                Button(onClick = { viewModel.removeTrackFromSelectedCustom(index) }) {
+                                Button(onClick = { viewModel.removeTrackFromSelectedCustom(row.originalIndex) }) {
                                     Text("Remove")
                                 }
                             }
@@ -477,6 +559,11 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
     var query by remember { mutableStateOf("") }
     var source by remember { mutableStateOf(SourceType.ALL) }
     var searchType by remember { mutableStateOf(SearchType.TRACKS) }
+    var searchTrackSortColumnName by rememberSaveable("search_track_sort_column") { mutableStateOf<String?>(null) }
+    var searchTrackSortAscending by rememberSaveable("search_track_sort_ascending") { mutableStateOf(true) }
+    val searchTrackSortColumn = searchTrackSortColumnName?.let { sortName ->
+        TrackSortColumn.entries.firstOrNull { it.name == sortName }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -518,14 +605,37 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
         }
 
         if (searchType == SearchType.TRACKS) {
+            val sortedSearchTracks = remember(state.searchResults, searchTrackSortColumnName, searchTrackSortAscending) {
+                sortTracksWithOriginalIndex(
+                    tracks = state.searchResults,
+                    sortColumn = searchTrackSortColumn,
+                    sortAscending = searchTrackSortAscending
+                )
+            }
+
+            TrackSortableHeaderRow(
+                sortColumn = searchTrackSortColumn,
+                sortAscending = searchTrackSortAscending,
+                onSort = { column ->
+                    if (searchTrackSortColumn != column) {
+                        searchTrackSortColumnName = column.name
+                        searchTrackSortAscending = true
+                    } else if (searchTrackSortAscending) {
+                        searchTrackSortAscending = false
+                    } else {
+                        searchTrackSortColumnName = null
+                        searchTrackSortAscending = true
+                    }
+                }
+            )
+
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                itemsIndexed(state.searchResults) { index, track ->
+                itemsIndexed(sortedSearchTracks) { _, row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Button(onClick = { viewModel.playFromSearch(index) }) {
-                            Text("${track.title} • ${track.artist} (${track.source.name.lowercase()})")
-                        }
+                        Button(onClick = { viewModel.playFromSearch(row.originalIndex) }) { Text("Play") }
+                        TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.", modifier = Modifier.weight(1f))
                         if (state.selectedCustomPlaylistId != null) {
-                            Button(onClick = { viewModel.addSearchTrackToSelectedCustom(index) }) {
+                            Button(onClick = { viewModel.addSearchTrackToSelectedCustom(row.originalIndex) }) {
                                 Text("Add")
                             }
                         }
@@ -545,152 +655,520 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
 }
 
 private enum class DataWorkflow { NONE, EXPORT, IMPORT_STATE, IMPORT_CONFIG }
+private enum class SettingsTab { GENERAL, SPOTIFY, JELLYFIN, PLEX }
+private enum class TrackSortColumn { TITLE, ARTIST, ALBUM, DURATION, SOURCE }
+private enum class ProviderSortColumn { PROVIDER, STATUS, TIER, PLAYBACK }
+
+private data class IndexedTrackRow(
+    val originalIndex: Int,
+    val track: Track
+)
+
+private fun sortTracksWithOriginalIndex(
+    tracks: List<Track>,
+    sortColumn: TrackSortColumn?,
+    sortAscending: Boolean
+): List<IndexedTrackRow> {
+    val indexedTracks = tracks.mapIndexed { index, track -> IndexedTrackRow(index, track) }
+    if (sortColumn == null) return indexedTracks
+
+    val sorted = indexedTracks.sortedWith { left, right ->
+        val comparison = when (sortColumn) {
+            TrackSortColumn.TITLE -> left.track.title.compareTo(right.track.title, ignoreCase = true)
+            TrackSortColumn.ARTIST -> left.track.artist.compareTo(right.track.artist, ignoreCase = true)
+            TrackSortColumn.ALBUM -> (left.track.album ?: "").compareTo(right.track.album ?: "", ignoreCase = true)
+            TrackSortColumn.DURATION -> (left.track.durationMs ?: 0L).compareTo(right.track.durationMs ?: 0L)
+            TrackSortColumn.SOURCE -> left.track.source.name.compareTo(right.track.source.name, ignoreCase = true)
+        }
+        if (sortAscending) comparison else -comparison
+    }
+
+    return sorted
+}
+
+@Composable
+private fun TrackSortableHeaderRow(
+    sortColumn: TrackSortColumn?,
+    sortAscending: Boolean,
+    onSort: (TrackSortColumn) -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        TrackSortableHeader(
+            label = "Title",
+            isActive = sortColumn == TrackSortColumn.TITLE,
+            ascending = sortAscending,
+            modifier = Modifier.weight(2f),
+            onClick = { onSort(TrackSortColumn.TITLE) }
+        )
+        TrackSortableHeader(
+            label = "Artist",
+            isActive = sortColumn == TrackSortColumn.ARTIST,
+            ascending = sortAscending,
+            modifier = Modifier.weight(1.5f),
+            onClick = { onSort(TrackSortColumn.ARTIST) }
+        )
+        TrackSortableHeader(
+            label = "Album",
+            isActive = sortColumn == TrackSortColumn.ALBUM,
+            ascending = sortAscending,
+            modifier = Modifier.weight(1.3f),
+            onClick = { onSort(TrackSortColumn.ALBUM) }
+        )
+        TrackSortableHeader(
+            label = "Duration",
+            isActive = sortColumn == TrackSortColumn.DURATION,
+            ascending = sortAscending,
+            modifier = Modifier.weight(1f),
+            onClick = { onSort(TrackSortColumn.DURATION) }
+        )
+        TrackSortableHeader(
+            label = "Source",
+            isActive = sortColumn == TrackSortColumn.SOURCE,
+            ascending = sortAscending,
+            modifier = Modifier.weight(1f),
+            onClick = { onSort(TrackSortColumn.SOURCE) }
+        )
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun TrackSortableHeader(
+    label: String,
+    isActive: Boolean,
+    ascending: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Text(
+            text = if (isActive) "$label ${if (ascending) "↑" else "↓"}" else label,
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+@Composable
+private fun TrackRow(
+    track: Track,
+    indexLabel: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(text = "$indexLabel ${track.title}", modifier = Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
+        Text(text = track.artist, modifier = Modifier.weight(1.5f), style = MaterialTheme.typography.bodySmall)
+        Text(text = track.album ?: "—", modifier = Modifier.weight(1.3f), style = MaterialTheme.typography.bodySmall)
+        Text(text = formatTrackDuration(track.durationMs), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        Text(text = track.source.name.lowercase(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun formatTrackDuration(durationMs: Long?): String {
+    val totalSeconds = (durationMs ?: 0L) / 1000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%d:%02d".format(minutes, seconds)
+}
 
 @Composable
 private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
     var showJellyToken by rememberSaveable { mutableStateOf(false) }
     var showPlexToken by rememberSaveable { mutableStateOf(false) }
     var activeWorkflow by rememberSaveable { mutableStateOf(DataWorkflow.NONE.name) }
+    var activeSettingsTabName by rememberSaveable { mutableStateOf(SettingsTab.GENERAL.name) }
+    var showSyncOverwriteConfirm by rememberSaveable { mutableStateOf(false) }
     val workflow = DataWorkflow.entries.firstOrNull { it.name == activeWorkflow } ?: DataWorkflow.NONE
+    val activeSettingsTab = SettingsTab.entries.firstOrNull { it.name == activeSettingsTabName } ?: SettingsTab.GENERAL
 
-    val jellyConnected = state.providerStatuses.any { it.source == SourceType.JELLYFIN && it.connected }
-    val plexConnected  = state.providerStatuses.any { it.source == SourceType.PLEX       && it.connected }
-    val spotifyConnected = state.providerStatuses.any { it.source == SourceType.SPOTIFY  && it.connected }
+    val statusBySource = state.providerStatuses.associateBy { it.source }
+    val providerStatusRows = listOf(SourceType.JELLYFIN, SourceType.PLEX, SourceType.SPOTIFY).map { source ->
+        statusBySource[source] ?: ProviderConnectionProfile(source = source, connected = false)
+    }
+    val spotifyStatus = providerStatusRows.first { it.source == SourceType.SPOTIFY }
+    val jellyfinStatus = providerStatusRows.first { it.source == SourceType.JELLYFIN }
+    val plexStatus = providerStatusRows.first { it.source == SourceType.PLEX }
 
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // ── Provider connections ──────────────────────────────────────────────
-        Text("Connections", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ProviderBadge("Jellyfin",  jellyConnected)
-            ProviderBadge("Plex",      plexConnected)
-            ProviderBadge("Spotify",   spotifyConnected)
+        TabRow(selectedTabIndex = activeSettingsTab.ordinal) {
+            SettingsTab.entries.forEach { tab ->
+                Tab(
+                    selected = activeSettingsTab == tab,
+                    onClick = { activeSettingsTabName = tab.name },
+                    text = {
+                        when (tab) {
+                            SettingsTab.GENERAL -> Text("General")
+                            SettingsTab.SPOTIFY -> SettingsProviderTabLabel(
+                                label = "Spotify",
+                                connected = spotifyStatus.connected,
+                                tooltipText = providerConnectionTooltip(spotifyStatus)
+                            )
+                            SettingsTab.JELLYFIN -> SettingsProviderTabLabel(
+                                label = "Jellyfin",
+                                connected = jellyfinStatus.connected,
+                                tooltipText = providerConnectionTooltip(jellyfinStatus)
+                            )
+                            SettingsTab.PLEX -> SettingsProviderTabLabel(
+                                label = "Plex",
+                                connected = plexStatus.connected,
+                                tooltipText = providerConnectionTooltip(plexStatus)
+                            )
+                        }
+                    }
+                )
+            }
         }
 
-        if (!state.providerConnectionFeedback.isNullOrBlank()) {
-            Text(state.providerConnectionFeedback, style = MaterialTheme.typography.bodySmall)
-        }
-        if (state.providerConnectionInProgress) Text("Connecting…", style = MaterialTheme.typography.bodySmall)
-
-        OutlinedTextField(
-            value = state.jellyfinUrlInput,
-            onValueChange = viewModel::updateJellyfinUrlInput,
-            label = { Text("Jellyfin URL") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = state.jellyfinTokenInput,
-            onValueChange = viewModel::updateJellyfinTokenInput,
-            label = { Text("Jellyfin API Key") },
-            visualTransformation = if (showJellyToken) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { showJellyToken = !showJellyToken }) {
-                    Icon(
-                        imageVector = if (showJellyToken) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        contentDescription = if (showJellyToken) "Hide" else "Show"
+        when (activeSettingsTab) {
+            SettingsTab.GENERAL -> {
+                Text("Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = state.syncServerTarget,
+                    onValueChange = viewModel::updateSyncServerTarget,
+                    label = { Text("Sync Server Target") },
+                    placeholder = { Text("http://10.0.2.2:8080") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.syncAppStateEnabled,
+                        onClick = { viewModel.updateSyncAppStateEnabled(!state.syncAppStateEnabled) },
+                        label = { Text("app_state") }
+                    )
+                    FilterChip(
+                        selected = state.syncPlaylistsEnabled,
+                        onClick = { viewModel.updateSyncPlaylistsEnabled(!state.syncPlaylistsEnabled) },
+                        label = { Text("playlists") }
                     )
                 }
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Button(
-            onClick = { viewModel.connectJellyfin(state.jellyfinUrlInput, state.jellyfinTokenInput) },
-            enabled = !state.providerConnectionInProgress
-        ) { Text("Connect Jellyfin") }
-
-        OutlinedTextField(
-            value = state.plexUrlInput,
-            onValueChange = viewModel::updatePlexUrlInput,
-            label = { Text("Plex URL") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = state.plexTokenInput,
-            onValueChange = viewModel::updatePlexTokenInput,
-            label = { Text("Plex Token") },
-            visualTransformation = if (showPlexToken) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { showPlexToken = !showPlexToken }) {
-                    Icon(
-                        imageVector = if (showPlexToken) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        contentDescription = if (showPlexToken) "Hide" else "Show"
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.syncProviderConfigurationEnabled,
+                        onClick = {
+                            viewModel.updateSyncProviderConfigurationEnabled(!state.syncProviderConfigurationEnabled)
+                        },
+                        label = { Text("provider_configuration") }
+                    )
+                    FilterChip(
+                        selected = state.syncSettingsEnabled,
+                        onClick = { viewModel.updateSyncSettingsEnabled(!state.syncSettingsEnabled) },
+                        label = { Text("settings") }
                     )
                 }
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Button(
-            onClick = { viewModel.connectPlex(state.plexUrlInput, state.plexTokenInput) },
-            enabled = !state.providerConnectionInProgress
-        ) { Text("Connect Plex") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (state.syncPlaylistsEnabled) {
+                                showSyncOverwriteConfirm = true
+                            } else {
+                                viewModel.pullSyncState(confirmPlaylistOverwrite = false)
+                            }
+                        }
+                    ) {
+                        Text("Pull Sync Snapshot")
+                    }
+                }
+                if (state.syncStatus.isNotBlank()) {
+                    Text(
+                        state.syncStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-        Button(onClick = viewModel::beginSpotifyLink, enabled = !state.providerConnectionInProgress) {
-            Text("Link Spotify Account")
-        }
+                HorizontalDivider()
+                Text("Connections", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                ProviderStatusTable(
+                    providerStatuses = providerStatusRows,
+                    onDisconnect = viewModel::disconnect
+                )
 
-        state.providerStatuses.forEach { status ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${status.source.name.lowercase()}: ${if (status.connected) "connected" else "disconnected"}")
-                if (status.connected) {
-                    Button(onClick = { viewModel.disconnect(status.source) }) { Text("Disconnect") }
+                HorizontalDivider()
+                Text("Playback", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.audioNormalizationEnabled,
+                        onClick = { viewModel.setAudioNormalizationEnabled(!state.audioNormalizationEnabled) },
+                        label = { Text("Normalize Audio Across Providers") }
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.audioNormalizationStrictMode,
+                        onClick = { viewModel.setAudioNormalizationStrictMode(!state.audioNormalizationStrictMode) },
+                        label = { Text("Strict Normalization") }
+                    )
+                }
+
+                HorizontalDivider()
+                Text("Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = viewModel::clearProviderCaches,
+                        enabled = !state.providerConnectionInProgress
+                    ) {
+                        Text("Clear Provider Cache")
+                    }
+                }
+                if (!state.providerConnectionFeedback.isNullOrBlank()) {
+                    Text(
+                        state.providerConnectionFeedback,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (workflow == DataWorkflow.NONE) {
+                    Text(
+                        "Choose what you'd like to do:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        WorkflowCard(
+                            title = "Export state",
+                            description = "Save your playlists, tracks and settings to a file you can restore later or transfer to another device.",
+                            onClick = { activeWorkflow = DataWorkflow.EXPORT.name }
+                        )
+                        WorkflowCard(
+                            title = "Import state",
+                            description = "Restore from a previously exported Any Player state file (.json). Optionally preview with a dry run first.",
+                            onClick = { activeWorkflow = DataWorkflow.IMPORT_STATE.name }
+                        )
+                        WorkflowCard(
+                            title = "Import config file",
+                            description = "Apply a config file from the Any Player companion app. This imports playlists and server URLs without touching auth tokens.",
+                            onClick = { activeWorkflow = DataWorkflow.IMPORT_CONFIG.name }
+                        )
+                    }
+                } else {
+                    TextButton(onClick = { activeWorkflow = DataWorkflow.NONE.name }) {
+                        Text("← Back")
+                    }
+                    when (workflow) {
+                        DataWorkflow.EXPORT       -> ExportWorkflow(viewModel, state)
+                        DataWorkflow.IMPORT_STATE -> ImportStateWorkflow(viewModel, state)
+                        DataWorkflow.IMPORT_CONFIG -> ImportConfigWorkflow(viewModel, state)
+                        DataWorkflow.NONE         -> Unit
+                    }
+                }
+
+                if (state.stateTransferStatus != "State transfer idle") {
+                    HorizontalDivider()
+                    Text(
+                        state.stateTransferStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
-            if (!status.lastError.isNullOrBlank()) Text(status.lastError, style = MaterialTheme.typography.bodySmall)
+
+            SettingsTab.SPOTIFY -> {
+                Text("Spotify", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (!state.providerConnectionFeedback.isNullOrBlank()) {
+                    Text(state.providerConnectionFeedback, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.providerConnectionInProgress) Text("Connecting…", style = MaterialTheme.typography.bodySmall)
+                Button(
+                    onClick = {
+                        if (spotifyStatus.connected) {
+                            viewModel.disconnect(SourceType.SPOTIFY)
+                        } else {
+                            viewModel.beginSpotifyLink()
+                        }
+                    },
+                    enabled = !state.providerConnectionInProgress
+                ) {
+                    Text(if (spotifyStatus.connected) "Disconnect Spotify" else "Link Spotify Account")
+                }
+                spotifyStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
+                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            SettingsTab.JELLYFIN -> {
+                Text("Jellyfin", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (!state.providerConnectionFeedback.isNullOrBlank()) {
+                    Text(state.providerConnectionFeedback, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.providerConnectionInProgress) Text("Connecting…", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = state.jellyfinUrlInput,
+                    onValueChange = viewModel::updateJellyfinUrlInput,
+                    label = { Text("Jellyfin URL") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = state.jellyfinTokenInput,
+                    onValueChange = viewModel::updateJellyfinTokenInput,
+                    label = { Text("Jellyfin API Key") },
+                    visualTransformation = if (showJellyToken) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showJellyToken = !showJellyToken }) {
+                            Icon(
+                                imageVector = if (showJellyToken) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (showJellyToken) "Hide" else "Show"
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.connectJellyfin(state.jellyfinUrlInput, state.jellyfinTokenInput) },
+                        enabled = !state.providerConnectionInProgress
+                    ) { Text("Connect Jellyfin") }
+                    if (jellyfinStatus.connected) {
+                        OutlinedButton(
+                            onClick = { viewModel.disconnect(SourceType.JELLYFIN) },
+                            enabled = !state.providerConnectionInProgress
+                        ) { Text("Disconnect") }
+                    }
+                }
+                jellyfinStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
+                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            SettingsTab.PLEX -> {
+                Text("Plex", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (!state.providerConnectionFeedback.isNullOrBlank()) {
+                    Text(state.providerConnectionFeedback, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.providerConnectionInProgress) Text("Connecting…", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = state.plexUrlInput,
+                    onValueChange = viewModel::updatePlexUrlInput,
+                    label = { Text("Plex URL") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = state.plexTokenInput,
+                    onValueChange = viewModel::updatePlexTokenInput,
+                    label = { Text("Plex Token") },
+                    visualTransformation = if (showPlexToken) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPlexToken = !showPlexToken }) {
+                            Icon(
+                                imageVector = if (showPlexToken) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (showPlexToken) "Hide" else "Show"
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.connectPlex(state.plexUrlInput, state.plexTokenInput) },
+                        enabled = !state.providerConnectionInProgress
+                    ) { Text("Connect Plex") }
+                    if (plexStatus.connected) {
+                        OutlinedButton(
+                            onClick = { viewModel.disconnect(SourceType.PLEX) },
+                            enabled = !state.providerConnectionInProgress
+                        ) { Text("Disconnect") }
+                    }
+                }
+                plexStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
+                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
 
-        HorizontalDivider()
-
-        // ── Data workflows ────────────────────────────────────────────────────
-        Text("Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-
-        if (workflow == DataWorkflow.NONE) {
-            // Landing — pick a workflow
-            Text(
-                "Choose what you'd like to do:",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                WorkflowCard(
-                    title = "Export state",
-                    description = "Save your playlists, tracks and settings to a file you can restore later or transfer to another device.",
-                    onClick = { activeWorkflow = DataWorkflow.EXPORT.name }
-                )
-                WorkflowCard(
-                    title = "Import state",
-                    description = "Restore from a previously exported Any Player state file (.json). Optionally preview with a dry run first.",
-                    onClick = { activeWorkflow = DataWorkflow.IMPORT_STATE.name }
-                )
-                WorkflowCard(
-                    title = "Import config file",
-                    description = "Apply a config file from the Any Player companion app. This imports playlists and server URLs without touching auth tokens.",
-                    onClick = { activeWorkflow = DataWorkflow.IMPORT_CONFIG.name }
-                )
-            }
-        } else {
-            TextButton(onClick = { activeWorkflow = DataWorkflow.NONE.name }) {
-                Text("← Back")
-            }
-            when (workflow) {
-                DataWorkflow.EXPORT       -> ExportWorkflow(viewModel, state)
-                DataWorkflow.IMPORT_STATE -> ImportStateWorkflow(viewModel, state)
-                DataWorkflow.IMPORT_CONFIG -> ImportConfigWorkflow(viewModel, state)
-                DataWorkflow.NONE         -> Unit
-            }
-        }
-
-        // Status line shown for all workflows
-        if (state.stateTransferStatus != "State transfer idle") {
-            HorizontalDivider()
-            Text(
-                state.stateTransferStatus,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+        if (showSyncOverwriteConfirm) {
+            AlertDialog(
+                onDismissRequest = { showSyncOverwriteConfirm = false },
+                title = { Text("Confirm playlist overwrite") },
+                text = {
+                    Text(
+                        "Syncing playlists replaces local playlists with server state and may delete local-only playlists. Continue?"
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showSyncOverwriteConfirm = false
+                            viewModel.pullSyncState(confirmPlaylistOverwrite = true)
+                        }
+                    ) {
+                        Text("Continue")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { showSyncOverwriteConfirm = false }) {
+                        Text("Cancel")
+                    }
+                }
             )
         }
     }
+}
+
+@Composable
+private fun SettingsProviderTabLabel(
+    label: String,
+    connected: Boolean,
+    tooltipText: String
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label)
+        if (connected) {
+            ProviderCheckmarkTooltip(tooltipText = tooltipText)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProviderCheckmarkTooltip(tooltipText: String) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = {
+            PlainTooltip {
+                Text(tooltipText)
+            }
+        },
+        state = rememberTooltipState()
+    ) {
+        Text(
+            text = "✓",
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.labelLarge
+        )
+    }
+}
+
+private fun providerConnectionTooltip(status: ProviderConnectionProfile): String {
+    if (!status.connected) {
+        return "Not connected"
+    }
+
+    if (status.source == SourceType.SPOTIFY) {
+        val tierLabel = when (status.isPremium) {
+            true -> "Premium"
+            false -> "Free"
+            null -> "Tier unknown"
+        }
+        val playbackLabel = when (status.playbackReady) {
+            true -> "Playback ready"
+            false -> "Playback setup needed"
+            null -> "Playback status unknown"
+        }
+        return "Connected • $tierLabel • $playbackLabel"
+    }
+
+    val serverPart = status.serverUrl?.takeIf { it.isNotBlank() }?.let { " • $it" } ?: ""
+    return "Connected$serverPart"
 }
 
 // ── Workflow sub-screens ──────────────────────────────────────────────────────
@@ -983,21 +1461,190 @@ private fun WorkflowStep(number: Int, label: String, content: @Composable () -> 
 }
 
 @Composable
-private fun ProviderBadge(name: String, connected: Boolean) {
-    val containerColor = if (connected) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-    val contentColor = if (connected) MaterialTheme.colorScheme.onPrimaryContainer
-    else MaterialTheme.colorScheme.onSurfaceVariant
+private fun ProviderStatusTable(
+    providerStatuses: List<ProviderConnectionProfile>,
+    onDisconnect: (SourceType) -> Unit
+) {
+    var sortColumnName by rememberSaveable("settings_provider_sort_column") { mutableStateOf<String?>(null) }
+    var sortAscending by rememberSaveable("settings_provider_sort_ascending") { mutableStateOf(true) }
+    val sortColumn = sortColumnName?.let { currentSortName ->
+        ProviderSortColumn.entries.firstOrNull { it.name == currentSortName }
+    }
+    val sortedProviderStatuses = remember(providerStatuses, sortColumnName, sortAscending) {
+        if (sortColumn == null) {
+            return@remember providerStatuses
+        }
+
+        providerStatuses.sortedWith { left, right ->
+            val comparison = compareProviderStatuses(left, right, sortColumn)
+            if (sortAscending) comparison else -comparison
+        }
+    }
+
+    fun requestSort(column: ProviderSortColumn) {
+        if (sortColumn != column) {
+            sortColumnName = column.name
+            sortAscending = true
+            return
+        }
+
+        if (sortAscending) {
+            sortAscending = false
+            return
+        }
+
+        sortColumnName = null
+        sortAscending = true
+    }
+
     ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = containerColor),
+        modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
     ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ProviderSortableHeader(
+                    label = "Provider",
+                    isActive = sortColumn == ProviderSortColumn.PROVIDER,
+                    ascending = sortAscending,
+                    modifier = Modifier.weight(1.2f),
+                    onClick = { requestSort(ProviderSortColumn.PROVIDER) }
+                )
+                ProviderSortableHeader(
+                    label = "Status",
+                    isActive = sortColumn == ProviderSortColumn.STATUS,
+                    ascending = sortAscending,
+                    modifier = Modifier.weight(1f),
+                    onClick = { requestSort(ProviderSortColumn.STATUS) }
+                )
+                ProviderSortableHeader(
+                    label = "Tier",
+                    isActive = sortColumn == ProviderSortColumn.TIER,
+                    ascending = sortAscending,
+                    modifier = Modifier.weight(1f),
+                    onClick = { requestSort(ProviderSortColumn.TIER) }
+                )
+                ProviderSortableHeader(
+                    label = "Playback",
+                    isActive = sortColumn == ProviderSortColumn.PLAYBACK,
+                    ascending = sortAscending,
+                    modifier = Modifier.weight(1f),
+                    onClick = { requestSort(ProviderSortColumn.PLAYBACK) }
+                )
+                Text("Action", style = MaterialTheme.typography.labelMedium)
+            }
+            HorizontalDivider()
+
+            sortedProviderStatuses.forEachIndexed { index, status ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = providerDisplayName(status.source),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1.2f)
+                        )
+                        Text(
+                            text = if (status.connected) "Connected" else "Disconnected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (status.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = when (status.isPremium) {
+                                true -> "Premium"
+                                false -> "Free"
+                                null -> "—"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = when (status.playbackReady) {
+                                true -> "Ready"
+                                false -> "Needs Init"
+                                null -> "—"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (status.connected) {
+                            TextButton(onClick = { onDisconnect(status.source) }) {
+                                Text("Disconnect")
+                            }
+                        } else {
+                            Text("—", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    if (!status.lastError.isNullOrBlank()) {
+                        Text(
+                            text = status.lastError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                if (index != sortedProviderStatuses.lastIndex) {
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderSortableHeader(
+    label: String,
+    isActive: Boolean,
+    ascending: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        contentPadding = PaddingValues(0.dp)
+    ) {
         Text(
-            text = if (connected) "$name ✓" else name,
-            style = MaterialTheme.typography.labelSmall,
-            color = contentColor,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            text = if (isActive) "$label ${if (ascending) "↑" else "↓"}" else label,
+            style = MaterialTheme.typography.labelMedium
         )
     }
+}
+
+private fun providerTierRank(status: ProviderConnectionProfile): Int = when (status.isPremium) {
+    true -> 2
+    false -> 1
+    null -> 0
+}
+
+private fun providerPlaybackRank(status: ProviderConnectionProfile): Int = when (status.playbackReady) {
+    true -> 2
+    false -> 1
+    null -> 0
+}
+
+private fun compareProviderStatuses(
+    left: ProviderConnectionProfile,
+    right: ProviderConnectionProfile,
+    sortColumn: ProviderSortColumn
+): Int = when (sortColumn) {
+    ProviderSortColumn.PROVIDER -> providerDisplayName(left.source).compareTo(providerDisplayName(right.source), ignoreCase = true)
+    ProviderSortColumn.STATUS -> (if (left.connected) 1 else 0).compareTo(if (right.connected) 1 else 0)
+    ProviderSortColumn.TIER -> providerTierRank(left).compareTo(providerTierRank(right))
+    ProviderSortColumn.PLAYBACK -> providerPlaybackRank(left).compareTo(providerPlaybackRank(right))
+}
+
+private fun providerDisplayName(sourceType: SourceType): String = when (sourceType) {
+    SourceType.JELLYFIN -> "Jellyfin"
+    SourceType.PLEX -> "Plex"
+    SourceType.SPOTIFY -> "Spotify"
+    SourceType.CUSTOM -> "Custom"
+    SourceType.ALL -> "All"
 }
 

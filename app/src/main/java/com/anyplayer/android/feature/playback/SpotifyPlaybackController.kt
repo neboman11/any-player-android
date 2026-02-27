@@ -1,6 +1,7 @@
 package com.anyplayer.android.feature.playback
 
 import android.util.Log
+import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.network.SpotifyClientIds
@@ -73,6 +74,16 @@ class SpotifyPlaybackController @Inject constructor(
 
     suspend fun setVolume(volume: Int): Boolean =
         runRustCommand("setVolume") { rustBridge.spotifySetVolume(volume) }
+
+    fun normalizeVolumeForSource(volume: Int, source: SourceType): Int =
+        rustBridge.applyAudioNormalizationVolume(volume, source)?.coerceIn(0, 100)
+            ?: volume.coerceIn(0, 100)
+
+    fun getAudioNormalizationSettings(): AudioNormalizationSettings =
+        rustBridge.getAudioNormalizationSettings() ?: AudioNormalizationSettings()
+
+    fun setAudioNormalizationSettings(enabled: Boolean, strictMode: Boolean): Boolean =
+        rustBridge.setAudioNormalizationSettings(enabled, strictMode) == true
 
     suspend fun setShuffle(enabled: Boolean): Boolean =
         runRustCommand("setShuffle") { rustBridge.spotifySetShuffle(enabled) }

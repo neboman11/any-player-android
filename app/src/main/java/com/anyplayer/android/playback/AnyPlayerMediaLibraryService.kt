@@ -24,7 +24,9 @@ import com.anyplayer.android.R
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -51,6 +54,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        runBlocking {
+            playbackQueueManager.restorePersistedStateNowIfNeeded()
+        }
 
         mediaLibrarySession = MediaLibrarySession.Builder(
             this,
@@ -65,6 +71,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     browser: MediaSession.ControllerInfo,
                     params: LibraryParams?
                 ): ListenableFuture<LibraryResult<MediaItem>> {
+                    playbackQueueManager.ensureWarmSessionState()
                     val root = MediaItem.Builder()
                         .setMediaId("root")
                         .setMediaMetadata(
@@ -76,6 +83,102 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         )
                         .build()
                     return Futures.immediateFuture(LibraryResult.ofItem(root, params))
+                }
+
+                override fun onGetChildren(
+                    session: MediaLibrarySession,
+                    browser: MediaSession.ControllerInfo,
+                    parentId: String,
+                    page: Int,
+                    pageSize: Int,
+                    params: LibraryParams?
+                ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+                    playbackQueueManager.ensureWarmSessionState()
+                    if (parentId != ROOT_ID) {
+                        return Futures.immediateFuture(
+                            LibraryResult.ofItemList(ImmutableList.of(), params)
+                        )
+                    }
+                    val items = currentDisplayQueue().map { it.toLibraryMediaItem() }
+                    return Futures.immediateFuture(
+                        LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
+                    )
+                }
+
+                override fun onGetItem(
+                    session: MediaLibrarySession,
+                    browser: MediaSession.ControllerInfo,
+                    mediaId: String
+                ): ListenableFuture<LibraryResult<MediaItem>> {
+                    playbackQueueManager.ensureWarmSessionState()
+                    val track = currentDisplayQueue().firstOrNull { it.id == mediaId }
+                    val item = track?.toLibraryMediaItem()
+                    return if (item != null) {
+                        Futures.immediateFuture(LibraryResult.ofItem(item, null))
+                    } else {
+                        Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+                    }
+                }
+
+                override fun onSetMediaItems(
+                    mediaSession: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    mediaItems: List<MediaItem>,
+                    startIndex: Int,
+                    startPositionMs: Long
+                ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                    runBlocking {
+                        playbackQueueManager.restorePersistedStateNowIfNeeded()
+                    }
+                    playbackQueueManager.ensureWarmSessionState()
+
+                    val displayQueue = currentDisplayQueue()
+                    if (displayQueue.isNotEmpty()) {
+                        val requestedIds = mediaItems.mapNotNull { it.mediaId.takeIf(String::isNotBlank) }
+                        if (requestedIds.isNotEmpty()) {
+                            val selectedQueue = requestedIds
+                                .mapNotNull { requestedId ->
+                                    displayQueue.firstOrNull { track -> trackIdsMatch(track.id, requestedId) }
+                                }
+                                .distinctBy { it.id }
+                                .ifEmpty { displayQueue }
+                            val requestedStartId = requestedIds.getOrNull(startIndex.coerceAtLeast(0))
+                            val mappedStartIndex = requestedStartId
+                                ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
+                                ?.takeIf { it >= 0 }
+                                ?: 0
+                            playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
+                            if (startPositionMs > 0L) {
+                                playbackQueueManager.seekTo(startPositionMs)
+                            }
+                            val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
+                            return Futures.immediateFuture(
+                                MediaSession.MediaItemsWithStartPosition(
+                                    resolvedMediaItems,
+                                    mappedStartIndex,
+                                    startPositionMs.coerceAtLeast(0L)
+                                )
+                            )
+                        }
+
+                        val safeStartIndex = startIndex.coerceIn(0, displayQueue.lastIndex)
+                        playbackQueueManager.playFromIndex(safeStartIndex)
+                        if (startPositionMs > 0L) {
+                            playbackQueueManager.seekTo(startPositionMs)
+                        }
+                        val resolvedMediaItems = displayQueue.map { it.toLibraryMediaItem() }
+                        return Futures.immediateFuture(
+                            MediaSession.MediaItemsWithStartPosition(
+                                resolvedMediaItems,
+                                safeStartIndex,
+                                startPositionMs.coerceAtLeast(0L)
+                            )
+                        )
+                    }
+
+                    return Futures.immediateFuture(
+                        MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L)
+                    )
                 }
             }
         ).build()
@@ -116,10 +219,40 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
+        private const val ROOT_ID = "root"
         private const val ACTION_PLAY_PAUSE = "com.anyplayer.android.action.PLAY_PAUSE"
         private const val ACTION_NEXT = "com.anyplayer.android.action.NEXT"
         private const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
     }
+
+    private fun currentDisplayQueue(): List<Track> {
+        val status = playbackQueueManager.status.value
+        return status.orderedQueue.ifEmpty { status.queue }
+    }
+
+    private fun trackIdsMatch(left: String, right: String): Boolean {
+        if (left == right) return true
+        return normalizeSpotifyTrackId(left) == normalizeSpotifyTrackId(right)
+    }
+
+    private fun normalizeSpotifyTrackId(value: String): String =
+        value.removePrefix("spotify:track:").trim()
+
+    private fun Track.toLibraryMediaItem(): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(id)
+            .setUri(url ?: "any-player://local/$id")
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setArtist(artist)
+                    .setAlbumTitle(album)
+                    .setArtworkUri(imageUrl?.let(android.net.Uri::parse))
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .build()
+            )
+            .build()
 
     private fun startForegroundCompat(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

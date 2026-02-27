@@ -5,7 +5,7 @@ import com.anyplayer.android.core.model.SourceType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-const val CONFIG_FILE_VERSION = 1
+const val CONFIG_EXPORT_VERSION = 1
 
 /**
  * Root model for the any-player config file format (export_version / provider_configs /
@@ -61,7 +61,7 @@ data class ConfigPlaylistEntry(
     @SerialName("created_at") val createdAt: Long,
     @SerialName("updated_at") val updatedAt: Long,
     @SerialName("track_count") val trackCount: Int,
-    @SerialName("playlist_type") val playlistType: PlaylistType
+    @SerialName("playlist_type") val playlistType: String
 )
 
 /** A track record inside a config playlist — `id` is a database row integer. */
@@ -69,7 +69,7 @@ data class ConfigPlaylistEntry(
 data class ConfigTrack(
     val id: Int,
     @SerialName("playlist_id") val playlistId: String,
-    @SerialName("track_source") val trackSource: SourceType,
+    @SerialName("track_source") val trackSource: String,
     @SerialName("track_id") val trackId: String,
     val position: Int,
     @SerialName("added_at") val addedAt: Long,
@@ -85,8 +85,23 @@ data class ConfigTrack(
 data class ConfigUnionSource(
     val id: Int,
     @SerialName("union_playlist_id") val unionPlaylistId: String,
-    @SerialName("source_type") val sourceType: SourceType,
+    @SerialName("source_type") val sourceType: String,
     @SerialName("source_playlist_id") val sourcePlaylistId: String,
     val position: Int,
     @SerialName("added_at") val addedAt: Long
 )
+
+fun String.toConfigPlaylistTypeOrNull(): PlaylistType? = when (trim().lowercase()) {
+    "standard" -> PlaylistType.STANDARD
+    "union" -> PlaylistType.UNION
+    else -> null
+}
+
+fun String.toConfigSourceTypeOrNull(): SourceType? = when (trim().lowercase()) {
+    "spotify" -> SourceType.SPOTIFY
+    "jellyfin" -> SourceType.JELLYFIN
+    "plex" -> SourceType.PLEX
+    "custom" -> SourceType.CUSTOM
+    "all" -> SourceType.ALL
+    else -> null
+}

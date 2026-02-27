@@ -42,7 +42,7 @@ class StartupResilienceManager @Inject constructor(
             emptyList()
         }
 
-        onProgress("Refreshing provider playlists...")
+        onProgress("Loading provider playlists...")
         val playlists = retryWithBackoff(attempts = 3, initialDelayMs = 700) {
             withTimeoutOrNull(10_000) {
                 providerCatalogRepository.getAllProviderPlaylistsWithCache()
