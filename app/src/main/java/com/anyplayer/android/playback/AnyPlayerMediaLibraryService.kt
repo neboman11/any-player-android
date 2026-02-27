@@ -17,6 +17,7 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionError
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.AnyPlayerApplication
 import com.anyplayer.android.MainActivity
@@ -116,7 +117,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     return if (item != null) {
                         Futures.immediateFuture(LibraryResult.ofItem(item, null))
                     } else {
-                        Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+                        Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_BAD_VALUE))
                     }
                 }
 
