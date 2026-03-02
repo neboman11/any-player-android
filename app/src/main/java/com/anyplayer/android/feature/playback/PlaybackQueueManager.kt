@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.playback
 
+import android.util.Log
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
@@ -30,6 +31,10 @@ class PlaybackQueueManager @Inject constructor(
     private val playbackStateStore: PlaybackStateStore,
     private val json: Json
 ) {
+    companion object {
+        private const val TAG = "PlaybackQueueManager"
+    }
+
     private val maxPersistedQueueTracks = 5000
     private val errorHandler = CoroutineExceptionHandler { _, _ -> }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -41,6 +46,8 @@ class PlaybackQueueManager @Inject constructor(
     private var spotifyAutoAdvanceInFlight = false
     private var spotifyAutoAdvanceTrackId: String? = null
     private var spotifyAutoAdvanceLastAttemptMs = 0L
+    private var spotifyRecoveryInFlight = false
+    private var spotifyRecoveryLastAttemptMs = 0L
 
     private val mutableStatus = MutableStateFlow(
         PlaybackStatus(
@@ -96,6 +103,7 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     init {
+        Log.i(TAG, "PlaybackQueueManager initialized")
         scope.launch {
             mutableAudioNormalizationSettings.value = spotifyPlaybackController.getAudioNormalizationSettings()
             restorePersistedState()
@@ -130,6 +138,10 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setQueue(tracks: List<Track>, startIndex: Int = 0, autoPlay: Boolean = true) {
+        Log.i(
+            TAG,
+            "setQueue size=${tracks.size} startIndex=$startIndex autoPlay=$autoPlay spotifyMode=${tracks.isNotEmpty() && tracks.all { it.source == SourceType.SPOTIFY }} mixedMode=${tracks.any { it.source == SourceType.SPOTIFY } && tracks.any { it.source != SourceType.SPOTIFY }}"
+        )
         val hasSpotify = tracks.any { it.source == SourceType.SPOTIFY }
         val hasNonSpotify = tracks.any { it.source != SourceType.SPOTIFY }
         spotifyMode = tracks.isNotEmpty() && tracks.all { it.source == SourceType.SPOTIFY }
@@ -137,6 +149,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (tracks.isEmpty()) {
             resetSpotifyAutoAdvanceState()
+            resetSpotifyRecoveryState()
             playableQueueIndices = emptyList()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
@@ -159,6 +172,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             resetSpotifyAutoAdvanceState()
+            resetSpotifyRecoveryState()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
                 queue = tracks,
@@ -188,6 +202,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (mixedMode) {
             resetSpotifyAutoAdvanceState()
+            resetSpotifyRecoveryState()
             media3PlaybackController.setQueue(emptyList(), 0, false)
             val clampedIndex = index.coerceIn(0, tracks.lastIndex)
             val selectedTrack = tracks[clampedIndex]
@@ -218,6 +233,7 @@ class PlaybackQueueManager @Inject constructor(
             queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
         }
         resetSpotifyAutoAdvanceState()
+        resetSpotifyRecoveryState()
         val mappedIndex = media3PlaybackController.setQueue(tracks, index, autoPlay)
         val media3Volume = spotifyPlaybackController.normalizeVolumeForSource(
             mutableStatus.value.volume,
@@ -250,6 +266,10 @@ class PlaybackQueueManager @Inject constructor(
 
     fun playFromIndex(index: Int) {
         val state = mutableStatus.value
+        Log.i(
+            TAG,
+            "playFromIndex index=$index queueSize=${state.queue.size} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${state.currentTrack?.id}"
+        )
         if (state.queue.isEmpty()) return
         val target = index.coerceIn(0, state.queue.lastIndex)
 
@@ -296,6 +316,11 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun togglePlayPause() {
+        val initial = mutableStatus.value
+        Log.i(
+            TAG,
+            "togglePlayPause state=${initial.state} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${initial.currentTrack?.id}"
+        )
         if (mixedMode) {
             val state = mutableStatus.value
             val currentTrack = state.currentTrack
@@ -363,6 +388,11 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun play() {
+        val initial = mutableStatus.value
+        Log.i(
+            TAG,
+            "play state=${initial.state} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${initial.currentTrack?.id}"
+        )
         if (mixedMode) {
             val state = mutableStatus.value
             val currentTrack = state.currentTrack ?: return
@@ -410,6 +440,11 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun pause() {
+        val initial = mutableStatus.value
+        Log.i(
+            TAG,
+            "pause state=${initial.state} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${initial.currentTrack?.id}"
+        )
         if (mixedMode) {
             val state = mutableStatus.value
             val currentTrack = state.currentTrack ?: return
@@ -548,8 +583,12 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun next() {
+        val state = mutableStatus.value
+        Log.i(
+            TAG,
+            "next state=${state.state} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${state.currentTrack?.id}"
+        )
         if (mixedMode) {
-            val state = mutableStatus.value
             if (state.queue.isEmpty()) return
             val sequence = mixedPlaybackSequence(state)
             if (sequence.isEmpty()) return
@@ -562,12 +601,17 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
-                val success = spotifyPlaybackController.next()
+                val targetIndex = (currentQueueIndex(state) + 1).coerceAtMost(state.queue.lastIndex)
+                val success = startSpotifyAtQueueIndex(targetIndex)
                 if (!success) {
                     spotifyAutoAdvanceInFlight = false
+                    Log.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
                 }
                 mutableStatus.value = mutableStatus.value.copy(
+                    currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
+                    position = if (success) 0L else state.position,
+                    duration = if (success) (state.queue.getOrNull(targetIndex)?.durationMs ?: state.duration) else state.duration,
                     errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
                 )
                 persistStateAsync()
@@ -581,8 +625,12 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun previous() {
+        val state = mutableStatus.value
+        Log.i(
+            TAG,
+            "previous state=${state.state} spotifyMode=$spotifyMode mixedMode=$mixedMode current=${state.currentTrack?.id}"
+        )
         if (mixedMode) {
-            val state = mutableStatus.value
             if (state.queue.isEmpty()) return
             val sequence = mixedPlaybackSequence(state)
             if (sequence.isEmpty()) return
@@ -595,9 +643,13 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
-                val success = spotifyPlaybackController.previous()
+                val targetIndex = (currentQueueIndex(state) - 1).coerceAtLeast(0)
+                val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
+                    currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
+                    position = if (success) 0L else state.position,
+                    duration = if (success) (state.queue.getOrNull(targetIndex)?.durationMs ?: state.duration) else state.duration,
                     errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to go to previous track")
                 )
                 persistStateAsync()
@@ -615,8 +667,24 @@ class PlaybackQueueManager @Inject constructor(
             val state = mutableStatus.value
             val currentTrack = state.currentTrack ?: return
             if (currentTrack.source == SourceType.SPOTIFY) {
-                val spotifySnapshot = spotifyPlaybackController.snapshot() ?: return
+                val spotifySnapshot = spotifyPlaybackController.snapshot()
+                if (spotifySnapshot == null) {
+                    if (state.state == PlaybackStateType.PLAYING) {
+                        Log.w(TAG, "Mixed-mode Spotify snapshot unavailable; attempting recovery")
+                        maybeRecoverSpotifyTrack(
+                            queueTrackIds = listOf(currentTrack.id),
+                            startIndex = 0,
+                            failureMessage = "Spotify snapshot unavailable after disconnect"
+                        )
+                    }
+                    return
+                }
                 val duration = currentTrack.durationMs ?: state.duration
+                val nearTrackEnd = isNearTrackEnd(
+                    positionMs = spotifySnapshot.progressMs,
+                    durationMs = duration,
+                    toleranceMs = 1500L
+                )
                 mutableStatus.value = state.copy(
                     state = if (spotifySnapshot.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
                     position = spotifySnapshot.progressMs,
@@ -632,7 +700,22 @@ class PlaybackQueueManager @Inject constructor(
                     val nextTrack = sequence.getOrNull(currentIndex + 1)
                     if (nextTrack != null) {
                         playMixedTrackById(nextTrack.id)
+                        return
                     }
+                }
+                if (state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying) {
+                    val sequence = mixedPlaybackSequence(state)
+                    val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 } ?: 0
+                    val nextTrack = sequence.getOrNull(currentIndex + 1)
+                    if (nearTrackEnd && nextTrack != null) {
+                        playMixedTrackById(nextTrack.id)
+                        return
+                    }
+                    maybeRecoverSpotifyTrack(
+                        queueTrackIds = listOf(currentTrack.id),
+                        startIndex = 0,
+                        failureMessage = "Spotify failed to recover mixed-track playback"
+                    )
                 }
             } else {
                 val snapshot = media3PlaybackController.snapshot()
@@ -668,8 +751,26 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         if (spotifyMode) {
-            val spotifySnapshot = spotifyPlaybackController.snapshot() ?: return
+            val spotifySnapshot = spotifyPlaybackController.snapshot()
             val state = mutableStatus.value
+            if (spotifySnapshot == null) {
+                if (state.state == PlaybackStateType.PLAYING && state.queue.isNotEmpty()) {
+                    val currentIndex = currentQueueIndex(state)
+                    Log.w(TAG, "Spotify snapshot unavailable; attempting queue recovery at index=$currentIndex")
+                    maybeRecoverSpotifyTrack(
+                        queueTrackIds = state.queue.map { it.id },
+                        startIndex = currentIndex,
+                        failureMessage = "Spotify snapshot unavailable after interruption"
+                    )
+                }
+                return
+            }
+            val duration = state.currentTrack?.durationMs ?: state.duration
+            val nearTrackEnd = isNearTrackEnd(
+                positionMs = spotifySnapshot.progressMs,
+                durationMs = duration,
+                toleranceMs = 1500L
+            )
             // Auto-advance to the next track when a track ends naturally.
             // The endOfTrack flag is a consume-once signal from the Rust event
             // loop — it is only true for a single snapshot poll cycle.
@@ -679,12 +780,49 @@ class PlaybackQueueManager @Inject constructor(
                 val sameTrackPending = spotifyAutoAdvanceInFlight && spotifyAutoAdvanceTrackId == currentTrackId
                 val cooldownElapsed = (nowMs - spotifyAutoAdvanceLastAttemptMs) >= 1500L
                 if (!sameTrackPending || cooldownElapsed) {
+                    Log.d(
+                        TAG,
+                        "Spotify endOfTrack detected; advancing trackId=$currentTrackId cooldownElapsed=$cooldownElapsed"
+                    )
                     spotifyAutoAdvanceInFlight = true
                     spotifyAutoAdvanceTrackId = currentTrackId
                     spotifyAutoAdvanceLastAttemptMs = nowMs
                     next()
                 }
                 return
+            }
+            if (state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying) {
+                if (nearTrackEnd) {
+                    val nowMs = System.currentTimeMillis()
+                    val currentTrackId = state.currentTrack?.id
+                    val sameTrackPending = spotifyAutoAdvanceInFlight && spotifyAutoAdvanceTrackId == currentTrackId
+                    val cooldownElapsed = (nowMs - spotifyAutoAdvanceLastAttemptMs) >= 1500L
+                    if (!sameTrackPending || cooldownElapsed) {
+                        Log.d(
+                            TAG,
+                            "Spotify fallback near-track-end advance; trackId=$currentTrackId position=${spotifySnapshot.progressMs} duration=$duration"
+                        )
+                        spotifyAutoAdvanceInFlight = true
+                        spotifyAutoAdvanceTrackId = currentTrackId
+                        spotifyAutoAdvanceLastAttemptMs = nowMs
+                        next()
+                    }
+                    return
+                }
+                Log.w(
+                    TAG,
+                    "Spotify expected PLAYING but snapshot is paused; attempting queue recovery at current track"
+                )
+                val queueTrackIds = state.queue.map { it.id }
+                val currentIndex = state.currentTrack
+                    ?.let { current -> state.queue.indexOfFirst { trackIdsMatch(it.id, current.id) } }
+                    ?.takeIf { it >= 0 }
+                    ?: 0
+                maybeRecoverSpotifyTrack(
+                    queueTrackIds = queueTrackIds,
+                    startIndex = currentIndex,
+                    failureMessage = "Spotify failed to recover playback after interruption"
+                )
             }
             if (spotifyAutoAdvanceInFlight) {
                 spotifyAutoAdvanceInFlight = false
@@ -855,6 +993,63 @@ class PlaybackQueueManager @Inject constructor(
         spotifyAutoAdvanceInFlight = false
         spotifyAutoAdvanceTrackId = null
         spotifyAutoAdvanceLastAttemptMs = 0L
+    }
+
+    private fun resetSpotifyRecoveryState() {
+        spotifyRecoveryInFlight = false
+        spotifyRecoveryLastAttemptMs = 0L
+    }
+
+    private fun isNearTrackEnd(positionMs: Long, durationMs: Long, toleranceMs: Long): Boolean {
+        if (durationMs <= 0L) return false
+        val threshold = (durationMs - toleranceMs).coerceAtLeast(0L)
+        return positionMs >= threshold
+    }
+
+    private fun maybeRecoverSpotifyTrack(
+        queueTrackIds: List<String>,
+        startIndex: Int,
+        failureMessage: String
+    ) {
+        if (queueTrackIds.isEmpty()) return
+        val nowMs = System.currentTimeMillis()
+        if (spotifyRecoveryInFlight || (nowMs - spotifyRecoveryLastAttemptMs) < 2500L) {
+            Log.d(
+                TAG,
+                "Skipping Spotify recovery attempt inFlight=$spotifyRecoveryInFlight cooldownMs=${nowMs - spotifyRecoveryLastAttemptMs}"
+            )
+            return
+        }
+        spotifyRecoveryInFlight = true
+        spotifyRecoveryLastAttemptMs = nowMs
+        Log.i(TAG, "Attempting Spotify recovery queue restart startIndex=$startIndex queueSize=${queueTrackIds.size}")
+        scope.launch {
+            val recovered = spotifyPlaybackController.startQueue(queueTrackIds, startIndex)
+            if (recovered) {
+                spotifyPlaybackController.setVolume(mutableStatus.value.volume)
+                Log.i(TAG, "Spotify recovery succeeded; resumed queue playback")
+            } else {
+                val state = mutableStatus.value
+                Log.w(TAG, "Spotify recovery failed: ${spotifyErrorOrDefault("unknown error")}")
+                mutableStatus.value = state.copy(
+                    state = PlaybackStateType.ERROR,
+                    errorMessage = spotifyErrorOrDefault(failureMessage)
+                )
+                persistStateAsync()
+            }
+            spotifyRecoveryInFlight = false
+        }
+    }
+
+    private suspend fun startSpotifyAtQueueIndex(targetIndex: Int): Boolean {
+        val state = mutableStatus.value
+        if (!spotifyMode || state.queue.isEmpty()) return false
+        val safeIndex = targetIndex.coerceIn(0, state.queue.lastIndex)
+        val started = spotifyPlaybackController.startQueue(state.queue.map { it.id }, safeIndex)
+        if (started) {
+            spotifyPlaybackController.setVolume(state.volume)
+        }
+        return started
     }
 
     private fun currentQueueIndex(state: PlaybackStatus): Int {

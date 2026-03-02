@@ -85,7 +85,9 @@ Instrumented tests (device/emulator required):
 ## Android Auto / Media Service Notes
 
 - Media browsing is exposed via `AnyPlayerMediaLibraryService` in the app manifest.
-- The service is exported and protected with `android.permission.BIND_MEDIA_BROWSER_SERVICE` for Android Auto/media browser clients.
+- Service access control is enforced at runtime in `AnyPlayerMediaLibraryService` via trusted-controller validation (`onConnect` / `onGetSession`).
+- Trusted controllers include the app itself, system UID/system apps, and package allowlist entries in `TRUSTED_CONTROLLER_PACKAGES`.
+- If a specific head unit host cannot connect, add its package name to `TRUSTED_CONTROLLER_PACKAGES` in `app/src/main/java/com/anyplayer/android/playback/AnyPlayerMediaLibraryService.kt`.
 - OAuth deep-link callback for Spotify uses: `anyplayer://spotify-callback`.
 
 ## Useful Docs

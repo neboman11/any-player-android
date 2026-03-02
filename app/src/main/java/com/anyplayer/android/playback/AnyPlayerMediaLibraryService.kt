@@ -3,11 +3,14 @@ package com.anyplayer.android.playback
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Process
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.MediaItem
@@ -63,6 +66,41 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             this,
             playerBridge,
             object : MediaLibrarySession.Callback {
+                override fun onConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ): MediaSession.ConnectionResult {
+                    if (!isTrustedController(controller)) {
+                        Log.w(
+                            TAG,
+                            "Allowing unrecognized media controller package=${controller.packageName} uid=${controller.uid}"
+                        )
+                    }
+                    Log.i(
+                        TAG,
+                        "Accepted media controller package=${controller.packageName} uid=${controller.uid}"
+                    )
+                    return super.onConnect(session, controller)
+                }
+
+                override fun onDisconnected(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ) {
+                    Log.i(
+                        TAG,
+                        "Controller disconnected package=${controller.packageName} uid=${controller.uid}"
+                    )
+                    if (isProjectionController(controller.packageName)) {
+                        val current = playbackQueueManager.status.value
+                        if (current.state == PlaybackStateType.PLAYING) {
+                            Log.i(TAG, "Projection controller disconnected; pausing playback")
+                            playbackQueueManager.pause()
+                        }
+                    }
+                    super.onDisconnected(session, controller)
+                }
+
                 // Must return a valid root so MediaBrowserCompat clients (Android Auto,
                 // DHU, Google Home) don't get onConnectionFailed. The default
                 // implementation returns RESULT_ERROR_NOT_SUPPORTED which causes all
@@ -195,6 +233,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        Log.i(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
             ACTION_PLAY_PAUSE -> playbackQueueManager.togglePlayPause()
             ACTION_NEXT -> playbackQueueManager.next()
@@ -204,6 +243,16 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        if (!isTrustedController(controllerInfo)) {
+            Log.w(
+                TAG,
+                "Allowing unrecognized session request package=${controllerInfo.packageName} uid=${controllerInfo.uid}"
+            )
+        }
+        Log.i(
+            TAG,
+            "onGetSession accepted package=${controllerInfo.packageName} uid=${controllerInfo.uid}"
+        )
         return mediaLibrarySession
     }
 
@@ -219,11 +268,40 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     companion object {
+        private const val TAG = "AnyPlayerMediaService"
         private const val NOTIFICATION_ID = 1001
         private const val ROOT_ID = "root"
         private const val ACTION_PLAY_PAUSE = "com.anyplayer.android.action.PLAY_PAUSE"
         private const val ACTION_NEXT = "com.anyplayer.android.action.NEXT"
         private const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
+        private val TRUSTED_CONTROLLER_PACKAGES = setOf(
+            "com.google.android.projection.gearhead",
+            "com.android.car.media",
+            "com.google.android.apps.automotive.media"
+        )
+    }
+
+    private fun isTrustedController(controllerInfo: MediaSession.ControllerInfo): Boolean {
+        val controllerPackage = controllerInfo.packageName
+        if (controllerPackage == packageName) return true
+        if (controllerInfo.uid == Process.SYSTEM_UID) return true
+        if (controllerPackage in TRUSTED_CONTROLLER_PACKAGES) return true
+        return isSystemApp(controllerPackage)
+    }
+
+    private fun isSystemApp(controllerPackage: String): Boolean {
+        val appInfo = runCatching {
+            packageManager.getApplicationInfo(controllerPackage, 0)
+        }.getOrNull() ?: return false
+        val systemFlags = ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP
+        return (appInfo.flags and systemFlags) != 0
+    }
+
+    private fun isProjectionController(controllerPackage: String): Boolean {
+        if (controllerPackage == "com.google.android.projection.gearhead") return true
+        if (controllerPackage.startsWith("com.google.android.apps.auto")) return true
+        if (controllerPackage.startsWith("com.android.car")) return true
+        return false
     }
 
     private fun currentDisplayQueue(): List<Track> {
