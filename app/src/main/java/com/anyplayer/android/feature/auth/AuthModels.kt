@@ -30,3 +30,13 @@ interface ProviderAuthRepository {
     suspend fun status(sourceType: SourceType): ProviderConnectionProfile
     suspend fun readStoredConnection(sourceType: SourceType): StoredConnection?
 }
+
+/**
+ * Returns true if the given [source] is connected (or does not require a connection check).
+ * Sources of [SourceType.CUSTOM] and [SourceType.ALL] are always considered available.
+ * A null source is treated as available (no current track).
+ */
+suspend fun ProviderAuthRepository.isSourceConnected(source: SourceType?): Boolean {
+    if (source == null || source == SourceType.CUSTOM || source == SourceType.ALL) return true
+    return runCatching { status(source).connected }.getOrDefault(false)
+}

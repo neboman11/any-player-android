@@ -1188,9 +1188,16 @@ class MainViewModel @Inject constructor(
 
     private fun enforcePlaybackDisabledState() {
         viewModelScope.launch {
-            combine(playbackQueueManager.status, providerStatuses) { playbackStatus, profiles ->
-                playbackStatus to profiles
-            }.collectLatest { (playbackStatus, profiles) ->
+            combine(playbackQueueManager.status, providerStatuses, startupInProgress) { playbackStatus, profiles, inProgress ->
+                Triple(playbackStatus, profiles, inProgress)
+            }.collectLatest { (playbackStatus, profiles, inProgress) ->
+                // Don't enforce during startup: providerStatuses is empty until runStartup
+                // completes, so evaluating here would spuriously block persisted-queue tracks.
+                if (inProgress) {
+                    lastAutoPausedTrackKey = null
+                    return@collectLatest
+                }
+
                 val reason = playbackDisabledReason(playbackStatus, profiles)
                 if (reason == null) {
                     lastAutoPausedTrackKey = null

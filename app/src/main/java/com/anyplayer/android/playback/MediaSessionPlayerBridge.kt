@@ -16,13 +16,13 @@ import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
+import com.anyplayer.android.feature.auth.isSourceConnected
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -206,14 +206,17 @@ class MediaSessionPlayerBridge @Inject constructor(
 
     // Transport commands — delegate to PlaybackQueueManager
     override fun play() {
-        if (!isCurrentTrackProviderAvailable()) {
-            if (currentStatus().state == PlaybackStateType.PLAYING) {
-                playbackQueueManager.pause()
+        scope.launch {
+            val source = currentStatus().currentTrack?.source
+            if (authRepository.isSourceConnected(source)) {
+                playbackQueueManager.play()
+            } else {
+                if (currentStatus().state == PlaybackStateType.PLAYING) {
+                    playbackQueueManager.pause()
+                }
+                Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
             }
-            Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
-            return
         }
-        playbackQueueManager.play()
     }
     override fun pause() { playbackQueueManager.pause() }
     override fun setPlayWhenReady(playWhenReady: Boolean) {
@@ -235,20 +238,6 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     companion object { private const val TAG = "PlayerBridge" }
-
-    private fun isCurrentTrackProviderAvailable(): Boolean {
-        val source = currentStatus().currentTrack?.source ?: return true
-        if (source == SourceType.CUSTOM || source == SourceType.ALL) {
-            return true
-        }
-
-        return runCatching {
-            runBlocking { authRepository.status(source).connected }
-        }.getOrElse {
-            Log.w(TAG, "Unable to verify provider state for $source", it)
-            false
-        }
-    }
 
     private fun mapState(state: PlaybackStateType): Int = when (state) {
         PlaybackStateType.PLAYING,
