@@ -522,10 +522,6 @@ class MainViewModel @Inject constructor(
                 syncStatus.value = "Sync server target is not set."
                 return@launch
             }
-            if (preferences.authToken.isBlank()) {
-                syncStatus.value = "Sync auth token is not set."
-                return@launch
-            }
 
             val snapshot = syncSnapshotClient.fetchSnapshot(preferences.serverTarget)
             if (snapshot == null) {
@@ -1119,10 +1115,10 @@ class MainViewModel @Inject constructor(
 
     private fun startRealtimePlaybackSync() {
         viewModelScope.launch {
-            combine(syncServerTarget, syncAuthToken, syncAppStateEnabled) { serverTarget, authToken, appStateEnabled ->
-                Triple(serverTarget.trim(), authToken.trim(), appStateEnabled)
-            }.collectLatest { (serverTarget, authToken, appStateEnabled) ->
-                if (!appStateEnabled || serverTarget.isBlank() || authToken.isBlank()) {
+            combine(syncServerTarget, syncAppStateEnabled) { serverTarget, appStateEnabled ->
+                Pair(serverTarget.trim(), appStateEnabled)
+            }.collectLatest { (serverTarget, appStateEnabled) ->
+                if (!appStateEnabled || serverTarget.isBlank()) {
                     return@collectLatest
                 }
 
