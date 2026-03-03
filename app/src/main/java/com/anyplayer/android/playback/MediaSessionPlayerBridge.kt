@@ -14,6 +14,8 @@ import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.auth.ProviderAuthRepository
+import com.anyplayer.android.feature.auth.isSourceConnected
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
@@ -44,7 +46,8 @@ import javax.inject.Singleton
 @UnstableApi
 class MediaSessionPlayerBridge @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
-    private val playbackQueueManager: PlaybackQueueManager
+    private val playbackQueueManager: PlaybackQueueManager,
+    private val authRepository: ProviderAuthRepository
 ) : ForwardingPlayer(media3PlaybackController.player) {
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
@@ -201,7 +204,20 @@ class MediaSessionPlayerBridge @Inject constructor(
         buildCommands(currentStatus().currentTrack != null || currentStatus().queue.isNotEmpty())
 
     // Transport commands — delegate to PlaybackQueueManager
-    override fun play()  { playbackQueueManager.play() }
+    override fun play() {
+        scope.launch {
+            val status = currentStatus()
+            val source = status.currentTrack?.source
+            if (authRepository.isSourceConnected(source)) {
+                playbackQueueManager.play()
+            } else {
+                if (status.state == PlaybackStateType.PLAYING) {
+                    playbackQueueManager.pause()
+                }
+                Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
+            }
+        }
+    }
     override fun pause() { playbackQueueManager.pause() }
     override fun setPlayWhenReady(playWhenReady: Boolean) {
         if (playWhenReady) play() else pause()

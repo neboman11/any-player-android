@@ -29,6 +29,8 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.auth.ProviderAuthRepository
+import com.anyplayer.android.feature.auth.isSourceConnected
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -49,6 +51,8 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     lateinit var playerBridge: MediaSessionPlayerBridge
     @Inject
     lateinit var playbackQueueManager: PlaybackQueueManager
+    @Inject
+    lateinit var authRepository: ProviderAuthRepository
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -235,7 +239,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         super.onStartCommand(intent, flags, startId)
         Log.i(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
-            ACTION_PLAY_PAUSE -> playbackQueueManager.togglePlayPause()
+            ACTION_PLAY_PAUSE -> handlePlayPauseWithGuard()
             ACTION_NEXT -> playbackQueueManager.next()
             ACTION_PREVIOUS -> playbackQueueManager.previous()
         }
@@ -399,6 +403,28 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    private fun handlePlayPauseWithGuard() {
+        serviceScope.launch {
+            val status = playbackQueueManager.status.value
+            val connected = authRepository.isSourceConnected(status.currentTrack?.source)
+            // Re-read status after the suspend call to detect track changes during auth check
+            val freshStatus = playbackQueueManager.status.value
+            if (connected) {
+                if (freshStatus.currentTrack?.id == status.currentTrack?.id) {
+                    playbackQueueManager.togglePlayPause()
+                } else {
+                    Log.d(TAG, "Skipping play/pause: track changed during provider auth check")
+                }
+                return@launch
+            }
+
+            if (freshStatus.state == PlaybackStateType.PLAYING) {
+                playbackQueueManager.pause()
+            }
+            Log.w(TAG, "Blocked play/pause from notification: current track provider is not configured/authenticated")
+        }
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {

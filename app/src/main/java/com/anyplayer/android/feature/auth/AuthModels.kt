@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.auth
 
+import android.util.Log
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
 import kotlinx.serialization.Serializable
@@ -29,4 +30,17 @@ interface ProviderAuthRepository {
     suspend fun restoreAll(): List<ProviderConnectionProfile>
     suspend fun status(sourceType: SourceType): ProviderConnectionProfile
     suspend fun readStoredConnection(sourceType: SourceType): StoredConnection?
+}
+
+/**
+ * Returns true if the given [source] is connected (or does not require a connection check).
+ * Sources of [SourceType.CUSTOM] and [SourceType.ALL] are always considered available.
+ * A null source is treated as available (no current track).
+ */
+suspend fun ProviderAuthRepository.isSourceConnected(source: SourceType?): Boolean {
+    if (source == null || source == SourceType.CUSTOM || source == SourceType.ALL) return true
+    return runCatching { status(source).connected }.getOrElse { e ->
+        Log.w("ProviderAuth", "Unable to verify provider state for $source; allowing playback", e)
+        true
+    }
 }

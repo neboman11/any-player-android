@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +32,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -164,6 +166,7 @@ fun AnyPlayerApp(viewModel: MainViewModel = hiltViewModel()) {
 @Composable
 private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val status = state.playbackStatus
+    val playbackDisabledMessage = state.playbackDisabledMessage
     val currentTrackId = status.currentTrack?.id
     val displayQueue = status.orderedQueue.ifEmpty { status.queue }
     val originalQueue = status.queue
@@ -195,6 +198,21 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
         Text("Track: ${status.currentTrack?.title ?: "-"}")
         Text("Artist: ${status.currentTrack?.artist ?: "-"}")
         Text("State: ${status.state}")
+        if (playbackDisabledMessage != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = playbackDisabledMessage,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+        }
         status.errorMessage?.let { err ->
             Text(
                 text = "Error: $err",
@@ -205,7 +223,10 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = viewModel::previous) { Text("Previous") }
-            Button(onClick = viewModel::togglePlayPause) { Text("Play/Pause") }
+            Button(
+                onClick = viewModel::togglePlayPause,
+                enabled = playbackDisabledMessage == null
+            ) { Text("Play/Pause") }
             Button(onClick = viewModel::next) { Text("Next") }
         }
 
@@ -237,16 +258,16 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
 
         if (upcomingTracks.isNotEmpty() || pastTracks.isNotEmpty()) {
             Text("Up Next")
+            QueueTableHeader()
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 upcomingTracks.forEach { track ->
-                    Button(
-                        onClick = {
+                    QueueTrackRow(
+                        track = track,
+                        onPlay = {
                             val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
                             if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)
                         }
-                    ) {
-                        Text("${track.title} • ${track.artist}")
-                    }
+                    )
                 }
             }
 
@@ -256,20 +277,17 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                QueueTableHeader()
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     pastTracks.forEach { track ->
-                        Button(
-                            onClick = {
+                        QueueTrackRow(
+                            track = track,
+                            onPlay = {
                                 val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
                                 if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)
                             },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        ) {
-                            Text("${track.title} • ${track.artist}")
-                        }
+                            subdued = true
+                        )
                     }
                 }
             }
@@ -767,8 +785,118 @@ private fun TrackRow(
         Text(text = track.artist, modifier = Modifier.weight(1.5f), style = MaterialTheme.typography.bodySmall)
         Text(text = track.album ?: "—", modifier = Modifier.weight(1.3f), style = MaterialTheme.typography.bodySmall)
         Text(text = formatTrackDuration(track.durationMs), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-        Text(text = track.source.name.lowercase(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        TrackSourceBadge(source = track.source, modifier = Modifier.weight(1f))
     }
+}
+
+@Composable
+private fun QueueTableHeader() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Track", modifier = Modifier.weight(2f), style = MaterialTheme.typography.labelMedium)
+        Text("Artist", modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.labelMedium)
+        Text("Source", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+        Text("Quality", modifier = Modifier.weight(1.3f), style = MaterialTheme.typography.labelMedium)
+        Text("Duration", modifier = Modifier.weight(0.8f), style = MaterialTheme.typography.labelMedium)
+        Text("Action", style = MaterialTheme.typography.labelMedium)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun QueueTrackRow(
+    track: Track,
+    onPlay: () -> Unit,
+    subdued: Boolean = false
+) {
+    val textColor = if (subdued) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(track.title, modifier = Modifier.weight(2f), style = MaterialTheme.typography.bodySmall, color = textColor)
+        Text(track.artist, modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.bodySmall, color = textColor)
+        TrackSourceBadge(source = track.source, modifier = Modifier.weight(1f))
+        TrackQualityBadge(track = track, modifier = Modifier.weight(1.3f))
+        Text(formatTrackDuration(track.durationMs), modifier = Modifier.weight(0.8f), style = MaterialTheme.typography.bodySmall, color = textColor)
+        TextButton(onClick = onPlay, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+            Text("Play")
+        }
+    }
+}
+
+@Composable
+private fun TrackSourceBadge(source: SourceType, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(
+            text = getTrackSourceLabel(source),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun TrackQualityBadge(track: Track, modifier: Modifier = Modifier) {
+    val label = getTrackQualityLabel(track)
+    val qualityText = if (isSpotifyQualityUnavailable(track)) "$label ℹ" else label
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(
+            text = qualityText,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+private fun getTrackSourceLabel(source: SourceType): String = when (source) {
+    SourceType.SPOTIFY -> "Spotify"
+    SourceType.JELLYFIN -> "Jellyfin"
+    SourceType.PLEX -> "Plex"
+    SourceType.CUSTOM -> "Custom"
+    SourceType.ALL -> "All"
+}
+
+private fun getTrackQualityLabel(track: Track): String {
+    val parts = mutableListOf<String>()
+
+    if ((track.bitrateKbps ?: 0) > 0) {
+        parts += "${track.bitrateKbps} kbps"
+    }
+
+    val sampleRateHz = track.sampleRateHz ?: 0
+    if (sampleRateHz > 0) {
+        val sampleRateKhz = sampleRateHz / 1000.0
+        val sampleRateLabel = if (sampleRateKhz % 1.0 == 0.0) {
+            "${sampleRateKhz.toInt()} kHz"
+        } else {
+            "${"%.1f".format(sampleRateKhz)} kHz"
+        }
+        parts += sampleRateLabel
+    }
+
+    return if (parts.isEmpty()) "Unknown" else parts.joinToString(" • ")
+}
+
+private fun isSpotifyQualityUnavailable(track: Track): Boolean {
+    val hasBitrate = (track.bitrateKbps ?: 0) > 0
+    val hasSampleRate = (track.sampleRateHz ?: 0) > 0
+    return track.source == SourceType.SPOTIFY && !hasBitrate && !hasSampleRate
 }
 
 private fun formatTrackDuration(durationMs: Long?): String {
@@ -888,9 +1016,10 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
 
                 HorizontalDivider()
                 Text("Connections", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                ProviderStatusTable(
-                    providerStatuses = providerStatusRows,
-                    onDisconnect = viewModel::disconnect
+                Text(
+                    "Provider connection controls are available in the Spotify, Jellyfin, and Plex tabs.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 HorizontalDivider()
