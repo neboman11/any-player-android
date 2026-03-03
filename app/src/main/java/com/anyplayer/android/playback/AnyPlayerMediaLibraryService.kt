@@ -408,12 +408,19 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private fun handlePlayPauseWithGuard() {
         serviceScope.launch {
             val status = playbackQueueManager.status.value
-            if (authRepository.isSourceConnected(status.currentTrack?.source)) {
-                playbackQueueManager.togglePlayPause()
+            val connected = authRepository.isSourceConnected(status.currentTrack?.source)
+            // Re-read status after the suspend call to detect track changes during auth check
+            val freshStatus = playbackQueueManager.status.value
+            if (connected) {
+                if (freshStatus.currentTrack?.id == status.currentTrack?.id) {
+                    playbackQueueManager.togglePlayPause()
+                } else {
+                    Log.d(TAG, "Skipping play/pause: track changed during provider auth check")
+                }
                 return@launch
             }
 
-            if (status.state == PlaybackStateType.PLAYING) {
+            if (freshStatus.state == PlaybackStateType.PLAYING) {
                 playbackQueueManager.pause()
             }
             Log.w(TAG, "Blocked play/pause from notification: current track provider is not configured/authenticated")

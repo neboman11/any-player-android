@@ -13,7 +13,6 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
-import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
@@ -207,11 +206,12 @@ class MediaSessionPlayerBridge @Inject constructor(
     // Transport commands — delegate to PlaybackQueueManager
     override fun play() {
         scope.launch {
-            val source = currentStatus().currentTrack?.source
+            val status = currentStatus()
+            val source = status.currentTrack?.source
             if (authRepository.isSourceConnected(source)) {
                 playbackQueueManager.play()
             } else {
-                if (currentStatus().state == PlaybackStateType.PLAYING) {
+                if (status.state == PlaybackStateType.PLAYING) {
                     playbackQueueManager.pause()
                 }
                 Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
