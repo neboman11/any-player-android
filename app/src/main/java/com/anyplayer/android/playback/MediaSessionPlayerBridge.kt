@@ -13,13 +13,16 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
+import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,7 +47,8 @@ import javax.inject.Singleton
 @UnstableApi
 class MediaSessionPlayerBridge @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
-    private val playbackQueueManager: PlaybackQueueManager
+    private val playbackQueueManager: PlaybackQueueManager,
+    private val authRepository: ProviderAuthRepository
 ) : ForwardingPlayer(media3PlaybackController.player) {
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
@@ -201,7 +205,16 @@ class MediaSessionPlayerBridge @Inject constructor(
         buildCommands(currentStatus().currentTrack != null || currentStatus().queue.isNotEmpty())
 
     // Transport commands — delegate to PlaybackQueueManager
-    override fun play()  { playbackQueueManager.play() }
+    override fun play() {
+        if (!isCurrentTrackProviderAvailable()) {
+            if (currentStatus().state == PlaybackStateType.PLAYING) {
+                playbackQueueManager.pause()
+            }
+            Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
+            return
+        }
+        playbackQueueManager.play()
+    }
     override fun pause() { playbackQueueManager.pause() }
     override fun setPlayWhenReady(playWhenReady: Boolean) {
         if (playWhenReady) play() else pause()
@@ -222,6 +235,20 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     companion object { private const val TAG = "PlayerBridge" }
+
+    private fun isCurrentTrackProviderAvailable(): Boolean {
+        val source = currentStatus().currentTrack?.source ?: return true
+        if (source == SourceType.CUSTOM || source == SourceType.ALL) {
+            return true
+        }
+
+        return runCatching {
+            runBlocking { authRepository.status(source).connected }
+        }.getOrElse {
+            Log.w(TAG, "Unable to verify provider state for $source", it)
+            false
+        }
+    }
 
     private fun mapState(state: PlaybackStateType): Int = when (state) {
         PlaybackStateType.PLAYING,

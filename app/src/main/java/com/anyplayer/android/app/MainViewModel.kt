@@ -75,6 +75,8 @@ class MainViewModel @Inject constructor(
     private val syncPreferencesStore: SyncPreferencesStore,
     private val syncSnapshotClient: SyncSnapshotClient
 ) : ViewModel() {
+    private var lastAutoPausedTrackKey: String? = null
+
     private val syncJson = kotlinx.serialization.json.Json {
         ignoreUnknownKeys = true
     }
@@ -410,6 +412,10 @@ class MainViewModel @Inject constructor(
             )
         }
     ) { startup, catalog, local ->
+        val playbackDisabledMessage = playbackDisabledReason(
+            playbackStatus = catalog.playbackStatus,
+            profiles = catalog.providerStatuses
+        )
         MainUiState(
             startupMessage = startup.startupMessage,
             startupInProgress = startup.startupInProgress,
@@ -418,6 +424,8 @@ class MainViewModel @Inject constructor(
             startupWarnings = startup.startupWarnings,
             providerStatuses = catalog.providerStatuses,
             playbackStatus = catalog.playbackStatus,
+            playbackDisabled = playbackDisabledMessage != null,
+            playbackDisabledMessage = playbackDisabledMessage,
             audioNormalizationEnabled = catalog.audioNormalizationSettings.enabled,
             audioNormalizationStrictMode = catalog.audioNormalizationSettings.strictMode,
             searchResults = catalog.searchResults,
@@ -461,6 +469,7 @@ class MainViewModel @Inject constructor(
         restoreStartup()
         observeCustomPlaylists()
         startRealtimePlaybackSync()
+        enforcePlaybackDisabledState()
     }
 
     fun updateSyncServerTarget(value: String) {
@@ -707,7 +716,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun togglePlayPause() = playbackQueueManager.togglePlayPause()
+    fun togglePlayPause() {
+        val reason = playbackDisabledReason(
+            playbackStatus = playbackQueueManager.status.value,
+            profiles = providerStatuses.value
+        )
+
+        if (reason != null) {
+            providerConnectionFeedback.value = reason
+            if (playbackQueueManager.status.value.state == PlaybackStateType.PLAYING) {
+                playbackQueueManager.pause()
+            }
+            return
+        }
+
+        playbackQueueManager.togglePlayPause()
+    }
     fun next() = playbackQueueManager.next()
     fun previous() = playbackQueueManager.previous()
     fun setShuffle(enabled: Boolean) = playbackQueueManager.setShuffle(enabled)
@@ -1162,6 +1186,50 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private fun enforcePlaybackDisabledState() {
+        viewModelScope.launch {
+            combine(playbackQueueManager.status, providerStatuses) { playbackStatus, profiles ->
+                playbackStatus to profiles
+            }.collectLatest { (playbackStatus, profiles) ->
+                val reason = playbackDisabledReason(playbackStatus, profiles)
+                if (reason == null) {
+                    lastAutoPausedTrackKey = null
+                    return@collectLatest
+                }
+
+                val source = playbackStatus.currentTrack?.source ?: return@collectLatest
+                val trackId = playbackStatus.currentTrack?.id ?: "none"
+                val key = "${source.name}:$trackId"
+
+                if (playbackStatus.state == PlaybackStateType.PLAYING && lastAutoPausedTrackKey != key) {
+                    lastAutoPausedTrackKey = key
+                    providerConnectionFeedback.value = reason
+                    playbackQueueManager.pause()
+                }
+            }
+        }
+    }
+
+    private fun playbackDisabledReason(
+        playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
+        profiles: List<ProviderConnectionProfile>
+    ): String? {
+        val source = playbackStatus.currentTrack?.source ?: return null
+        if (source == SourceType.CUSTOM || source == SourceType.ALL) {
+            return null
+        }
+
+        val connected = profiles.any { profile ->
+            profile.source == source && profile.connected
+        }
+
+        if (connected) {
+            return null
+        }
+
+        return "Playback disabled: ${source.name.lowercase()} is not configured/authenticated. Reconnect it in Settings. Next/Previous still works."
+    }
+
     private fun loadSyncPreferences() {
         val value = syncPreferencesStore.read()
         syncServerTarget.value = value.serverTarget
@@ -1423,6 +1491,8 @@ data class MainUiState(
         duration = 0,
         queue = emptyList()
     ),
+    val playbackDisabled: Boolean = false,
+    val playbackDisabledMessage: String? = null,
     val audioNormalizationEnabled: Boolean = false,
     val audioNormalizationStrictMode: Boolean = false,
     val searchResults: List<Track> = emptyList(),

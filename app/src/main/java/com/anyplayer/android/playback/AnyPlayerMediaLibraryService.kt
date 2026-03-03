@@ -29,6 +29,7 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -49,6 +50,8 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     lateinit var playerBridge: MediaSessionPlayerBridge
     @Inject
     lateinit var playbackQueueManager: PlaybackQueueManager
+    @Inject
+    lateinit var authRepository: ProviderAuthRepository
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -235,7 +238,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         super.onStartCommand(intent, flags, startId)
         Log.i(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
-            ACTION_PLAY_PAUSE -> playbackQueueManager.togglePlayPause()
+            ACTION_PLAY_PAUSE -> handlePlayPauseWithGuard()
             ACTION_NEXT -> playbackQueueManager.next()
             ACTION_PREVIOUS -> playbackQueueManager.previous()
         }
@@ -399,6 +402,33 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    private fun handlePlayPauseWithGuard() {
+        if (isCurrentTrackProviderAvailable()) {
+            playbackQueueManager.togglePlayPause()
+            return
+        }
+
+        val status = playbackQueueManager.status.value
+        if (status.state == PlaybackStateType.PLAYING) {
+            playbackQueueManager.pause()
+        }
+        Log.w(TAG, "Blocked play/pause from notification: current track provider is not configured/authenticated")
+    }
+
+    private fun isCurrentTrackProviderAvailable(): Boolean {
+        val source = playbackQueueManager.status.value.currentTrack?.source ?: return true
+        if (source == SourceType.CUSTOM || source == SourceType.ALL) {
+            return true
+        }
+
+        return runCatching {
+            runBlocking { authRepository.status(source).connected }
+        }.getOrElse {
+            Log.w(TAG, "Unable to verify provider state for $source", it)
+            false
+        }
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
