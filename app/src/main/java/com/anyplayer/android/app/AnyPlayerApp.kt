@@ -967,6 +967,13 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     placeholder = { Text("http://10.0.2.2:8080") },
                     modifier = Modifier.fillMaxWidth()
                 )
+                OutlinedTextField(
+                    value = state.syncAuthToken,
+                    onValueChange = viewModel::updateSyncAuthToken,
+                    label = { Text("Sync Auth Token") },
+                    placeholder = { Text("Bearer token") },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = state.syncAppStateEnabled,
