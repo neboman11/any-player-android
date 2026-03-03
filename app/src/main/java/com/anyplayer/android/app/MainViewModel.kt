@@ -412,10 +412,15 @@ class MainViewModel @Inject constructor(
             )
         }
     ) { startup, catalog, local ->
-        val playbackDisabledMessage = playbackDisabledReason(
-            playbackStatus = catalog.playbackStatus,
-            profiles = catalog.providerStatuses
-        )
+        val playbackDisabledMessage =
+            if (startup.startupInProgress) {
+                null
+            } else {
+                playbackDisabledReason(
+                    playbackStatus = catalog.playbackStatus,
+                    profiles = catalog.providerStatuses
+                )
+            }
         MainUiState(
             startupMessage = startup.startupMessage,
             startupInProgress = startup.startupInProgress,
@@ -424,7 +429,6 @@ class MainViewModel @Inject constructor(
             startupWarnings = startup.startupWarnings,
             providerStatuses = catalog.providerStatuses,
             playbackStatus = catalog.playbackStatus,
-            playbackDisabled = playbackDisabledMessage != null,
             playbackDisabledMessage = playbackDisabledMessage,
             audioNormalizationEnabled = catalog.audioNormalizationSettings.enabled,
             audioNormalizationStrictMode = catalog.audioNormalizationSettings.strictMode,
@@ -1498,7 +1502,6 @@ data class MainUiState(
         duration = 0,
         queue = emptyList()
     ),
-    val playbackDisabled: Boolean = false,
     val playbackDisabledMessage: String? = null,
     val audioNormalizationEnabled: Boolean = false,
     val audioNormalizationStrictMode: Boolean = false,

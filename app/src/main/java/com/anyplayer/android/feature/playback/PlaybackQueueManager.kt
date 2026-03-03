@@ -788,6 +788,8 @@ class PlaybackQueueManager @Inject constructor(
                                 resetMixedMediaEndStallState()
                                 playMixedTrackById(nextTrack.id)
                                 return
+                            } else {
+                                resetMixedMediaEndStallState()
                             }
                         }
                     }
@@ -1149,7 +1151,7 @@ class PlaybackQueueManager @Inject constructor(
             .filter { it.source == SourceType.SPOTIFY }
             .map { it.id }
         if (ids.isEmpty()) return null
-        val index = ids.indexOf(currentTrackId).takeIf { it >= 0 } ?: 0
+        val index = ids.indexOfFirst { trackIdsMatch(it, currentTrackId) }.takeIf { it >= 0 } ?: 0
         return ids to index
     }
 
