@@ -339,7 +339,10 @@ class PlaybackQueueManager @Inject constructor(
                     currentTrack.source == SourceType.SPOTIFY && !isPlaying -> {
                         var ok = spotifyPlaybackController.play()
                         if (!ok) {
-                            ok = spotifyPlaybackController.startQueue(listOf(currentTrack.id), 0)
+                            val fallback = spotifyFallbackQueue(state, currentTrack.id)
+                            ok = if (fallback != null) {
+                                spotifyPlaybackController.startQueue(fallback.first, fallback.second)
+                            } else false
                         }
                         ok
                     }
@@ -413,7 +416,10 @@ class PlaybackQueueManager @Inject constructor(
                 val success = if (currentTrack.source == SourceType.SPOTIFY) {
                     var ok = spotifyPlaybackController.play()
                     if (!ok) {
-                        ok = spotifyPlaybackController.startQueue(listOf(currentTrack.id), 0)
+                        val fallback = spotifyFallbackQueue(state, currentTrack.id)
+                        ok = if (fallback != null) {
+                            spotifyPlaybackController.startQueue(fallback.first, fallback.second)
+                        } else false
                     }
                     ok
                 } else {
@@ -1132,6 +1138,20 @@ class PlaybackQueueManager @Inject constructor(
 
     private fun mixedPlaybackSequence(state: PlaybackStatus): List<Track> =
         state.orderedQueue.takeIf { it.isNotEmpty() } ?: state.queue
+
+    /**
+     * Builds a startQueue fallback for mixed-mode Spotify sessions: collects all Spotify tracks
+     * from [mixedPlaybackSequence] in order and returns a pair of (ids, startIndex).
+     * Returns null if there are no Spotify tracks in the sequence.
+     */
+    private fun spotifyFallbackQueue(state: PlaybackStatus, currentTrackId: String): Pair<List<String>, Int>? {
+        val ids = mixedPlaybackSequence(state)
+            .filter { it.source == SourceType.SPOTIFY }
+            .map { it.id }
+        if (ids.isEmpty()) return null
+        val index = ids.indexOf(currentTrackId).takeIf { it >= 0 } ?: 0
+        return ids to index
+    }
 
     private fun buildOrderedQueue(
         queue: List<Track>,
