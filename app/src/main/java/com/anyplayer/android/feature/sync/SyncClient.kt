@@ -140,6 +140,16 @@ class SyncSnapshotClient @Inject constructor(
 ) {
     fun getClientId(): String = syncPreferencesStore.getOrCreateClientId()
 
+    private fun normalizeToken(raw: String): String {
+        val trimmed = raw.trim()
+        val bearerPrefix = "Bearer "
+        return if (trimmed.startsWith(bearerPrefix, ignoreCase = true)) {
+            trimmed.substring(bearerPrefix.length).trimStart()
+        } else {
+            trimmed
+        }
+    }
+
     suspend fun fetchSnapshot(serverTarget: String): JsonObject? = withContext(Dispatchers.IO) {
         val base = serverTarget.trim().trimEnd('/')
         if (base.isBlank()) {
@@ -150,7 +160,7 @@ class SyncSnapshotClient @Inject constructor(
             .url("$base/v1/snapshot")
             .get()
             .apply {
-                val token = syncPreferencesStore.read().authToken.trim()
+                val token = normalizeToken(syncPreferencesStore.read().authToken)
                 if (token.isNotEmpty()) {
                     header("Authorization", "Bearer $token")
                 }
@@ -180,7 +190,7 @@ class SyncSnapshotClient @Inject constructor(
             .url("$base/v1/snapshot?since_version=$sinceVersion")
             .get()
             .apply {
-                val token = syncPreferencesStore.read().authToken.trim()
+                val token = normalizeToken(syncPreferencesStore.read().authToken)
                 if (token.isNotEmpty()) {
                     header("Authorization", "Bearer $token")
                 }
@@ -219,7 +229,7 @@ class SyncSnapshotClient @Inject constructor(
         val request = Request.Builder()
             .url("$base/v1/state/app-state")
             .apply {
-                val token = syncPreferencesStore.read().authToken.trim()
+                val token = normalizeToken(syncPreferencesStore.read().authToken)
                 if (token.isNotEmpty()) {
                     header("Authorization", "Bearer $token")
                 }
@@ -244,19 +254,17 @@ class SyncSnapshotClient @Inject constructor(
             else -> "ws://$base/v1/ws"
         }
 
-        val token = syncPreferencesStore.read().authToken.trim()
-        val wsUrlWithToken = if (token.isNotEmpty()) {
-            "$wsUrl?token=${java.net.URLEncoder.encode(token, "UTF-8")}"
-        } else {
-            wsUrl
+        val token = normalizeToken(syncPreferencesStore.read().authToken)
+        val requestBuilder = Request.Builder().url(wsUrl)
+        if (token.isNotEmpty()) {
+            requestBuilder.header("Authorization", "Bearer $token")
         }
-
-        val request = Request.Builder().url(wsUrlWithToken).build()
+        val request = requestBuilder.build()
         var socket: WebSocket? = null
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d("SyncSnapshotClient", "WebSocket connected to $wsUrlWithToken")
+                Log.d("SyncSnapshotClient", "WebSocket connected to $wsUrl")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
