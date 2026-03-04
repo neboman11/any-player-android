@@ -7,6 +7,7 @@ import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.core.storage.dao.ColumnPreferenceDao
 import com.anyplayer.android.core.storage.dao.CustomPlaylistDao
 import com.anyplayer.android.core.storage.dao.PlaylistTrackDao
+import com.anyplayer.android.core.storage.dao.ProviderPlaylistPreferenceDao
 import com.anyplayer.android.core.storage.dao.UnionPlaylistSourceDao
 import dagger.Module
 import dagger.Provides
@@ -22,6 +23,7 @@ object StorageModule {
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, "any_player.db")
+            .addMigrations(AppDatabase.MIGRATION_1_2)
             .build()
 
     @Provides
@@ -38,4 +40,8 @@ object StorageModule {
 
     @Provides
     fun provideAppCacheEntryDao(database: AppDatabase): AppCacheEntryDao = database.appCacheEntryDao()
+
+    @Provides
+    fun provideProviderPlaylistPreferenceDao(database: AppDatabase): ProviderPlaylistPreferenceDao =
+        database.providerPlaylistPreferenceDao()
 }
