@@ -434,12 +434,23 @@ class MainViewModel @Inject constructor(
         }
     ) { startup, catalog, local ->
         val selectedCustomPlaylist = local.customPlaylists.firstOrNull { it.id == local.selectedCustomPlaylistId }
-        val providerDuplicateGroups = DistinctPlaylistUtils
-            .deduplicateTracks(catalog.selectedProviderPlaylistTracks)
-            .duplicateGroups
-        val customDuplicateGroups = DistinctPlaylistUtils
-            .deduplicateTracks(local.activeCustomPlaylistTracks)
-            .duplicateGroups
+        val providerDuplicateGroups =
+            if (catalog.selectedProviderPlaylistIsDistinct) {
+                DistinctPlaylistUtils
+                    .deduplicateTracks(catalog.selectedProviderPlaylistTracks)
+                    .duplicateGroups
+            } else {
+                emptyList()
+            }
+        val isCustomDistinct = selectedCustomPlaylist?.isDistinct == true
+        val customDuplicateGroups =
+            if (isCustomDistinct) {
+                DistinctPlaylistUtils
+                    .deduplicateTracks(local.activeCustomPlaylistTracks)
+                    .duplicateGroups
+            } else {
+                emptyList()
+            }
         val playbackDisabledMessage =
             if (startup.startupInProgress) {
                 null

@@ -85,9 +85,10 @@ class DistinctPlaylistUtilsTest {
     @Test
     fun fixtureIsLoadedWithAtLeastOneCase() {
         val fixture = loadFixture()
-        assert(fixture.testCases.isNotEmpty()) {
-            "dedup_spec.json must contain at least one test case"
-        }
+        assertTrue(
+            "dedup_spec.json must contain at least one test case",
+            fixture.testCases.isNotEmpty()
+        )
     }
 
     @Test

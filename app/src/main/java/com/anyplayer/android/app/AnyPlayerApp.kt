@@ -308,6 +308,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     var customTrackSortColumnName by rememberSaveable("playlist_custom_track_sort_column") { mutableStateOf<String?>(null) }
     var customTrackSortAscending by rememberSaveable("playlist_custom_track_sort_ascending") { mutableStateOf(true) }
     var pendingStandardDuplicateRemovalIndex by remember { mutableStateOf<Int?>(null) }
+    var pendingStandardTrackRemovalIndex by remember { mutableStateOf<Int?>(null) }
 
     val selectedProviderPlaylist = state.selectedProviderPlaylist
     val selectedCustomPlaylist = state.customPlaylists.firstOrNull { it.id == state.selectedCustomPlaylistId }
@@ -546,6 +547,13 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                             }) {
                                 Text("Play")
                             }
+                            if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
+                                OutlinedButton(onClick = {
+                                    pendingStandardTrackRemovalIndex = row.originalIndex
+                                }) {
+                                    Text("Remove")
+                                }
+                            }
                             TrackRow(
                                 track = row.track,
                                 indexLabel = "${row.originalIndex + 1}.",
@@ -573,6 +581,28 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 },
                 dismissButton = {
                     OutlinedButton(onClick = { pendingStandardDuplicateRemovalIndex = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+        pendingStandardTrackRemovalIndex?.let { trackIndex ->
+            AlertDialog(
+                onDismissRequest = { pendingStandardTrackRemovalIndex = null },
+                title = { Text("Remove track?") },
+                text = {
+                    Text("This removes the track from the playlist.")
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        viewModel.removeTrackFromSelectedCustom(trackIndex)
+                        pendingStandardTrackRemovalIndex = null
+                    }) {
+                        Text("Remove")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { pendingStandardTrackRemovalIndex = null }) {
                         Text("Cancel")
                     }
                 }
