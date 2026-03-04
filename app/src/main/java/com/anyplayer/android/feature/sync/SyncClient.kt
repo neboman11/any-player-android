@@ -142,12 +142,8 @@ class SyncSnapshotClient @Inject constructor(
 
     private fun normalizeToken(raw: String): String {
         val trimmed = raw.trim()
-        val bearerPrefix = "Bearer "
-        return if (trimmed.startsWith(bearerPrefix, ignoreCase = true)) {
-            trimmed.substring(bearerPrefix.length).trimStart()
-        } else {
-            trimmed
-        }
+        val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
+        return bearerRegex.replace(trimmed, "")
     }
 
     suspend fun fetchSnapshot(serverTarget: String): JsonObject? = withContext(Dispatchers.IO) {
@@ -254,7 +250,9 @@ class SyncSnapshotClient @Inject constructor(
             else -> "ws://$base/v1/ws"
         }
 
-        val token = normalizeToken(syncPreferencesStore.read().authToken)
+        val token = withContext(Dispatchers.IO) {
+            normalizeToken(syncPreferencesStore.read().authToken)
+        }
         val requestBuilder = Request.Builder().url(wsUrl)
         if (token.isNotEmpty()) {
             requestBuilder.header("Authorization", "Bearer $token")
