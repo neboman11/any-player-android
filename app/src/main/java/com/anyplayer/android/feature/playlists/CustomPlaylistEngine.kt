@@ -232,9 +232,9 @@ class CustomPlaylistEngine @Inject constructor(
                     val dedupedTracks = result.tracks.map { it.toTrack() }
                     val clickedTrack = playlistTracks.getOrNull(trackIndex)
                     val resolvedIndex = if (clickedTrack != null) {
-                        val key = "${clickedTrack.title.trim().lowercase()}|${clickedTrack.artist.trim().lowercase()}"
+                        val key = DistinctPlaylistUtils.buildDedupeKey(clickedTrack.title, clickedTrack.artist)
                         dedupedTracks.indexOfFirst {
-                            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}" == key
+                            DistinctPlaylistUtils.buildDedupeKey(it.title, it.artist) == key
                         }.takeIf { it >= 0 } ?: 0
                     } else 0
                     playbackQueueManager.setQueue(dedupedTracks, startIndex = resolvedIndex, autoPlay = true)
@@ -250,9 +250,9 @@ class CustomPlaylistEngine @Inject constructor(
                     val dedupedTracks = result.tracks
                     val clickedTrack = materialized.getOrNull(trackIndex)
                     val resolvedIndex = if (clickedTrack != null) {
-                        val key = "${clickedTrack.title.trim().lowercase()}|${clickedTrack.artist.trim().lowercase()}"
+                        val key = DistinctPlaylistUtils.buildDedupeKey(clickedTrack.title, clickedTrack.artist)
                         dedupedTracks.indexOfFirst {
-                            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}" == key
+                            DistinctPlaylistUtils.buildDedupeKey(it.title, it.artist) == key
                         }.takeIf { it >= 0 } ?: 0
                     } else 0
                     playbackQueueManager.setQueue(dedupedTracks, startIndex = resolvedIndex, autoPlay = true)

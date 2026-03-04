@@ -14,7 +14,7 @@ import androidx.room.Entity
     primaryKeys = ["source", "playlistId"]
 )
 data class ProviderPlaylistPreferenceEntity(
-    /** Provider source identifier (e.g. "spotify", "jellyfin", "plex"). */
+    /** Provider source identifier, stored as SourceType.name (e.g. "SPOTIFY", "JELLYFIN", "PLEX"). */
     val source: String,
     /** Provider-scoped playlist identifier. */
     val playlistId: String,
