@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -252,6 +253,103 @@ class MainViewModelProviderDistinctPlaybackTest {
 
         assertEquals(2, captor.firstValue.size)
         assertEquals(listOf("j-1", "j-2"), captor.firstValue.map { it.id })
+    }
+
+    @Test
+    fun setSelectedProviderPlaylistDistinct_true_persistsAndPlaySelectedDedupsQueue() = runTest {
+        val playlistId = "jf-playlist-toggle-on"
+        val rawTracks = listOf(
+            track("j-1", "Theme", "Orchestra"),
+            track("j-2", "Outro", "Orchestra"),
+            track("j-3", "Theme", "Orchestra") // duplicate of j-1
+        )
+        val playlist = Playlist(
+            id = playlistId,
+            name = "Toggle On",
+            owner = "owner",
+            trackCount = rawTracks.size,
+            source = SourceType.JELLYFIN,
+            tracks = rawTracks
+        )
+        whenever(
+            playlistStorageRepository.getProviderPlaylistIsDistinct("JELLYFIN", playlistId)
+        ).doReturn(false, true, true)
+
+        viewModel.openProviderPlaylistSummary(playlist)
+        viewModel.setSelectedProviderPlaylistDistinct(true)
+        advanceUntilIdle()
+        viewModel.playSelectedProviderPlaylist()
+
+        verify(playlistStorageRepository).setProviderPlaylistIsDistinct("JELLYFIN", playlistId, true)
+        val queueCaptor = argumentCaptor<List<Track>>()
+        verify(playbackQueueManager).setQueue(queueCaptor.capture(), startIndex = eq(0), autoPlay = eq(true))
+        assertEquals(listOf("j-1", "j-2"), queueCaptor.firstValue.map { it.id })
+    }
+
+    @Test
+    fun setSelectedProviderPlaylistDistinct_false_persistsAndPlaySelectedRestoresFullQueue() = runTest {
+        val playlistId = "jf-playlist-toggle-off"
+        val rawTracks = listOf(
+            track("j-1", "Theme", "Orchestra"),
+            track("j-2", "Theme", "Orchestra")
+        )
+        val playlist = Playlist(
+            id = playlistId,
+            name = "Toggle Off",
+            owner = "owner",
+            trackCount = rawTracks.size,
+            source = SourceType.JELLYFIN,
+            tracks = rawTracks
+        )
+        whenever(
+            playlistStorageRepository.getProviderPlaylistIsDistinct("JELLYFIN", playlistId)
+        ).doReturn(true, false, false)
+
+        viewModel.openProviderPlaylistSummary(playlist)
+        viewModel.setSelectedProviderPlaylistDistinct(false)
+        advanceUntilIdle()
+        viewModel.playSelectedProviderPlaylist()
+
+        verify(playlistStorageRepository).setProviderPlaylistIsDistinct("JELLYFIN", playlistId, false)
+        val queueCaptor = argumentCaptor<List<Track>>()
+        verify(playbackQueueManager).setQueue(queueCaptor.capture(), startIndex = eq(0), autoPlay = eq(true))
+        assertEquals(listOf("j-1", "j-2"), queueCaptor.firstValue.map { it.id })
+    }
+
+    @Test
+    fun playSelectedProviderPlaylist_respectsLatestPreferenceAfterToggleChanges() = runTest {
+        val playlistId = "jf-playlist-toggle-cycle"
+        val rawTracks = listOf(
+            track("j-1", "Theme", "Orchestra"),
+            track("j-2", "Outro", "Orchestra"),
+            track("j-3", "Theme", "Orchestra")
+        )
+        val playlist = Playlist(
+            id = playlistId,
+            name = "Toggle Cycle",
+            owner = "owner",
+            trackCount = rawTracks.size,
+            source = SourceType.JELLYFIN,
+            tracks = rawTracks
+        )
+        whenever(
+            playlistStorageRepository.getProviderPlaylistIsDistinct("JELLYFIN", playlistId)
+        ).doReturn(false, true, true, false, false)
+
+        viewModel.openProviderPlaylistSummary(playlist)
+        viewModel.setSelectedProviderPlaylistDistinct(true)
+        advanceUntilIdle()
+        viewModel.playSelectedProviderPlaylist()
+
+        viewModel.setSelectedProviderPlaylistDistinct(false)
+        advanceUntilIdle()
+        viewModel.playSelectedProviderPlaylist()
+
+        val queueCaptor = argumentCaptor<List<Track>>()
+        verify(playbackQueueManager, org.mockito.kotlin.times(2))
+            .setQueue(queueCaptor.capture(), startIndex = eq(0), autoPlay = eq(true))
+        assertEquals(listOf("j-1", "j-2"), queueCaptor.allValues[0].map { it.id })
+        assertEquals(listOf("j-1", "j-2", "j-3"), queueCaptor.allValues[1].map { it.id })
     }
 
     // ── Both entry points apply same gate ────────────────────────────────────
