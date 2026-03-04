@@ -2,11 +2,13 @@ package com.anyplayer.android.feature.playlists
 
 import com.anyplayer.android.core.model.PlaylistTrack
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.core.model.Track
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -144,5 +146,117 @@ class DistinctPlaylistUtilsTest {
                 )
             }
         }
+    }
+
+    // ── deduplicateTracks (Track overload) ───────────────────────────────────
+
+    private fun track(id: String, title: String, artist: String): Track = Track(
+        id = id,
+        title = title,
+        artist = artist,
+        source = SourceType.SPOTIFY,
+        durationMs = 180_000L,
+        enriched = true
+    )
+
+    @Test
+    fun deduplicateTracks_noDuplicates_returnsAllTracks() {
+        val tracks = listOf(
+            track("1", "Alpha", "Artist A"),
+            track("2", "Beta", "Artist B"),
+            track("3", "Gamma", "Artist C")
+        )
+        val result = DistinctPlaylistUtils.deduplicateTracks(tracks)
+
+        assertEquals(3, result.tracks.size)
+        assertTrue(result.duplicateGroups.isEmpty())
+        assertEquals(listOf("1", "2", "3"), result.tracks.map { it.id })
+    }
+
+    @Test
+    fun deduplicateTracks_exactDuplicates_keepsFirstOccurrence() {
+        val tracks = listOf(
+            track("1", "Alpha", "Artist A"),
+            track("2", "Beta", "Artist B"),
+            track("3", "Alpha", "Artist A") // duplicate of track 1
+        )
+        val result = DistinctPlaylistUtils.deduplicateTracks(tracks)
+
+        assertEquals(2, result.tracks.size)
+        assertEquals(listOf("1", "2"), result.tracks.map { it.id })
+        assertEquals(1, result.duplicateGroups.size)
+
+        val group = result.duplicateGroups.first()
+        assertEquals("alpha|artist a", group.key)
+        assertEquals(0, group.firstOccurrenceIndex)
+        assertEquals(listOf("3"), group.occurrences.map { it.trackId })
+    }
+
+    @Test
+    fun deduplicateTracks_caseInsensitiveAndTrimmed_treatedAsDuplicate() {
+        val tracks = listOf(
+            track("1", "  Hello World  ", "  The Band  "),
+            track("2", "Hello World", "The Band"),       // same after trim+lowercase
+            track("3", "HELLO WORLD", "THE BAND")        // same after trim+lowercase
+        )
+        val result = DistinctPlaylistUtils.deduplicateTracks(tracks)
+
+        assertEquals(1, result.tracks.size)
+        assertEquals("1", result.tracks.first().id)
+        assertEquals(1, result.duplicateGroups.size)
+
+        val group = result.duplicateGroups.first()
+        assertEquals("hello world|the band", group.key)
+        assertEquals(0, group.firstOccurrenceIndex)
+        assertEquals(listOf("2", "3"), group.occurrences.map { it.trackId })
+    }
+
+    @Test
+    fun deduplicateTracks_emptyArtist_usesEmptyStringInKey() {
+        val tracks = listOf(
+            track("1", "Instrumental", ""),
+            track("2", "Instrumental", "")  // same title, empty artist
+        )
+        val result = DistinctPlaylistUtils.deduplicateTracks(tracks)
+
+        assertEquals(1, result.tracks.size)
+        assertEquals("1", result.tracks.first().id)
+        assertEquals(1, result.duplicateGroups.size)
+        assertEquals("instrumental|", result.duplicateGroups.first().key)
+    }
+
+    @Test
+    fun deduplicateTracks_emptyList_returnsEmpty() {
+        val result = DistinctPlaylistUtils.deduplicateTracks(emptyList())
+
+        assertTrue(result.tracks.isEmpty())
+        assertTrue(result.duplicateGroups.isEmpty())
+    }
+
+    @Test
+    fun deduplicateTracks_multipleGroups_allDetected() {
+        val tracks = listOf(
+            track("1", "Song A", "Artist X"),
+            track("2", "Song B", "Artist Y"),
+            track("3", "Song A", "Artist X"), // dup of 1
+            track("4", "Song B", "Artist Y"), // dup of 2
+            track("5", "Song C", "Artist Z"),
+            track("6", "Song A", "Artist X")  // second dup of 1
+        )
+        val result = DistinctPlaylistUtils.deduplicateTracks(tracks)
+
+        assertEquals(3, result.tracks.size)
+        assertEquals(listOf("1", "2", "5"), result.tracks.map { it.id })
+        assertEquals(2, result.duplicateGroups.size)
+
+        val groupA = result.duplicateGroups.find { it.key == "song a|artist x" }
+        assertNotNull(groupA)
+        assertEquals(0, groupA!!.firstOccurrenceIndex)
+        assertEquals(listOf("3", "6"), groupA.occurrences.map { it.trackId })
+
+        val groupB = result.duplicateGroups.find { it.key == "song b|artist y" }
+        assertNotNull(groupB)
+        assertEquals(1, groupB!!.firstOccurrenceIndex)
+        assertEquals(listOf("4"), groupB.occurrences.map { it.trackId })
     }
 }
