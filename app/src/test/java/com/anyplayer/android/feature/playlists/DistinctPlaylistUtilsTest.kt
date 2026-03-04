@@ -61,7 +61,7 @@ class DistinctPlaylistUtilsTest {
             "dedup_spec.json must be present in test resources (classLoader returned null)",
             stream
         )
-        val text = stream!!.bufferedReader().readText()
+        val text = stream!!.bufferedReader().use { it.readText() }
         return json.decodeFromString(text)
     }
 
