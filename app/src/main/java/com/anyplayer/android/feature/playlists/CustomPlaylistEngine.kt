@@ -202,19 +202,65 @@ class CustomPlaylistEngine @Inject constructor(
     suspend fun playPlaylist(playlistId: String) {
         val playlist = storageRepository.getCustomPlaylistById(playlistId) ?: return
         val tracks = when (playlist.playlistType) {
-            PlaylistType.STANDARD -> storageRepository.getPlaylistTracks(playlistId).map { it.toTrack() }
-            PlaylistType.UNION -> materializeUnionTracks(playlistId)
+            PlaylistType.STANDARD -> {
+                val playlistTracks = storageRepository.getPlaylistTracks(playlistId)
+                if (playlist.isDistinct) {
+                    DistinctPlaylistUtils.deduplicate(playlistTracks).tracks.map { it.toTrack() }
+                } else {
+                    playlistTracks.map { it.toTrack() }
+                }
+            }
+            PlaylistType.UNION -> {
+                val materialized = materializeUnionTracks(playlistId)
+                if (playlist.isDistinct) {
+                    DistinctPlaylistUtils.deduplicateTracks(materialized).tracks
+                } else {
+                    materialized
+                }
+            }
         }
         playbackQueueManager.setQueue(tracks, startIndex = 0, autoPlay = true)
     }
 
     suspend fun playFromTrack(playlistId: String, trackIndex: Int) {
         val playlist = storageRepository.getCustomPlaylistById(playlistId) ?: return
-        val tracks = when (playlist.playlistType) {
-            PlaylistType.STANDARD -> storageRepository.getPlaylistTracks(playlistId).map { it.toTrack() }
-            PlaylistType.UNION -> materializeUnionTracks(playlistId)
+        when (playlist.playlistType) {
+            PlaylistType.STANDARD -> {
+                val playlistTracks = storageRepository.getPlaylistTracks(playlistId)
+                if (playlist.isDistinct) {
+                    val result = DistinctPlaylistUtils.deduplicate(playlistTracks)
+                    val dedupedTracks = result.tracks.map { it.toTrack() }
+                    val clickedTrack = playlistTracks.getOrNull(trackIndex)
+                    val resolvedIndex = if (clickedTrack != null) {
+                        val key = "${clickedTrack.title.trim().lowercase()}|${clickedTrack.artist.trim().lowercase()}"
+                        dedupedTracks.indexOfFirst {
+                            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}" == key
+                        }.takeIf { it >= 0 } ?: 0
+                    } else 0
+                    playbackQueueManager.setQueue(dedupedTracks, startIndex = resolvedIndex, autoPlay = true)
+                } else {
+                    val tracks = playlistTracks.map { it.toTrack() }
+                    playbackQueueManager.setQueue(tracks, startIndex = trackIndex, autoPlay = true)
+                }
+            }
+            PlaylistType.UNION -> {
+                val materialized = materializeUnionTracks(playlistId)
+                if (playlist.isDistinct) {
+                    val result = DistinctPlaylistUtils.deduplicateTracks(materialized)
+                    val dedupedTracks = result.tracks
+                    val clickedTrack = materialized.getOrNull(trackIndex)
+                    val resolvedIndex = if (clickedTrack != null) {
+                        val key = "${clickedTrack.title.trim().lowercase()}|${clickedTrack.artist.trim().lowercase()}"
+                        dedupedTracks.indexOfFirst {
+                            "${it.title.trim().lowercase()}|${it.artist.trim().lowercase()}" == key
+                        }.takeIf { it >= 0 } ?: 0
+                    } else 0
+                    playbackQueueManager.setQueue(dedupedTracks, startIndex = resolvedIndex, autoPlay = true)
+                } else {
+                    playbackQueueManager.setQueue(materialized, startIndex = trackIndex, autoPlay = true)
+                }
+            }
         }
-        playbackQueueManager.setQueue(tracks, startIndex = trackIndex, autoPlay = true)
     }
 
     suspend fun getTracksForPlaylist(playlistId: String): List<Track> {
