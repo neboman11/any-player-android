@@ -200,7 +200,8 @@ class ConfigFileImporter @Inject constructor(
             createdAt = epochSecToIso(createdAt),
             updatedAt = epochSecToIso(updatedAt),
             trackCount = trackCount,
-            playlistType = parsedPlaylistType ?: com.anyplayer.android.core.model.PlaylistType.STANDARD
+            playlistType = parsedPlaylistType ?: com.anyplayer.android.core.model.PlaylistType.STANDARD,
+            isDistinct = isDistinct
         )
     }
 

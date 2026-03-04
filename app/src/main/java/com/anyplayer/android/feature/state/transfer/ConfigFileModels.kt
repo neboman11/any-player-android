@@ -62,7 +62,8 @@ data class ConfigPlaylistEntry(
     @SerialName("created_at") val createdAt: Long,
     @SerialName("updated_at") val updatedAt: Long,
     @SerialName("track_count") val trackCount: Int,
-    @SerialName("playlist_type") val playlistType: String
+    @SerialName("playlist_type") val playlistType: String,
+    @SerialName("is_distinct") val isDistinct: Boolean = false
 )
 
 /** A track record inside a config playlist — `id` is a database row integer. */

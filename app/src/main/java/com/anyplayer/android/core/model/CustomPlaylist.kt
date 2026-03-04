@@ -11,5 +11,6 @@ data class CustomPlaylist(
     val createdAt: String,
     val updatedAt: String,
     val trackCount: Int,
-    val playlistType: PlaylistType
+    val playlistType: PlaylistType,
+    val isDistinct: Boolean = false
 )
