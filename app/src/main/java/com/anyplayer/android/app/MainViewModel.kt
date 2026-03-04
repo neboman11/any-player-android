@@ -110,6 +110,7 @@ class MainViewModel @Inject constructor(
     private val spotifyTokenInput = MutableStateFlow("")
     private val spotifyAuthLaunchUrl = MutableStateFlow<String?>(null)
     private val syncServerTarget = MutableStateFlow("")
+    private val syncAuthToken = MutableStateFlow("")
     private val syncAppStateEnabled = MutableStateFlow(true)
     private val syncPlaylistsEnabled = MutableStateFlow(true)
     private val syncProviderConfigurationEnabled = MutableStateFlow(true)
@@ -183,6 +184,7 @@ class MainViewModel @Inject constructor(
         val spotifyTokenInput: String,
         val spotifyAuthLaunchUrl: String?,
         val syncServerTarget: String,
+        val syncAuthToken: String,
         val syncAppStateEnabled: Boolean,
         val syncPlaylistsEnabled: Boolean,
         val syncProviderConfigurationEnabled: Boolean,
@@ -220,6 +222,7 @@ class MainViewModel @Inject constructor(
 
     private data class SyncInputPart(
         val serverTarget: String,
+        val authToken: String,
         val appStateEnabled: Boolean,
         val playlistsEnabled: Boolean,
         val providerConfigEnabled: Boolean
@@ -235,12 +238,14 @@ class MainViewModel @Inject constructor(
 
     private val syncInputPart = combine(
         syncServerTarget,
+        syncAuthToken,
         syncAppStateEnabled,
         syncPlaylistsEnabled,
         syncProviderConfigurationEnabled
-    ) { serverTarget, appStateEnabled, playlistsEnabled, providerConfigEnabled ->
+    ) { serverTarget, authToken, appStateEnabled, playlistsEnabled, providerConfigEnabled ->
         SyncInputPart(
             serverTarget = serverTarget,
+            authToken = authToken,
             appStateEnabled = appStateEnabled,
             playlistsEnabled = playlistsEnabled,
             providerConfigEnabled = providerConfigEnabled
@@ -254,6 +259,7 @@ class MainViewModel @Inject constructor(
     ) { inputPart, settingsEnabled, syncStatusValue ->
         SyncInputs(
             serverTarget = inputPart.serverTarget,
+            authToken = inputPart.authToken,
             appStateEnabled = inputPart.appStateEnabled,
             playlistsEnabled = inputPart.playlistsEnabled,
             providerConfigEnabled = inputPart.providerConfigEnabled,
@@ -289,6 +295,7 @@ class MainViewModel @Inject constructor(
             providerPart.plexToken,
             providerPart.spotifyToken,
             syncInputs.serverTarget,
+            syncInputs.authToken,
             syncInputs.appStateEnabled,
             syncInputs.playlistsEnabled,
             syncInputs.providerConfigEnabled,
@@ -404,6 +411,7 @@ class MainViewModel @Inject constructor(
                 spotifyTokenInput = providerInputs.spotifyToken,
                 spotifyAuthLaunchUrl = spotifyLaunchUrl,
                 syncServerTarget = providerInputs.syncServerTarget,
+                syncAuthToken = providerInputs.syncAuthToken,
                 syncAppStateEnabled = providerInputs.syncAppStateEnabled,
                 syncPlaylistsEnabled = providerInputs.syncPlaylistsEnabled,
                 syncProviderConfigurationEnabled = providerInputs.syncProviderConfigurationEnabled,
@@ -455,6 +463,7 @@ class MainViewModel @Inject constructor(
             spotifyTokenInput = local.spotifyTokenInput,
             spotifyAuthLaunchUrl = local.spotifyAuthLaunchUrl,
             syncServerTarget = local.syncServerTarget,
+            syncAuthToken = local.syncAuthToken,
             syncAppStateEnabled = local.syncAppStateEnabled,
             syncPlaylistsEnabled = local.syncPlaylistsEnabled,
             syncProviderConfigurationEnabled = local.syncProviderConfigurationEnabled,
@@ -478,6 +487,11 @@ class MainViewModel @Inject constructor(
 
     fun updateSyncServerTarget(value: String) {
         syncServerTarget.value = value
+        persistSyncPreferences()
+    }
+
+    fun updateSyncAuthToken(value: String) {
+        syncAuthToken.value = value
         persistSyncPreferences()
     }
 
@@ -1102,7 +1116,7 @@ class MainViewModel @Inject constructor(
     private fun startRealtimePlaybackSync() {
         viewModelScope.launch {
             combine(syncServerTarget, syncAppStateEnabled) { serverTarget, appStateEnabled ->
-                serverTarget.trim() to appStateEnabled
+                Pair(serverTarget.trim(), appStateEnabled)
             }.collectLatest { (serverTarget, appStateEnabled) ->
                 if (!appStateEnabled || serverTarget.isBlank()) {
                     return@collectLatest
@@ -1244,6 +1258,7 @@ class MainViewModel @Inject constructor(
     private fun loadSyncPreferences() {
         val value = syncPreferencesStore.read()
         syncServerTarget.value = value.serverTarget
+        syncAuthToken.value = value.authToken
         syncAppStateEnabled.value = value.syncAppState
         syncPlaylistsEnabled.value = value.syncPlaylists
         syncProviderConfigurationEnabled.value = value.syncProviderConfiguration
@@ -1256,6 +1271,7 @@ class MainViewModel @Inject constructor(
 
     private fun currentSyncPreferences(): SyncPreferences = SyncPreferences(
         serverTarget = syncServerTarget.value.trim(),
+        authToken = syncAuthToken.value.trim(),
         syncAppState = syncAppStateEnabled.value,
         syncPlaylists = syncPlaylistsEnabled.value,
         syncProviderConfiguration = syncProviderConfigurationEnabled.value,
@@ -1466,6 +1482,7 @@ class MainViewModel @Inject constructor(
         val plexToken: String,
         val spotifyToken: String,
         val syncServerTarget: String,
+        val syncAuthToken: String,
         val syncAppStateEnabled: Boolean,
         val syncPlaylistsEnabled: Boolean,
         val syncProviderConfigurationEnabled: Boolean,
@@ -1475,6 +1492,7 @@ class MainViewModel @Inject constructor(
 
     private data class SyncInputs(
         val serverTarget: String,
+        val authToken: String,
         val appStateEnabled: Boolean,
         val playlistsEnabled: Boolean,
         val providerConfigEnabled: Boolean,
@@ -1528,6 +1546,7 @@ data class MainUiState(
     val spotifyTokenInput: String = "",
     val spotifyAuthLaunchUrl: String? = null,
     val syncServerTarget: String = "",
+    val syncAuthToken: String = "",
     val syncAppStateEnabled: Boolean = true,
     val syncPlaylistsEnabled: Boolean = true,
     val syncProviderConfigurationEnabled: Boolean = true,

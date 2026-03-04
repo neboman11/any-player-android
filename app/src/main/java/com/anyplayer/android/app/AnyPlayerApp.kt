@@ -967,6 +967,28 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     placeholder = { Text("http://10.0.2.2:8080") },
                     modifier = Modifier.fillMaxWidth()
                 )
+                var syncAuthTokenVisible by rememberSaveable { mutableStateOf(false) }
+                OutlinedTextField(
+                    value = state.syncAuthToken,
+                    onValueChange = viewModel::updateSyncAuthToken,
+                    label = { Text("Sync Auth Token") },
+                    placeholder = { Text("Bearer token") },
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (syncAuthTokenVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { syncAuthTokenVisible = !syncAuthTokenVisible }) {
+                            val visible = syncAuthTokenVisible
+                            Icon(
+                                imageVector = if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (visible) "Hide token" else "Show token"
+                            )
+                        }
+                    }
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = state.syncAppStateEnabled,
