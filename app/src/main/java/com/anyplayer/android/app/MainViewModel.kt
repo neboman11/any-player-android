@@ -38,6 +38,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -98,6 +99,7 @@ class MainViewModel @Inject constructor(
     private val selectedProviderPlaylist = MutableStateFlow<com.anyplayer.android.core.model.Playlist?>(null)
     private val selectedProviderPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
     private val selectedProviderPlaylistIsDistinct = MutableStateFlow(false)
+    private var providerPlaylistDistinctLoadJob: Job? = null
     private val selectedProviderPlaylistLoading = MutableStateFlow(false)
     private val selectedProviderPlaylistError = MutableStateFlow<String?>(null)
     private val providerPlaylistRefreshInProgress = MutableStateFlow(false)
@@ -879,7 +881,8 @@ class MainViewModel @Inject constructor(
         selectedProviderPlaylistLoading.value = true
         selectedProviderPlaylistError.value = null
 
-        viewModelScope.launch {
+        providerPlaylistDistinctLoadJob?.cancel()
+        providerPlaylistDistinctLoadJob = viewModelScope.launch {
             val persistedDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(
                 playlist.source.name,
                 playlist.id
@@ -928,26 +931,23 @@ class MainViewModel @Inject constructor(
         selectedProviderPlaylistIsDistinct.value = false
         selectedProviderPlaylistLoading.value = false
         selectedProviderPlaylistError.value = null
+        providerPlaylistDistinctLoadJob?.cancel()
+        providerPlaylistDistinctLoadJob = null
     }
 
     fun setSelectedProviderPlaylistDistinct(isDistinct: Boolean) {
         val playlist = selectedProviderPlaylist.value ?: return
+        // Optimistically update the UI state so the last toggle wins.
+        selectedProviderPlaylistIsDistinct.value = isDistinct
+        // Cancel any in-flight preference load so it cannot overwrite this choice.
+        providerPlaylistDistinctLoadJob?.cancel()
+        // Persist the change in the background without reading it back to drive UI state.
         viewModelScope.launch {
             playlistStorageRepository.setProviderPlaylistIsDistinct(
                 source = playlist.source.name,
                 playlistId = playlist.id,
                 isDistinct = isDistinct
             )
-            val persistedValue = playlistStorageRepository.getProviderPlaylistIsDistinct(
-                source = playlist.source.name,
-                playlistId = playlist.id
-            )
-            if (
-                selectedProviderPlaylist.value?.id == playlist.id &&
-                selectedProviderPlaylist.value?.source == playlist.source
-            ) {
-                selectedProviderPlaylistIsDistinct.value = persistedValue
-            }
         }
     }
 
@@ -955,19 +955,11 @@ class MainViewModel @Inject constructor(
         val playlist = selectedProviderPlaylist.value ?: return
         viewModelScope.launch {
             val cachedTracks = selectedProviderPlaylistTracks.value
-            val rawTracks = if (cachedTracks.isNotEmpty()) {
-                cachedTracks
-            } else {
-                providerCatalogRepository.getPlaylistTracksWithCache(playlist.source, playlist.id)
-            }
-            val isDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(
-                playlist.source.name, playlist.id
+            val queue = buildProviderQueueDistinct(
+                sourceType = playlist.source,
+                playlistId = playlist.id,
+                prefetchedTracks = cachedTracks.takeIf { it.isNotEmpty() }
             )
-            val queue = if (isDistinct) {
-                DistinctPlaylistUtils.deduplicateTracks(rawTracks).tracks
-            } else {
-                rawTracks
-            }
             playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
     }
@@ -976,10 +968,19 @@ class MainViewModel @Inject constructor(
      * Fetches provider playlist tracks and applies the distinct dedup gate if enabled.
      *
      * Shared by [playPlaylist] and [playSelectedProviderPlaylist] so both provider entry
-     * points cannot drift in distinct behavior.
+     * points cannot drift in distinct behavior. Pass [prefetchedTracks] to skip a
+     * network fetch when the tracks are already available (e.g. from UI cache).
      */
-    private suspend fun buildProviderQueueDistinct(sourceType: SourceType, playlistId: String): List<Track> {
-        val tracks = providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
+    private suspend fun buildProviderQueueDistinct(
+        sourceType: SourceType,
+        playlistId: String,
+        prefetchedTracks: List<Track>? = null
+    ): List<Track> {
+        val tracks = if (!prefetchedTracks.isNullOrEmpty()) {
+            prefetchedTracks
+        } else {
+            providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
+        }
         val isDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(sourceType.name, playlistId)
         return if (isDistinct) {
             DistinctPlaylistUtils.deduplicateTracks(tracks).tracks
