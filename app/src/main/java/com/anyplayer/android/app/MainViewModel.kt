@@ -13,10 +13,12 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.network.SpotifyClientIds
+import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.AuthRequest
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
+import com.anyplayer.android.feature.playlists.DistinctPlaylistUtils
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
 import com.anyplayer.android.feature.search.SearchType
 import com.anyplayer.android.feature.startup.StartupResilienceManager
@@ -70,6 +72,7 @@ class MainViewModel @Inject constructor(
     private val stateTransferManager: StateTransferManager,
     private val configFileImporter: ConfigFileImporter,
     private val providerCatalogRepository: ProviderCatalogRepository,
+    private val playlistStorageRepository: PlaylistStorageRepository,
     private val customPlaylistEngine: CustomPlaylistEngine,
     private val startupResilienceManager: StartupResilienceManager,
     private val syncPreferencesStore: SyncPreferencesStore,
@@ -801,8 +804,8 @@ class MainViewModel @Inject constructor(
 
     fun playPlaylist(sourceType: SourceType, playlistId: String) {
         viewModelScope.launch {
-            val tracks = providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
-            playbackQueueManager.setQueue(tracks, startIndex = 0, autoPlay = true)
+            val queue = buildProviderQueueDistinct(sourceType, playlistId)
+            playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
     }
 
@@ -882,12 +885,39 @@ class MainViewModel @Inject constructor(
 
     fun playSelectedProviderPlaylist() {
         val playlist = selectedProviderPlaylist.value ?: return
-        val tracks = selectedProviderPlaylistTracks.value
-        if (tracks.isNotEmpty()) {
-            playbackQueueManager.setQueue(tracks, startIndex = 0, autoPlay = true)
-            return
+        viewModelScope.launch {
+            val cachedTracks = selectedProviderPlaylistTracks.value
+            val rawTracks = if (cachedTracks.isNotEmpty()) {
+                cachedTracks
+            } else {
+                providerCatalogRepository.getPlaylistTracksWithCache(playlist.source, playlist.id)
+            }
+            val isDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(
+                playlist.source.name, playlist.id
+            )
+            val queue = if (isDistinct) {
+                DistinctPlaylistUtils.deduplicateTracks(rawTracks).tracks
+            } else {
+                rawTracks
+            }
+            playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
-        playPlaylist(playlist.source, playlist.id)
+    }
+
+    /**
+     * Fetches provider playlist tracks and applies the distinct dedup gate if enabled.
+     *
+     * Shared by [playPlaylist] and [playSelectedProviderPlaylist] so both provider entry
+     * points cannot drift in distinct behavior.
+     */
+    private suspend fun buildProviderQueueDistinct(sourceType: SourceType, playlistId: String): List<Track> {
+        val tracks = providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
+        val isDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(sourceType.name, playlistId)
+        return if (isDistinct) {
+            DistinctPlaylistUtils.deduplicateTracks(tracks).tracks
+        } else {
+            tracks
+        }
     }
 
     fun createStandardPlaylist(name: String) {
