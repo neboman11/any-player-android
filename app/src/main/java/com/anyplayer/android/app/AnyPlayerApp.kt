@@ -33,6 +33,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -73,6 +74,7 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.rememberTooltipState
 import com.anyplayer.android.core.model.ProviderConnectionProfile
+import com.anyplayer.android.core.model.DuplicateGroup
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 import coil.compose.AsyncImage
@@ -305,6 +307,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     var providerTrackSortAscending by rememberSaveable("playlist_provider_track_sort_ascending") { mutableStateOf(true) }
     var customTrackSortColumnName by rememberSaveable("playlist_custom_track_sort_column") { mutableStateOf<String?>(null) }
     var customTrackSortAscending by rememberSaveable("playlist_custom_track_sort_ascending") { mutableStateOf(true) }
+    var pendingStandardDuplicateRemovalIndex by remember { mutableStateOf<Int?>(null) }
 
     val selectedProviderPlaylist = state.selectedProviderPlaylist
     val selectedCustomPlaylist = state.customPlaylists.firstOrNull { it.id == state.selectedCustomPlaylistId }
@@ -328,6 +331,17 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
 
             Text("${selectedProviderPlaylist.name} (${selectedProviderPlaylist.source.name.lowercase()})")
             Text("Tracks: ${state.selectedProviderPlaylistTracks.size}")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Distinct playback")
+                Switch(
+                    checked = state.selectedProviderPlaylistIsDistinct,
+                    onCheckedChange = viewModel::setSelectedProviderPlaylistDistinct
+                )
+            }
 
             if (state.providerPlaylistRefreshInProgress) {
                 Text("Refreshing playlist data...")
@@ -350,6 +364,14 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             if (!state.selectedProviderPlaylistLoading && state.selectedProviderPlaylistTracks.isEmpty()) {
                 Text("No tracks found for this playlist")
             } else {
+                if (state.selectedProviderPlaylistIsDistinct && state.selectedProviderPlaylistDuplicateGroups.isNotEmpty()) {
+                    DuplicateGroupsSection(
+                        title = "Duplicates",
+                        tracks = state.selectedProviderPlaylistTracks,
+                        duplicateGroups = state.selectedProviderPlaylistDuplicateGroups
+                    )
+                }
+
                 val sortedProviderTracks = remember(
                     state.selectedProviderPlaylistTracks,
                     providerTrackSortColumnName,
@@ -435,6 +457,17 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
 
             Text("${selectedCustomPlaylist.name} (${selectedCustomPlaylist.playlistType.name.lowercase()})")
             Text("Tracks: ${state.activeCustomPlaylistTracks.size}")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Distinct playback")
+                Switch(
+                    checked = state.selectedCustomPlaylistIsDistinct,
+                    onCheckedChange = viewModel::setSelectedCustomPlaylistDistinct
+                )
+            }
 
             if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
                 Text("Source playlists")
@@ -465,6 +498,18 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             if (state.activeCustomPlaylistTracks.isEmpty()) {
                 Text("No tracks found for this playlist")
             } else {
+                if (state.selectedCustomPlaylistIsDistinct && state.selectedCustomPlaylistDuplicateGroups.isNotEmpty()) {
+                    DuplicateGroupsSection(
+                        title = "Duplicates",
+                        tracks = state.activeCustomPlaylistTracks,
+                        duplicateGroups = state.selectedCustomPlaylistDuplicateGroups,
+                        showRemoveControls = selectedCustomPlaylist.playlistType == PlaylistType.STANDARD,
+                        onRemoveDuplicate = { duplicateIndex ->
+                            pendingStandardDuplicateRemovalIndex = duplicateIndex
+                        }
+                    )
+                }
+
                 val sortedCustomTracks = remember(
                     state.activeCustomPlaylistTracks,
                     customTrackSortColumnName,
@@ -506,15 +551,32 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                                 indexLabel = "${row.originalIndex + 1}.",
                                 modifier = Modifier.weight(1f)
                             )
-                            if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
-                                Button(onClick = { viewModel.removeTrackFromSelectedCustom(row.originalIndex) }) {
-                                    Text("Remove")
-                                }
-                            }
                         }
                     }
                 }
             }
+        }
+        pendingStandardDuplicateRemovalIndex?.let { duplicateIndex ->
+            AlertDialog(
+                onDismissRequest = { pendingStandardDuplicateRemovalIndex = null },
+                title = { Text("Remove duplicate?") },
+                text = {
+                    Text("This removes the selected duplicate occurrence from the playlist.")
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        viewModel.removeTrackFromSelectedCustom(duplicateIndex)
+                        pendingStandardDuplicateRemovalIndex = null
+                    }) {
+                        Text("Remove")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { pendingStandardDuplicateRemovalIndex = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
         return
     }
@@ -681,6 +743,65 @@ private data class IndexedTrackRow(
     val originalIndex: Int,
     val track: Track
 )
+
+@Composable
+private fun DuplicateGroupsSection(
+    title: String,
+    tracks: List<Track>,
+    duplicateGroups: List<DuplicateGroup>,
+    showRemoveControls: Boolean = false,
+    onRemoveDuplicate: ((Int) -> Unit)? = null
+) {
+    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        duplicateGroups.forEach { group ->
+            val keeperTrack = tracks.getOrNull(group.firstOccurrenceIndex)
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.elevatedCardColors()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("Key: ${group.key}")
+                    keeperTrack?.let { track ->
+                        Text("Kept playback entry:")
+                        TrackRow(
+                            track = track,
+                            indexLabel = "${group.firstOccurrenceIndex + 1}.",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (group.occurrences.isNotEmpty()) {
+                        Text("Duplicate occurrences:")
+                        group.occurrences.forEach { occurrence ->
+                            val duplicateTrack = tracks.getOrNull(occurrence.index) ?: return@forEach
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TrackRow(
+                                    track = duplicateTrack,
+                                    indexLabel = "${occurrence.index + 1}.",
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (showRemoveControls && onRemoveDuplicate != null) {
+                                    Button(onClick = { onRemoveDuplicate(occurrence.index) }) {
+                                        Text("Remove")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 private fun sortTracksWithOriginalIndex(
     tracks: List<Track>,
@@ -1798,4 +1919,3 @@ private fun providerDisplayName(sourceType: SourceType): String = when (sourceTy
     SourceType.CUSTOM -> "Custom"
     SourceType.ALL -> "All"
 }
-
