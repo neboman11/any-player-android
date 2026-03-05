@@ -955,10 +955,12 @@ class MainViewModel @Inject constructor(
         val playlist = selectedProviderPlaylist.value ?: return
         viewModelScope.launch {
             val cachedTracks = selectedProviderPlaylistTracks.value
+            val isDistinct = selectedProviderPlaylistIsDistinct.value
             val queue = buildProviderQueueDistinct(
                 sourceType = playlist.source,
                 playlistId = playlist.id,
-                prefetchedTracks = cachedTracks.takeIf { it.isNotEmpty() }
+                prefetchedTracks = cachedTracks.takeIf { it.isNotEmpty() },
+                distinctOverride = isDistinct
             )
             playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
@@ -974,14 +976,16 @@ class MainViewModel @Inject constructor(
     private suspend fun buildProviderQueueDistinct(
         sourceType: SourceType,
         playlistId: String,
-        prefetchedTracks: List<Track>? = null
+        prefetchedTracks: List<Track>? = null,
+        distinctOverride: Boolean? = null
     ): List<Track> {
         val tracks = if (!prefetchedTracks.isNullOrEmpty()) {
             prefetchedTracks
         } else {
             providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
         }
-        val isDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(sourceType.name, playlistId)
+        val isDistinct = distinctOverride
+            ?: playlistStorageRepository.getProviderPlaylistIsDistinct(sourceType.name, playlistId)
         return if (isDistinct) {
             DistinctPlaylistUtils.deduplicateTracks(tracks).tracks
         } else {
