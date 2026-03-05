@@ -157,10 +157,219 @@ class CustomPlaylistEngineTest {
         assertEquals(SourceType.SPOTIFY, result[1].source)
     }
 
-    private fun sampleTrack(id: String, source: SourceType): Track = Track(
+    // ── Distinct mode: playPlaylist ──────────────────────────────────────────
+
+    @Test
+    fun playPlaylist_standardDistinct_dedupsBeforeQueue() = runTest {
+        val playlistId = "std-distinct"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            standardPlaylist(playlistId, isDistinct = true)
+        )
+        whenever(storageRepository.getPlaylistTracks(playlistId)).thenReturn(listOf(
+            playlistTrack(id = "pt-1", trackId = "t-1", title = "Song A", artist = "Artist X"),
+            playlistTrack(id = "pt-2", trackId = "t-2", title = "Song B", artist = "Artist Y"),
+            playlistTrack(id = "pt-3", trackId = "t-1-dup", title = "Song A", artist = "Artist X") // dup of pt-1
+        ))
+
+        engine.playPlaylist(playlistId)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<Track>>()
+        val indexCaptor = org.mockito.kotlin.argumentCaptor<Int>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(captor.capture(), startIndex = indexCaptor.capture(), autoPlay = eq(true))
+
+        assertEquals(2, captor.firstValue.size)
+        assertEquals(listOf("t-1", "t-2"), captor.firstValue.map { it.id })
+        assertEquals(0, indexCaptor.firstValue)
+    }
+
+    @Test
+    fun playPlaylist_standardNotDistinct_keepsDuplicates() = runTest {
+        val playlistId = "std-nodistinct"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            standardPlaylist(playlistId, isDistinct = false)
+        )
+        whenever(storageRepository.getPlaylistTracks(playlistId)).thenReturn(listOf(
+            playlistTrack(id = "pt-1", trackId = "t-1", title = "Song A", artist = "Artist X"),
+            playlistTrack(id = "pt-2", trackId = "t-1-dup", title = "Song A", artist = "Artist X")
+        ))
+
+        engine.playPlaylist(playlistId)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<Track>>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
+
+        assertEquals(2, captor.firstValue.size)
+    }
+
+    @Test
+    fun playPlaylist_unionDistinct_twoPassDedup() = runTest {
+        val playlistId = "union-distinct"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            unionPlaylist(playlistId, isDistinct = true)
+        )
+        whenever(storageRepository.getUnionSources(playlistId)).thenReturn(listOf(
+            unionSource(id = "src-1", sourceType = SourceType.SPOTIFY, sourcePlaylistId = "sp-a", position = 0)
+        ))
+        // Two tracks with same title+artist but different source IDs (pass 1 keeps both, pass 2 removes one)
+        whenever(
+            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq("sp-a"), any(), any(), any())
+        ).thenReturn(listOf(
+            sampleTrack(id = "sp-1", source = SourceType.SPOTIFY, title = "Tune", artist = "Band"),
+            sampleTrack(id = "sp-2", source = SourceType.SPOTIFY, title = "Tune", artist = "Band") // same title+artist, different id
+        ))
+
+        engine.playPlaylist(playlistId)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<Track>>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
+
+        // Pass 1 (source:id dedup) keeps both since ids differ; pass 2 (title+artist) removes second
+        assertEquals(1, captor.firstValue.size)
+        assertEquals("sp-1", captor.firstValue.first().id)
+    }
+
+    // ── Distinct mode: playFromTrack ─────────────────────────────────────────
+
+    @Test
+    fun playFromTrack_standardDistinct_firstOccurrenceIndex_resolvedCorrectly() = runTest {
+        val playlistId = "std-fromtrack"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            standardPlaylist(playlistId, isDistinct = true)
+        )
+        // [Song A, Song B, Song C, Song A (dup)]
+        whenever(storageRepository.getPlaylistTracks(playlistId)).thenReturn(listOf(
+            playlistTrack(id = "pt-0", trackId = "t-0", title = "Song A", artist = "Artist"),
+            playlistTrack(id = "pt-1", trackId = "t-1", title = "Song B", artist = "Artist"),
+            playlistTrack(id = "pt-2", trackId = "t-2", title = "Song C", artist = "Artist"),
+            playlistTrack(id = "pt-3", trackId = "t-0-dup", title = "Song A", artist = "Artist")
+        ))
+
+        // User clicks index 3 (the duplicate of Song A) — should resolve to index 0 in deduped queue
+        engine.playFromTrack(playlistId, trackIndex = 3)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<Track>>()
+        val indexCaptor = org.mockito.kotlin.argumentCaptor<Int>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(captor.capture(), startIndex = indexCaptor.capture(), autoPlay = eq(true))
+
+        assertEquals(3, captor.firstValue.size)
+        assertEquals(0, indexCaptor.firstValue) // resolved to first occurrence of Song A
+    }
+
+    @Test
+    fun playFromTrack_standardDistinct_nonDuplicateTrack_usesCorrectDedupedIndex() = runTest {
+        val playlistId = "std-fromtrack-2"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            standardPlaylist(playlistId, isDistinct = true)
+        )
+        // [Song A, Song B (dup of Song A?), Song C] — Song B unique, clicking index 2 (Song C)
+        // Deduped: [Song A, Song B, Song C] → index 2 stays 2
+        whenever(storageRepository.getPlaylistTracks(playlistId)).thenReturn(listOf(
+            playlistTrack(id = "pt-0", trackId = "t-0", title = "Song A", artist = "Artist"),
+            playlistTrack(id = "pt-1", trackId = "t-1", title = "Song B", artist = "Artist"),
+            playlistTrack(id = "pt-2", trackId = "t-2", title = "Song C", artist = "Artist")
+        ))
+
+        engine.playFromTrack(playlistId, trackIndex = 2)
+
+        val indexCaptor = org.mockito.kotlin.argumentCaptor<Int>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(any(), startIndex = indexCaptor.capture(), autoPlay = eq(true))
+
+        assertEquals(2, indexCaptor.firstValue)
+    }
+
+    @Test
+    fun playFromTrack_standardNotDistinct_usesRawIndex() = runTest {
+        val playlistId = "std-fromtrack-nodistinct"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            standardPlaylist(playlistId, isDistinct = false)
+        )
+        whenever(storageRepository.getPlaylistTracks(playlistId)).thenReturn(listOf(
+            playlistTrack(id = "pt-0", trackId = "t-0", title = "Song A", artist = "Artist"),
+            playlistTrack(id = "pt-1", trackId = "t-1", title = "Song A", artist = "Artist"), // dup
+            playlistTrack(id = "pt-2", trackId = "t-2", title = "Song C", artist = "Artist")
+        ))
+
+        engine.playFromTrack(playlistId, trackIndex = 1)
+
+        val indexCaptor = org.mockito.kotlin.argumentCaptor<Int>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(any(), startIndex = indexCaptor.capture(), autoPlay = eq(true))
+
+        assertEquals(1, indexCaptor.firstValue)
+    }
+
+    @Test
+    fun playFromTrack_unionDistinct_duplicateRemappedToFirstOccurrence() = runTest {
+        val playlistId = "union-fromtrack"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(
+            unionPlaylist(playlistId, isDistinct = true)
+        )
+        whenever(storageRepository.getUnionSources(playlistId)).thenReturn(listOf(
+            unionSource(id = "src-1", sourceType = SourceType.SPOTIFY, sourcePlaylistId = "sp-1", position = 0)
+        ))
+        // sp-1 returns two tracks with same title+artist (different ids)
+        val track1 = sampleTrack(id = "sp-a", source = SourceType.SPOTIFY, title = "Melody", artist = "Band")
+        val track2 = sampleTrack(id = "sp-b", source = SourceType.SPOTIFY, title = "Other", artist = "Band")
+        val track3 = sampleTrack(id = "sp-c", source = SourceType.SPOTIFY, title = "Melody", artist = "Band") // dup of sp-a
+        whenever(
+            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq("sp-1"), any(), any(), any())
+        ).thenReturn(listOf(track1, track2, track3))
+
+        // User clicks index 2 (track3 = duplicate of track1) — should resolve to index 0
+        engine.playFromTrack(playlistId, trackIndex = 2)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<Track>>()
+        val indexCaptor = org.mockito.kotlin.argumentCaptor<Int>()
+        org.mockito.kotlin.verify(playbackQueueManager).setQueue(captor.capture(), startIndex = indexCaptor.capture(), autoPlay = eq(true))
+
+        assertEquals(2, captor.firstValue.size) // deduped: [sp-a, sp-b]
+        assertEquals(0, indexCaptor.firstValue) // resolved to first occurrence of "melody|band"
+    }
+
+    private fun standardPlaylist(id: String, isDistinct: Boolean = false) = com.anyplayer.android.core.model.CustomPlaylist(
         id = id,
-        title = "Track $id",
-        artist = "Artist",
+        name = "Test Playlist",
+        createdAt = "2026-01-01T00:00:00Z",
+        updatedAt = "2026-01-01T00:00:00Z",
+        trackCount = 0,
+        playlistType = com.anyplayer.android.core.model.PlaylistType.STANDARD,
+        isDistinct = isDistinct
+    )
+
+    private fun unionPlaylist(id: String, isDistinct: Boolean = false) = com.anyplayer.android.core.model.CustomPlaylist(
+        id = id,
+        name = "Union Playlist",
+        createdAt = "2026-01-01T00:00:00Z",
+        updatedAt = "2026-01-01T00:00:00Z",
+        trackCount = 0,
+        playlistType = com.anyplayer.android.core.model.PlaylistType.UNION,
+        isDistinct = isDistinct
+    )
+
+    private fun playlistTrack(
+        id: String,
+        trackId: String,
+        title: String,
+        artist: String
+    ) = PlaylistTrack(
+        id = id,
+        playlistId = "test-playlist",
+        trackSource = SourceType.CUSTOM,
+        trackId = trackId,
+        position = 0,
+        addedAt = "2026-01-01T00:00:00Z",
+        title = title,
+        artist = artist
+    )
+
+    private fun sampleTrack(
+        id: String,
+        source: SourceType,
+        title: String = "Track $id",
+        artist: String = "Artist"
+    ): Track = Track(
+        id = id,
+        title = title,
+        artist = artist,
         source = source,
         durationMs = 123_000L,
         enriched = true

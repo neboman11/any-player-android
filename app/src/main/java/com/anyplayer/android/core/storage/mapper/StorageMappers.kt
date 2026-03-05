@@ -18,7 +18,8 @@ fun CustomPlaylistEntity.toModel(): CustomPlaylist =
         createdAt = createdAt,
         updatedAt = updatedAt,
         trackCount = trackCount,
-        playlistType = playlistType
+        playlistType = playlistType,
+        isDistinct = isDistinct
     )
 
 fun CustomPlaylist.toEntity(): CustomPlaylistEntity =
@@ -30,7 +31,8 @@ fun CustomPlaylist.toEntity(): CustomPlaylistEntity =
         createdAt = createdAt,
         updatedAt = updatedAt,
         trackCount = trackCount,
-        playlistType = playlistType
+        playlistType = playlistType,
+        isDistinct = isDistinct
     )
 
 fun PlaylistTrackEntity.toModel(): PlaylistTrack =

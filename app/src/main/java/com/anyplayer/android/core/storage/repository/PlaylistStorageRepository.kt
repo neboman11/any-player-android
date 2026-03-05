@@ -7,7 +7,9 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.dao.ColumnPreferenceDao
 import com.anyplayer.android.core.storage.dao.CustomPlaylistDao
 import com.anyplayer.android.core.storage.dao.PlaylistTrackDao
+import com.anyplayer.android.core.storage.dao.ProviderPlaylistPreferenceDao
 import com.anyplayer.android.core.storage.dao.UnionPlaylistSourceDao
+import com.anyplayer.android.core.storage.entity.ProviderPlaylistPreferenceEntity
 import com.anyplayer.android.core.storage.mapper.toEntity
 import com.anyplayer.android.core.storage.mapper.toModel
 import kotlinx.coroutines.flow.Flow
@@ -20,7 +22,8 @@ class PlaylistStorageRepository @Inject constructor(
     private val customPlaylistDao: CustomPlaylistDao,
     private val playlistTrackDao: PlaylistTrackDao,
     private val unionPlaylistSourceDao: UnionPlaylistSourceDao,
-    private val columnPreferenceDao: ColumnPreferenceDao
+    private val columnPreferenceDao: ColumnPreferenceDao,
+    private val providerPlaylistPreferenceDao: ProviderPlaylistPreferenceDao
 ) {
     fun observeCustomPlaylists(): Flow<List<CustomPlaylist>> =
         customPlaylistDao.observeAll().map { list -> list.map { it.toModel() } }
@@ -65,6 +68,30 @@ class PlaylistStorageRepository @Inject constructor(
     suspend fun upsertColumnPreferences(preferences: List<ColumnPreferences>) {
         columnPreferenceDao.upsert(preferences.map { it.toEntity() })
     }
+
+    // ── Provider playlist preferences ────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the isDistinct flag for the given provider playlist, defaulting to false
+     * if no preference has been stored yet.
+     */
+    suspend fun getProviderPlaylistIsDistinct(source: String, playlistId: String): Boolean =
+        providerPlaylistPreferenceDao.getByKey(source, playlistId)?.isDistinct ?: false
+
+    /** Persists the isDistinct preference for a provider playlist. */
+    suspend fun setProviderPlaylistIsDistinct(source: String, playlistId: String, isDistinct: Boolean) {
+        providerPlaylistPreferenceDao.upsert(
+            ProviderPlaylistPreferenceEntity(
+                source = source,
+                playlistId = playlistId,
+                isDistinct = isDistinct
+            )
+        )
+    }
+
+    /** Returns all stored provider playlist preferences for a given source. */
+    suspend fun getProviderPlaylistPreferences(source: String): List<ProviderPlaylistPreferenceEntity> =
+        providerPlaylistPreferenceDao.getBySource(source)
 
     suspend fun getSnapshot(
         customPlaylists: List<CustomPlaylist>

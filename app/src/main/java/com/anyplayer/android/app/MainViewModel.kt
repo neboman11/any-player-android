@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.AudioNormalizationSettings
+import com.anyplayer.android.core.model.DuplicateGroup
 import com.anyplayer.android.core.model.PlaylistType
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.RepeatMode
@@ -13,10 +14,12 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.network.SpotifyClientIds
+import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.AuthRequest
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
+import com.anyplayer.android.feature.playlists.DistinctPlaylistUtils
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
 import com.anyplayer.android.feature.search.SearchType
 import com.anyplayer.android.feature.startup.StartupResilienceManager
@@ -35,6 +38,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -60,6 +64,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
+import java.time.Instant
 import javax.inject.Inject
 
 @HiltViewModel
@@ -70,6 +75,7 @@ class MainViewModel @Inject constructor(
     private val stateTransferManager: StateTransferManager,
     private val configFileImporter: ConfigFileImporter,
     private val providerCatalogRepository: ProviderCatalogRepository,
+    private val playlistStorageRepository: PlaylistStorageRepository,
     private val customPlaylistEngine: CustomPlaylistEngine,
     private val startupResilienceManager: StartupResilienceManager,
     private val syncPreferencesStore: SyncPreferencesStore,
@@ -92,6 +98,8 @@ class MainViewModel @Inject constructor(
     private val providerPlaylists = MutableStateFlow<List<com.anyplayer.android.core.model.Playlist>>(emptyList())
     private val selectedProviderPlaylist = MutableStateFlow<com.anyplayer.android.core.model.Playlist?>(null)
     private val selectedProviderPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
+    private val selectedProviderPlaylistIsDistinct = MutableStateFlow(false)
+    private var providerPlaylistDistinctLoadJob: Job? = null
     private val selectedProviderPlaylistLoading = MutableStateFlow(false)
     private val selectedProviderPlaylistError = MutableStateFlow<String?>(null)
     private val providerPlaylistRefreshInProgress = MutableStateFlow(false)
@@ -138,6 +146,7 @@ class MainViewModel @Inject constructor(
         val providerPlaylists: List<com.anyplayer.android.core.model.Playlist>,
         val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
         val selectedProviderPlaylistTracks: List<Track>,
+        val selectedProviderPlaylistIsDistinct: Boolean,
         val selectedProviderPlaylistLoading: Boolean,
         val selectedProviderPlaylistError: String?,
         val providerPlaylistRefreshInProgress: Boolean,
@@ -156,6 +165,7 @@ class MainViewModel @Inject constructor(
     private data class ProviderPlaylistSummaryUiState(
         val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
         val selectedProviderPlaylistTracks: List<Track>,
+        val selectedProviderPlaylistIsDistinct: Boolean,
         val selectedProviderPlaylistLoading: Boolean,
         val selectedProviderPlaylistError: String?,
         val providerPlaylistRefreshInProgress: Boolean,
@@ -165,6 +175,7 @@ class MainViewModel @Inject constructor(
     private data class ProviderPlaylistSummaryCoreUiState(
         val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
         val selectedProviderPlaylistTracks: List<Track>,
+        val selectedProviderPlaylistIsDistinct: Boolean,
         val selectedProviderPlaylistLoading: Boolean,
         val selectedProviderPlaylistError: String?
     )
@@ -337,12 +348,14 @@ class MainViewModel @Inject constructor(
     private val providerPlaylistSummaryCoreState = combine(
         selectedProviderPlaylist,
         selectedProviderPlaylistTracks,
+        selectedProviderPlaylistIsDistinct,
         selectedProviderPlaylistLoading,
         selectedProviderPlaylistError
-    ) { playlist, tracks, loading, error ->
+    ) { playlist, tracks, isDistinct, loading, error ->
         ProviderPlaylistSummaryCoreUiState(
             selectedProviderPlaylist = playlist,
             selectedProviderPlaylistTracks = tracks,
+            selectedProviderPlaylistIsDistinct = isDistinct,
             selectedProviderPlaylistLoading = loading,
             selectedProviderPlaylistError = error
         )
@@ -356,6 +369,7 @@ class MainViewModel @Inject constructor(
         ProviderPlaylistSummaryUiState(
             selectedProviderPlaylist = coreState.selectedProviderPlaylist,
             selectedProviderPlaylistTracks = coreState.selectedProviderPlaylistTracks,
+            selectedProviderPlaylistIsDistinct = coreState.selectedProviderPlaylistIsDistinct,
             selectedProviderPlaylistLoading = coreState.selectedProviderPlaylistLoading,
             selectedProviderPlaylistError = coreState.selectedProviderPlaylistError,
             providerPlaylistRefreshInProgress = refreshInProgress,
@@ -389,6 +403,7 @@ class MainViewModel @Inject constructor(
                 providerPlaylists = catalogBase.providerPlaylists,
                 selectedProviderPlaylist = summaryState.selectedProviderPlaylist,
                 selectedProviderPlaylistTracks = summaryState.selectedProviderPlaylistTracks,
+                selectedProviderPlaylistIsDistinct = summaryState.selectedProviderPlaylistIsDistinct,
                 selectedProviderPlaylistLoading = summaryState.selectedProviderPlaylistLoading,
                 selectedProviderPlaylistError = summaryState.selectedProviderPlaylistError,
                 providerPlaylistRefreshInProgress = summaryState.providerPlaylistRefreshInProgress,
@@ -420,6 +435,24 @@ class MainViewModel @Inject constructor(
             )
         }
     ) { startup, catalog, local ->
+        val selectedCustomPlaylist = local.customPlaylists.firstOrNull { it.id == local.selectedCustomPlaylistId }
+        val providerDuplicateGroups =
+            if (catalog.selectedProviderPlaylistIsDistinct) {
+                DistinctPlaylistUtils
+                    .deduplicateTracks(catalog.selectedProviderPlaylistTracks)
+                    .duplicateGroups
+            } else {
+                emptyList()
+            }
+        val isCustomDistinct = selectedCustomPlaylist?.isDistinct == true
+        val customDuplicateGroups =
+            if (isCustomDistinct) {
+                DistinctPlaylistUtils
+                    .deduplicateTracks(local.activeCustomPlaylistTracks)
+                    .duplicateGroups
+            } else {
+                emptyList()
+            }
         val playbackDisabledMessage =
             if (startup.startupInProgress) {
                 null
@@ -445,6 +478,8 @@ class MainViewModel @Inject constructor(
             providerPlaylists = catalog.providerPlaylists,
             selectedProviderPlaylist = catalog.selectedProviderPlaylist,
             selectedProviderPlaylistTracks = catalog.selectedProviderPlaylistTracks,
+            selectedProviderPlaylistIsDistinct = catalog.selectedProviderPlaylistIsDistinct,
+            selectedProviderPlaylistDuplicateGroups = providerDuplicateGroups,
             selectedProviderPlaylistLoading = catalog.selectedProviderPlaylistLoading,
             selectedProviderPlaylistError = catalog.selectedProviderPlaylistError,
             providerPlaylistRefreshInProgress = catalog.providerPlaylistRefreshInProgress,
@@ -452,6 +487,8 @@ class MainViewModel @Inject constructor(
             customPlaylists = local.customPlaylists,
             activeCustomPlaylistTracks = local.activeCustomPlaylistTracks,
             selectedCustomPlaylistId = local.selectedCustomPlaylistId,
+            selectedCustomPlaylistIsDistinct = selectedCustomPlaylist?.isDistinct ?: false,
+            selectedCustomPlaylistDuplicateGroups = customDuplicateGroups,
             selectedCustomUnionSources = local.selectedCustomUnionSources,
             stateTransferStatus = local.stateTransferStatus,
             providerConnectionFeedback = local.providerConnectionFeedback,
@@ -801,8 +838,8 @@ class MainViewModel @Inject constructor(
 
     fun playPlaylist(sourceType: SourceType, playlistId: String) {
         viewModelScope.launch {
-            val tracks = providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
-            playbackQueueManager.setQueue(tracks, startIndex = 0, autoPlay = true)
+            val queue = buildProviderQueueDistinct(sourceType, playlistId)
+            playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
     }
 
@@ -840,8 +877,23 @@ class MainViewModel @Inject constructor(
     fun openProviderPlaylistSummary(playlist: com.anyplayer.android.core.model.Playlist) {
         selectedProviderPlaylist.value = playlist
         selectedProviderPlaylistTracks.value = playlist.tracks.orEmpty()
+        selectedProviderPlaylistIsDistinct.value = false
         selectedProviderPlaylistLoading.value = true
         selectedProviderPlaylistError.value = null
+
+        providerPlaylistDistinctLoadJob?.cancel()
+        providerPlaylistDistinctLoadJob = viewModelScope.launch {
+            val persistedDistinct = playlistStorageRepository.getProviderPlaylistIsDistinct(
+                playlist.source.name,
+                playlist.id
+            )
+            if (
+                selectedProviderPlaylist.value?.id == playlist.id &&
+                selectedProviderPlaylist.value?.source == playlist.source
+            ) {
+                selectedProviderPlaylistIsDistinct.value = persistedDistinct
+            }
+        }
 
         val isSourceConnected = providerStatuses.value.any { profile ->
             profile.source == playlist.source && profile.connected
@@ -876,18 +928,69 @@ class MainViewModel @Inject constructor(
     fun closeProviderPlaylistSummary() {
         selectedProviderPlaylist.value = null
         selectedProviderPlaylistTracks.value = emptyList()
+        selectedProviderPlaylistIsDistinct.value = false
         selectedProviderPlaylistLoading.value = false
         selectedProviderPlaylistError.value = null
+        providerPlaylistDistinctLoadJob?.cancel()
+        providerPlaylistDistinctLoadJob = null
+    }
+
+    fun setSelectedProviderPlaylistDistinct(isDistinct: Boolean) {
+        val playlist = selectedProviderPlaylist.value ?: return
+        // Optimistically update the UI state so the last toggle wins.
+        selectedProviderPlaylistIsDistinct.value = isDistinct
+        // Cancel any in-flight preference load so it cannot overwrite this choice.
+        providerPlaylistDistinctLoadJob?.cancel()
+        // Persist the change in the background without reading it back to drive UI state.
+        viewModelScope.launch {
+            playlistStorageRepository.setProviderPlaylistIsDistinct(
+                source = playlist.source.name,
+                playlistId = playlist.id,
+                isDistinct = isDistinct
+            )
+        }
     }
 
     fun playSelectedProviderPlaylist() {
         val playlist = selectedProviderPlaylist.value ?: return
-        val tracks = selectedProviderPlaylistTracks.value
-        if (tracks.isNotEmpty()) {
-            playbackQueueManager.setQueue(tracks, startIndex = 0, autoPlay = true)
-            return
+        viewModelScope.launch {
+            val cachedTracks = selectedProviderPlaylistTracks.value
+            val isDistinct = selectedProviderPlaylistIsDistinct.value
+            val queue = buildProviderQueueDistinct(
+                sourceType = playlist.source,
+                playlistId = playlist.id,
+                prefetchedTracks = cachedTracks.takeIf { it.isNotEmpty() },
+                distinctOverride = isDistinct
+            )
+            playbackQueueManager.setQueue(queue, startIndex = 0, autoPlay = true)
         }
-        playPlaylist(playlist.source, playlist.id)
+    }
+
+    /**
+     * Fetches provider playlist tracks and applies the distinct dedup gate if enabled.
+     *
+     * Shared by [playPlaylist] and [playSelectedProviderPlaylist] so both provider entry
+     * points cannot drift in distinct behavior. Pass [prefetchedTracks] to skip a
+     * network fetch when the tracks are already available (e.g. from UI cache).
+     */
+    private suspend fun buildProviderQueueDistinct(
+        sourceType: SourceType,
+        playlistId: String,
+        prefetchedTracks: List<Track>? = null,
+        distinctOverride: Boolean? = null
+    ): List<Track> {
+        val tracks = if (!prefetchedTracks.isNullOrEmpty()) {
+            prefetchedTracks
+        } else {
+            providerCatalogRepository.getPlaylistTracksWithCache(sourceType, playlistId)
+        }
+        val isDistinct = distinctOverride
+            ?: playlistStorageRepository.getProviderPlaylistIsDistinct(sourceType.name, playlistId)
+        return if (isDistinct) {
+            DistinctPlaylistUtils.deduplicateTracks(tracks).tracks
+        } else {
+            tracks
+        }
     }
 
     fun createStandardPlaylist(name: String) {
@@ -972,6 +1075,28 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             customPlaylistEngine.removeTrackAt(playlistId, playlistTrackIndex)
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+        }
+    }
+
+    fun setSelectedCustomPlaylistDistinct(isDistinct: Boolean) {
+        val playlistId = selectedCustomPlaylistId.value ?: return
+        val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId } ?: return
+        viewModelScope.launch {
+            playlistStorageRepository.upsertCustomPlaylists(
+                listOf(
+                    selectedPlaylist.copy(
+                        isDistinct = isDistinct,
+                        updatedAt = Instant.now().toString()
+                    )
+                )
+            )
+
+            // Refresh local selected state immediately so UI toggles and playback actions stay in sync.
+            playlistStorageRepository.getCustomPlaylistById(playlistId)?.let { refreshedPlaylist ->
+                customPlaylists.value = customPlaylists.value.map { playlist ->
+                    if (playlist.id == playlistId) refreshedPlaylist else playlist
+                }
+            }
         }
     }
 
@@ -1528,6 +1653,8 @@ data class MainUiState(
     val providerPlaylists: List<com.anyplayer.android.core.model.Playlist> = emptyList(),
     val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist? = null,
     val selectedProviderPlaylistTracks: List<Track> = emptyList(),
+    val selectedProviderPlaylistIsDistinct: Boolean = false,
+    val selectedProviderPlaylistDuplicateGroups: List<DuplicateGroup> = emptyList(),
     val selectedProviderPlaylistLoading: Boolean = false,
     val selectedProviderPlaylistError: String? = null,
     val providerPlaylistRefreshInProgress: Boolean = false,
@@ -1535,6 +1662,8 @@ data class MainUiState(
     val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist> = emptyList(),
     val activeCustomPlaylistTracks: List<Track> = emptyList(),
     val selectedCustomPlaylistId: String? = null,
+    val selectedCustomPlaylistIsDistinct: Boolean = false,
+    val selectedCustomPlaylistDuplicateGroups: List<DuplicateGroup> = emptyList(),
     val selectedCustomUnionSources: List<UnionPlaylistSource> = emptyList(),
     val stateTransferStatus: String = "State transfer idle",
     val providerConnectionFeedback: String? = null,
