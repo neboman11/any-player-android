@@ -463,6 +463,10 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         // playback already handles audio focus via setAudioAttributes(..., handleAudioFocus = true),
         // so we avoid double pause/resume handling by skipping those sources here.
         if (currentTrack != null && currentTrack.source != SourceType.SPOTIFY) {
+            // We may still be holding audio focus from a previous Spotify track.
+            // Explicitly abandon it before deferring to ExoPlayer's own focus handling.
+            abandonAudioFocus()
+            wasPlayingBeforeFocusLoss = false
             return
         }
 

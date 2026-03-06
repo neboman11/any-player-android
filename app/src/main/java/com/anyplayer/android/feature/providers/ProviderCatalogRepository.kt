@@ -129,9 +129,9 @@ class ProviderCatalogRepository @Inject constructor(
                 sourceType = playlist.source,
                 playlistId = playlist.id,
                 offset = 0,
-                limit = 1000,
+                limit = limit,
                 forceRefresh = true
-            )
+            ).take(limit)
             playlist.copy(
                 trackCount = tracks.takeIf { it.isNotEmpty() }?.size ?: playlist.trackCount,
                 tracks = tracks
