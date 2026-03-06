@@ -27,7 +27,6 @@ import com.anyplayer.android.MainActivity
 import com.anyplayer.android.R
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
-import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
@@ -57,7 +56,32 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
-    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { }
+    private var wasPlayingBeforeFocusLoss = false
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (wasPlayingBeforeFocusLoss) {
+                    wasPlayingBeforeFocusLoss = false
+                    playbackQueueManager.play()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                wasPlayingBeforeFocusLoss = false
+                playbackQueueManager.pause()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                val isPlaying = playbackQueueManager.status.value.state == PlaybackStateType.PLAYING
+                wasPlayingBeforeFocusLoss = isPlaying
+                if (isPlaying) {
+                    playbackQueueManager.pause()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Let the system handle ducking via AudioAttributes; no manual volume change needed.
+                // Media3/ExoPlayer handles ducking automatically when AudioAttributes are set.
+            }
+        }
+    }
     private var audioFocusRequest: AudioFocusRequest? = null
 
     override fun onCreate() {
@@ -428,8 +452,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
-        val isSpotifySource = status.currentTrack?.source == SourceType.SPOTIFY
-        if (isSpotifySource && status.state == PlaybackStateType.PLAYING) {
+        if (status.state == PlaybackStateType.PLAYING && status.currentTrack != null) {
             requestAudioFocus()
         } else {
             abandonAudioFocus()
