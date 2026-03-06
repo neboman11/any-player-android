@@ -239,16 +239,16 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
             val refreshToken = stored.refreshToken?.trim().orEmpty()
             if (refreshToken.isBlank()) {
-                return@withContext null
+                return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
             }
 
             val refreshed = spotifyClient.refreshAccessToken(
                 clientId = SpotifyClientIds.ACTIVE,
                 refreshToken = refreshToken
-            ) ?: return@withContext null
+            ) ?: return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
 
             val refreshedToken = refreshed.accessToken.trim()
-            if (refreshedToken.isBlank()) return@withContext null
+            if (refreshedToken.isBlank()) return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
             val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
 
             val updatedConnection = stored.copy(
