@@ -161,11 +161,10 @@ class SpotifyPlaybackController @Inject constructor(
             return refreshedOrCurrentToken
         }
 
-        val stored = secureConnectionStore.read(SourceType.SPOTIFY)
-            ?: run {
-                lastError = "No Spotify account linked. Link Spotify in Settings."
-                return null
-            }
+        if (secureConnectionStore.read(SourceType.SPOTIFY) == null) {
+            lastError = "No Spotify account linked. Link Spotify in Settings."
+            return null
+        }
 
         lastError = "Spotify access token refresh failed. Reconnect Spotify and retry."
         return null

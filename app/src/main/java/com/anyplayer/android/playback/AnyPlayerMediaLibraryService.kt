@@ -27,6 +27,7 @@ import com.anyplayer.android.MainActivity
 import com.anyplayer.android.R
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
+import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
@@ -60,8 +61,11 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                if (wasPlayingBeforeFocusLoss) {
-                    wasPlayingBeforeFocusLoss = false
+                val shouldResume = wasPlayingBeforeFocusLoss
+                wasPlayingBeforeFocusLoss = false
+                if (shouldResume &&
+                    playbackQueueManager.status.value.state == PlaybackStateType.PAUSED
+                ) {
                     playbackQueueManager.play()
                 }
             }
@@ -452,7 +456,17 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
-        if (status.state == PlaybackStateType.PLAYING && status.currentTrack != null) {
+        val currentTrack = status.currentTrack
+
+        // Only manage audio focus here for sources that do NOT rely on ExoPlayer's
+        // built-in audio focus handling (e.g., the Rust/Spotify path). Media3/ExoPlayer
+        // playback already handles audio focus via setAudioAttributes(..., handleAudioFocus = true),
+        // so we avoid double pause/resume handling by skipping those sources here.
+        if (currentTrack != null && currentTrack.source != SourceType.SPOTIFY) {
+            return
+        }
+
+        if (status.state == PlaybackStateType.PLAYING && currentTrack != null) {
             requestAudioFocus()
         } else {
             abandonAudioFocus()
