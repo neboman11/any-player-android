@@ -26,6 +26,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         private const val TAG = "ProviderAuthRepository"
         private const val RUST_PROVIDER_BRIDGE_UNAVAILABLE =
             "validation unavailable (Rust bridge not loaded)"
+        private const val SPOTIFY_REFRESH_WINDOW_MILLIS = 5 * 60 * 1000L
     }
 
     override suspend fun connect(request: AuthRequest): ProviderConnectionProfile {
@@ -41,6 +42,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             username = request.username ?: check.username,
                             token = token,
                             refreshToken = request.refreshToken,
+                            tokenExpiresAt = computeTokenExpiresAt(request.expiresIn),
                             spotifyPremium = request.isPremium ?: check.metadata["isPremium"]?.toBooleanStrictOrNull(),
                             playbackReady = playbackReady
                         ).also { connection ->
@@ -194,13 +196,18 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                 throw IllegalStateException(validation.message)
             }
             val validated = validation as ProviderConnectionCheck.Connected
-            val playbackReady = resolveSpotifyPlaybackReady(tokenResult.accessToken)
+            val tokenExpiresAt = computeTokenExpiresAt(tokenResult.expiresIn)
+            val playbackReady = resolveSpotifyPlaybackReady(
+                accessToken = tokenResult.accessToken,
+                tokenExpiresAt = tokenExpiresAt
+            )
 
             val connection = StoredConnection(
                 source = SourceType.SPOTIFY,
                 username = validated.username,
                 token = tokenResult.accessToken,
                 refreshToken = tokenResult.refreshToken,
+                tokenExpiresAt = tokenExpiresAt,
                 spotifyPremium = validated.metadata["isPremium"]?.toBooleanStrictOrNull(),
                 playbackReady = playbackReady
             )
@@ -214,6 +221,47 @@ class ProviderAuthRepositoryImpl @Inject constructor(
     override suspend fun disconnect(sourceType: SourceType) {
         withContext(Dispatchers.IO) {
             secureConnectionStore.remove(sourceType)
+        }
+    }
+
+    override suspend fun refreshSpotifyTokenIfNeeded(): String? {
+        return withContext(Dispatchers.IO) {
+            val stored = secureConnectionStore.read(SourceType.SPOTIFY) ?: return@withContext null
+            val currentToken = stored.token?.trim().orEmpty()
+            if (currentToken.isBlank()) return@withContext null
+
+            val expiresAt = stored.tokenExpiresAt
+            val now = System.currentTimeMillis()
+            val shouldRefresh = expiresAt != null && now >= (expiresAt - SPOTIFY_REFRESH_WINDOW_MILLIS)
+            if (!shouldRefresh) {
+                return@withContext currentToken
+            }
+
+            val refreshToken = stored.refreshToken?.trim().orEmpty()
+            if (refreshToken.isBlank()) {
+                return@withContext null
+            }
+
+            val refreshed = spotifyClient.refreshAccessToken(
+                clientId = SpotifyClientIds.ACTIVE,
+                refreshToken = refreshToken
+            ) ?: return@withContext null
+
+            val refreshedToken = refreshed.accessToken.trim()
+            if (refreshedToken.isBlank()) return@withContext null
+            val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
+
+            val updatedConnection = stored.copy(
+                token = refreshedToken,
+                refreshToken = refreshed.refreshToken ?: stored.refreshToken,
+                tokenExpiresAt = refreshedTokenExpiresAt,
+                playbackReady = resolveSpotifyPlaybackReady(
+                    accessToken = refreshedToken,
+                    tokenExpiresAt = refreshedTokenExpiresAt
+                )
+            )
+            secureConnectionStore.save(updatedConnection)
+            refreshedToken
         }
     }
 
@@ -265,7 +313,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                                 is ProviderConnectionCheck.Connected -> stored.copy(
                                     username = validation.username ?: stored.username,
                                     spotifyPremium = validation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                    playbackReady = resolveSpotifyPlaybackReady(stored.token)
+                                    playbackReady = resolveSpotifyPlaybackReady(
+                                        accessToken = stored.token,
+                                        tokenExpiresAt = stored.tokenExpiresAt
+                                    )
                                 ).also { secureConnectionStore.save(it) }.toStatus()
 
                                 is ProviderConnectionCheck.Failed -> {
@@ -279,12 +330,17 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                                     if (refreshed != null) {
                                         when (val refreshedValidation = spotifyClient.validate(refreshed.accessToken)) {
                                             is ProviderConnectionCheck.Connected -> {
+                                                val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
                                                 val updated = stored.copy(
                                                     username = refreshedValidation.username ?: stored.username,
                                                     token = refreshed.accessToken,
                                                     refreshToken = refreshed.refreshToken ?: stored.refreshToken,
+                                                    tokenExpiresAt = refreshedTokenExpiresAt,
                                                     spotifyPremium = refreshedValidation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                                    playbackReady = resolveSpotifyPlaybackReady(refreshed.accessToken)
+                                                    playbackReady = resolveSpotifyPlaybackReady(
+                                                        accessToken = refreshed.accessToken,
+                                                        tokenExpiresAt = refreshedTokenExpiresAt
+                                                    )
                                                 )
                                                 secureConnectionStore.save(updated)
                                                 updated.toStatus()
@@ -372,9 +428,22 @@ class ProviderAuthRepositoryImpl @Inject constructor(
     )
 
     private fun resolveSpotifyPlaybackReady(accessToken: String?): Boolean {
+        return resolveSpotifyPlaybackReady(accessToken = accessToken, tokenExpiresAt = null)
+    }
+
+    private fun resolveSpotifyPlaybackReady(accessToken: String?, tokenExpiresAt: Long?): Boolean {
         val token = accessToken?.trim().orEmpty()
         if (token.isBlank()) return false
-        return rustBridge.validateAndInitSpotifySession(token, SpotifyClientIds.ACTIVE) ?: false
+        return rustBridge.validateAndInitSpotifySession(
+            accessToken = token,
+            clientId = SpotifyClientIds.ACTIVE,
+            tokenExpiresAt = tokenExpiresAt
+        ) ?: false
+    }
+
+    private fun computeTokenExpiresAt(expiresIn: Int?): Long? {
+        val safeExpiresIn = expiresIn?.takeIf { it > 0 } ?: return null
+        return System.currentTimeMillis() + (safeExpiresIn * 1000L)
     }
 
     private fun buildRustSpotifyAuthUrl(

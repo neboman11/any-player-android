@@ -7,6 +7,7 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.network.SpotifyClientIds
 import com.anyplayer.android.core.network.SpotifyPlaybackState
 import com.anyplayer.android.core.rust.RustBridge
+import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,6 +22,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class SpotifyPlaybackController @Inject constructor(
+    private val providerAuthRepository: ProviderAuthRepository,
     private val secureConnectionStore: SecureConnectionStore,
     private val rustBridge: RustBridge
 ) {
@@ -128,7 +130,7 @@ class SpotifyPlaybackController @Inject constructor(
         true
     }
 
-    private fun requireReadyAccessToken(): String? {
+    private suspend fun requireReadyAccessToken(): String? {
         val accessToken = resolveAccessToken()
         if (accessToken == null) {
             if (lastError == null) {
@@ -137,9 +139,11 @@ class SpotifyPlaybackController @Inject constructor(
             return null
         }
 
+        val tokenExpiresAt = secureConnectionStore.read(SourceType.SPOTIFY)?.tokenExpiresAt
         val sessionReady = rustBridge.validateAndInitSpotifySession(
-            accessToken,
-            SpotifyClientIds.ACTIVE
+            accessToken = accessToken,
+            clientId = SpotifyClientIds.ACTIVE,
+            tokenExpiresAt = tokenExpiresAt
         )
         if (sessionReady != true) {
             lastError = "Spotify session could not be initialised. ${rustBridge.lastError ?: ""}"
@@ -149,14 +153,21 @@ class SpotifyPlaybackController @Inject constructor(
         return accessToken
     }
 
-    private fun resolveAccessToken(): String? {
+    private suspend fun resolveAccessToken(): String? {
+        val refreshedOrCurrentToken = providerAuthRepository.refreshSpotifyTokenIfNeeded()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        if (refreshedOrCurrentToken != null) {
+            return refreshedOrCurrentToken
+        }
+
         val stored = secureConnectionStore.read(SourceType.SPOTIFY)
             ?: run {
                 lastError = "No Spotify account linked. Link Spotify in Settings."
                 return null
             }
 
-        val token = stored.token?.trim().orEmpty()
-        return token.takeIf { it.isNotEmpty() }
+        lastError = "Spotify access token refresh failed. Reconnect Spotify and retry."
+        return null
     }
 }

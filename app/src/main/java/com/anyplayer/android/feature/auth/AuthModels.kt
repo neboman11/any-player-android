@@ -6,7 +6,13 @@ import com.anyplayer.android.core.model.SourceType
 import kotlinx.serialization.Serializable
 
 sealed interface AuthRequest {
-    data class Spotify(val accessToken: String, val refreshToken: String? = null, val isPremium: Boolean? = null, val username: String? = null) : AuthRequest
+    data class Spotify(
+        val accessToken: String,
+        val refreshToken: String? = null,
+        val expiresIn: Int? = null,
+        val isPremium: Boolean? = null,
+        val username: String? = null
+    ) : AuthRequest
     data class Jellyfin(val serverUrl: String, val apiKey: String, val username: String? = null) : AuthRequest
     data class Plex(val serverUrl: String, val token: String, val username: String? = null) : AuthRequest
 }
@@ -18,6 +24,7 @@ data class StoredConnection(
     val username: String? = null,
     val token: String? = null,
     val refreshToken: String? = null,
+    val tokenExpiresAt: Long? = null,
     val spotifyPremium: Boolean? = null,
     val playbackReady: Boolean? = null
 )
@@ -26,6 +33,7 @@ interface ProviderAuthRepository {
     suspend fun connect(request: AuthRequest): ProviderConnectionProfile
     suspend fun beginSpotifyAuth(clientId: String, redirectUri: String): String
     suspend fun completeSpotifyAuth(redirectUriWithCode: String): ProviderConnectionProfile
+    suspend fun refreshSpotifyTokenIfNeeded(): String?
     suspend fun disconnect(sourceType: SourceType)
     suspend fun restoreAll(): List<ProviderConnectionProfile>
     suspend fun status(sourceType: SourceType): ProviderConnectionProfile

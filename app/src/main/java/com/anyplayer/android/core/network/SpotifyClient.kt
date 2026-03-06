@@ -81,7 +81,12 @@ class SpotifyClient @Inject constructor(
             val parsed = json.parseToJsonElement(raw) as? JsonObject ?: return null
             val accessToken = parsed["access_token"].jsonPrimitiveStringOrNull ?: return null
             val refreshToken = parsed["refresh_token"].jsonPrimitiveStringOrNull
-            return SpotifyTokenExchangeResult(accessToken = accessToken, refreshToken = refreshToken)
+            val expiresIn = parsed["expires_in"]?.jsonPrimitive?.intOrNull
+            return SpotifyTokenExchangeResult(
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                expiresIn = expiresIn
+            )
         }
     }
 
@@ -104,7 +109,12 @@ class SpotifyClient @Inject constructor(
             val parsed = json.parseToJsonElement(raw) as? JsonObject ?: return null
             val accessToken = parsed["access_token"].jsonPrimitiveStringOrNull ?: return null
             val newRefreshToken = parsed["refresh_token"].jsonPrimitiveStringOrNull
-            return SpotifyTokenExchangeResult(accessToken = accessToken, refreshToken = newRefreshToken)
+            val expiresIn = parsed["expires_in"]?.jsonPrimitive?.intOrNull
+            return SpotifyTokenExchangeResult(
+                accessToken = accessToken,
+                refreshToken = newRefreshToken,
+                expiresIn = expiresIn
+            )
         }
     }
 
@@ -423,7 +433,8 @@ data class SpotifyPkceSession(
 
 data class SpotifyTokenExchangeResult(
     val accessToken: String,
-    val refreshToken: String?
+    val refreshToken: String?,
+    val expiresIn: Int?
 )
 
 private val JsonElement?.jsonObject: JsonObject
