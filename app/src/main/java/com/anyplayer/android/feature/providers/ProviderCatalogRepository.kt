@@ -129,7 +129,7 @@ class ProviderCatalogRepository @Inject constructor(
                 sourceType = playlist.source,
                 playlistId = playlist.id,
                 offset = 0,
-                limit = 300,
+                limit = Int.MAX_VALUE,
                 forceRefresh = true
             )
             playlist.copy(
@@ -146,7 +146,7 @@ class ProviderCatalogRepository @Inject constructor(
         sourceType: SourceType,
         playlistId: String,
         offset: Int = 0,
-        limit: Int = 300,
+        limit: Int = Int.MAX_VALUE,
         forceRefresh: Boolean = false
     ): List<Track> {
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
@@ -175,7 +175,7 @@ class ProviderCatalogRepository @Inject constructor(
         sourceType: SourceType,
         playlistId: String,
         offset: Int = 0,
-        limit: Int = 300
+        limit: Int = Int.MAX_VALUE
     ): List<Track> = withContext(Dispatchers.IO) {
         // Rust provider bridge is required for non-Spotify provider tracks.
         // Without JNI we only keep Spotify behavior available.
@@ -213,13 +213,15 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.JELLYFIN -> {
                 val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-                    rustBridge.providerGetPlaylistTracks(
-                        source = SourceType.JELLYFIN,
-                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
-                        playlistId = resolvedPlaylistId,
-                        offset = offset,
-                        limit = limit
-                    ) ?: emptyList()
+                    loadAllPages { pageOffset, pageLimit ->
+                        rustBridge.providerGetPlaylistTracks(
+                            source = SourceType.JELLYFIN,
+                            session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
+                            playlistId = resolvedPlaylistId,
+                            offset = pageOffset,
+                            limit = pageLimit
+                        ) ?: emptyList()
+                    }
                 } else {
                     emptyList()
                 }
@@ -228,13 +230,15 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.PLEX -> {
                 val plex = secureConnectionStore.read(SourceType.PLEX)
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-                    rustBridge.providerGetPlaylistTracks(
-                        source = SourceType.PLEX,
-                        session = buildPlexSession(plex.serverUrl, plex.token),
-                        playlistId = resolvedPlaylistId,
-                        offset = offset,
-                        limit = limit
-                    ) ?: emptyList()
+                    loadAllPages { pageOffset, pageLimit ->
+                        rustBridge.providerGetPlaylistTracks(
+                            source = SourceType.PLEX,
+                            session = buildPlexSession(plex.serverUrl, plex.token),
+                            playlistId = resolvedPlaylistId,
+                            offset = pageOffset,
+                            limit = pageLimit
+                        ) ?: emptyList()
+                    }
                 } else {
                     emptyList()
                 }
