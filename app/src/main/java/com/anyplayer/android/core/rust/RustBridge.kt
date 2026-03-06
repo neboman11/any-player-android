@@ -39,13 +39,23 @@ class RustBridge @Inject constructor() {
      */
     fun validateAndInitSpotifySession(
         accessToken: String,
-        clientId: String = BuildConfig.SPOTIFY_CLIENT_ID
+        clientId: String = BuildConfig.SPOTIFY_CLIENT_ID,
+        tokenExpiresAt: Long? = null
     ): Boolean? {
         val normalizedToken = accessToken.trim()
         if (normalizedToken.isBlank()) return false
 
         val normalizedClientId = clientId.trim()
         if (normalizedClientId.isBlank()) return null
+
+        val tokenPayload = JSONObject()
+            .put("access_token", normalizedToken)
+            .apply {
+                tokenExpiresAt
+                    ?.takeIf { it > 0L }
+                    ?.let { put("expires_at_epoch_seconds", it / 1000L) }
+            }
+            .toString()
 
         val initPayload = JSONObject()
             .put("client_id", normalizedClientId)
@@ -57,7 +67,7 @@ class RustBridge @Inject constructor() {
         }
 
         val validateResponse = callJson("spotifyValidateToken") {
-            RustBridgeNative.spotifyValidateToken(normalizedToken)
+            RustBridgeNative.spotifyValidateToken(tokenPayload)
         } ?: return null
         if (!validateResponse.optBoolean("ok", false)) {
             logBridgeError("spotifyValidateToken", validateResponse)
@@ -67,7 +77,7 @@ class RustBridge @Inject constructor() {
         if (!valid) return false
 
         val initSessionResponse = callJson("spotifyInitSession") {
-            RustBridgeNative.spotifyInitSession(normalizedToken)
+            RustBridgeNative.spotifyInitSession(tokenPayload)
         } ?: return null
         if (!initSessionResponse.optBoolean("ok", false)) {
             logBridgeError("spotifyInitSession", initSessionResponse)

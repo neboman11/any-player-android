@@ -57,7 +57,35 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
-    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { }
+    private var wasPlayingBeforeFocusLoss = false
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                val shouldResume = wasPlayingBeforeFocusLoss
+                wasPlayingBeforeFocusLoss = false
+                if (shouldResume &&
+                    playbackQueueManager.status.value.state == PlaybackStateType.PAUSED
+                ) {
+                    playbackQueueManager.play()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                wasPlayingBeforeFocusLoss = false
+                playbackQueueManager.pause()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                val isPlaying = playbackQueueManager.status.value.state == PlaybackStateType.PLAYING
+                wasPlayingBeforeFocusLoss = isPlaying
+                if (isPlaying) {
+                    playbackQueueManager.pause()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Let the system handle ducking via AudioAttributes; no manual volume change needed.
+                // Media3/ExoPlayer handles ducking automatically when AudioAttributes are set.
+            }
+        }
+    }
     private var audioFocusRequest: AudioFocusRequest? = null
 
     override fun onCreate() {
@@ -428,8 +456,21 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
-        val isSpotifySource = status.currentTrack?.source == SourceType.SPOTIFY
-        if (isSpotifySource && status.state == PlaybackStateType.PLAYING) {
+        val currentTrack = status.currentTrack
+
+        // Only manage audio focus here for sources that do NOT rely on ExoPlayer's
+        // built-in audio focus handling (e.g., the Rust/Spotify path). Media3/ExoPlayer
+        // playback already handles audio focus via setAudioAttributes(..., handleAudioFocus = true),
+        // so we avoid double pause/resume handling by skipping those sources here.
+        if (currentTrack != null && currentTrack.source != SourceType.SPOTIFY) {
+            // We may still be holding audio focus from a previous Spotify track.
+            // Explicitly abandon it before deferring to ExoPlayer's own focus handling.
+            abandonAudioFocus()
+            wasPlayingBeforeFocusLoss = false
+            return
+        }
+
+        if (status.state == PlaybackStateType.PLAYING && currentTrack != null) {
             requestAudioFocus()
         } else {
             abandonAudioFocus()

@@ -123,6 +123,10 @@ private class FakeAuthRepository(
         throw UnsupportedOperationException("Not needed in test")
     }
 
+    override suspend fun refreshSpotifyTokenIfNeeded(): String? {
+        throw UnsupportedOperationException("Not needed in test")
+    }
+
     override suspend fun restoreAll(): List<ProviderConnectionProfile> {
         restoreCallCount += 1
         if (restoreCallCount <= failRestoreAttempts) error("transient restore failure")
