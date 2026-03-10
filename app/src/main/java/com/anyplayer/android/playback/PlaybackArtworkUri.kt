@@ -10,7 +10,7 @@ internal fun Track.resolvePlaybackArtworkUri(): Uri? {
         return null
     }
 
-    val parsedArtwork = runCatching { Uri.parse(rawArtwork) }.getOrNull() ?: return null
+    val parsedArtwork = Uri.parse(rawArtwork)
     val plexStreamInfo = if (source == SourceType.PLEX) resolvePlexStreamInfo() else null
     val candidate = when {
         !parsedArtwork.scheme.isNullOrBlank() -> parsedArtwork
@@ -41,12 +41,18 @@ private fun Track.resolvePlexStreamInfo(): PlexStreamInfo? {
     val streamUrl = url?.trim().orEmpty()
     if (streamUrl.isEmpty()) return null
 
-    val parsedStream = runCatching { Uri.parse(streamUrl) }.getOrNull() ?: return null
+    val parsedStream = Uri.parse(streamUrl)
     val scheme = parsedStream.scheme?.takeIf { it.isNotBlank() } ?: return null
     val authority = parsedStream.authority?.takeIf { it.isNotBlank() } ?: return null
     val token = parsedStream.getQueryParameter("X-Plex-Token")
         ?: parsedStream.getQueryParameter("x-plex-token")
-    return PlexStreamInfo(baseUrl = "$scheme://$authority", token = token)
+
+    // Preserve any reverse-proxy path prefix (e.g. "/plex") before Plex's "/library/..." root.
+    val fullPath = parsedStream.path.orEmpty()
+    val libraryIdx = fullPath.indexOf("/library", ignoreCase = true)
+    val basePath = if (libraryIdx >= 0) fullPath.substring(0, libraryIdx) else ""
+    val baseUrl = "$scheme://$authority$basePath"
+    return PlexStreamInfo(baseUrl = baseUrl, token = token)
 }
 
 private fun Uri.withPlexTokenIfMissing(token: String?): Uri {
