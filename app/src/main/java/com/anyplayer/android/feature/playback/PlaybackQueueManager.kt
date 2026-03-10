@@ -635,8 +635,7 @@ class PlaybackQueueManager @Inject constructor(
                     )
                     return@launch
                 }
-                // Play the target track directly (single track, not full queue) for reliability
-                val success = spotifyPlaybackController.startQueue(listOf(targetTrack.id), 0)
+                val success = startSpotifyAtQueueIndex(targetIndex)
                 if (!success) {
                     spotifyAutoAdvanceInFlight = false
                     Log.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
@@ -691,8 +690,7 @@ class PlaybackQueueManager @Inject constructor(
                     )
                     return@launch
                 }
-                // Play the target track directly (single track, not full queue) for reliability
-                val success = spotifyPlaybackController.startQueue(listOf(targetTrack.id), 0)
+                val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
                     currentTrack = targetTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
