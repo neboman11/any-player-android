@@ -1,6 +1,5 @@
 package com.anyplayer.android.playback
 
-import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.FlagSet
@@ -292,7 +291,7 @@ private fun Track.toMediaItem(): MediaItem =
                 .setTitle(title)
                 .setArtist(artist)
                 .setAlbumTitle(album)
-                .setArtworkUri(imageUrl?.let(Uri::parse))
+                .setArtworkUri(resolvePlaybackArtworkUri())
                 .setIsPlayable(true)
                 .build()
         )

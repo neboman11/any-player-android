@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.playback.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -49,7 +50,7 @@ class Media3PlaybackController @Inject constructor(
                         .setTitle(track.title)
                         .setArtist(track.artist)
                         .setAlbumTitle(track.album)
-                        .setArtworkUri(track.imageUrl?.let(android.net.Uri::parse))
+                        .setArtworkUri(track.resolvePlaybackArtworkUri())
                         .build()
                 )
                 .build()
@@ -99,13 +100,20 @@ class Media3PlaybackController @Inject constructor(
     }
 
     fun next() {
+        if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToNextMediaItem()
         playerInstance.playWhenReady = true
     }
 
-    fun previous() {
-        playerInstance.seekToPreviousMediaItem()
-        playerInstance.playWhenReady = true
+    fun previous(): Boolean {
+        if (playerInstance.mediaItemCount == 0) return false
+        // Only seek to previous if we're not at the first item
+        if (playerInstance.currentMediaItemIndex > 0) {
+            playerInstance.seekToPreviousMediaItem()
+            playerInstance.playWhenReady = true
+            return true
+        }
+        return false
     }
 
     fun seekTo(positionMs: Long) {

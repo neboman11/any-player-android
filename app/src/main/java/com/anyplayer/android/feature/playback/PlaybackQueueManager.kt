@@ -187,13 +187,15 @@ class PlaybackQueueManager @Inject constructor(
                 position = 0,
                 duration = tracks[index].durationMs ?: 0
             )
+            // Only start the Spotify queue when autoPlay is true. startQueue() begins playback
+            // immediately; when autoPlay is false we defer until play()/togglePlayPause() is called,
+            // which falls back to startQueue() when resume fails.
             if (autoPlay) {
                 scope.launch {
                     val started = spotifyPlaybackController.startQueue(tracks.map { it.id }, index)
                     if (started) {
                         spotifyPlaybackController.setVolume(mutableStatus.value.volume)
-                    }
-                    if (!started) {
+                    } else {
                         mutableStatus.value = mutableStatus.value.copy(
                             state = PlaybackStateType.ERROR,
                             errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
@@ -669,6 +671,11 @@ class PlaybackQueueManager @Inject constructor(
             scope.launch {
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex - 1).coerceAtLeast(0)
+                // Only attempt to skip if we're not already at the first track
+                if (targetIndex == currentIndex && currentIndex == 0) {
+                    // Already at first track, don't do anything
+                    return@launch
+                }
                 val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
                     currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
@@ -682,9 +689,13 @@ class PlaybackQueueManager @Inject constructor(
             return
         }
 
-        media3PlaybackController.previous()
-        mutableStatus.value = mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
-        persistStateAsync()
+        // Only call previous if there's a queue and we're not at the first track
+        if (state.queue.isEmpty()) return
+        val moved = media3PlaybackController.previous()
+        if (moved) {
+            mutableStatus.value = mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
+            persistStateAsync()
+        }
     }
 
     private suspend fun syncFromPlaybackEngine() {

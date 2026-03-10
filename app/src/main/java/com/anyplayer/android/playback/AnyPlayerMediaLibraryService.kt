@@ -35,13 +35,19 @@ import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -57,8 +63,16 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
+    private var activeProjectionControllers = 0
+    private var projectionDisconnectPauseJob: Job? = null
     private var wasPlayingBeforeFocusLoss = false
+    private var restoreJob: Deferred<Unit>? = null
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        val activeSource = playbackQueueManager.status.value.currentTrack?.source
+        if (activeSource != SourceType.SPOTIFY) {
+            wasPlayingBeforeFocusLoss = false
+            return@OnAudioFocusChangeListener
+        }
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 val shouldResume = wasPlayingBeforeFocusLoss
@@ -90,9 +104,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        runBlocking {
-            playbackQueueManager.restorePersistedStateNowIfNeeded()
-        }
+        startProviderRestore()
 
         mediaLibrarySession = MediaLibrarySession.Builder(
             this,
@@ -112,6 +124,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         TAG,
                         "Accepted media controller package=${controller.packageName} uid=${controller.uid}"
                     )
+                    if (isProjectionController(controller.packageName)) {
+                        onProjectionControllerConnected(controller)
+                    }
                     return super.onConnect(session, controller)
                 }
 
@@ -124,11 +139,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         "Controller disconnected package=${controller.packageName} uid=${controller.uid}"
                     )
                     if (isProjectionController(controller.packageName)) {
-                        val current = playbackQueueManager.status.value
-                        if (current.state == PlaybackStateType.PLAYING) {
-                            Log.i(TAG, "Projection controller disconnected; pausing playback")
-                            playbackQueueManager.pause()
-                        }
+                        onProjectionControllerDisconnected(controller)
                     }
                     super.onDisconnected(session, controller)
                 }
@@ -198,58 +209,77 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     startIndex: Int,
                     startPositionMs: Long
                 ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-                    runBlocking {
-                        playbackQueueManager.restorePersistedStateNowIfNeeded()
-                    }
-                    playbackQueueManager.ensureWarmSessionState()
+                    val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+                    serviceScope.launch {
+                        try {
+                            withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
+                                startProviderRestore().await()
+                            } ?: Log.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
 
-                    val displayQueue = currentDisplayQueue()
-                    if (displayQueue.isNotEmpty()) {
-                        val requestedIds = mediaItems.mapNotNull { it.mediaId.takeIf(String::isNotBlank) }
-                        if (requestedIds.isNotEmpty()) {
-                            val selectedQueue = requestedIds
-                                .mapNotNull { requestedId ->
-                                    displayQueue.firstOrNull { track -> trackIdsMatch(track.id, requestedId) }
+                            playbackQueueManager.ensureWarmSessionState()
+
+                            val displayQueue = currentDisplayQueue()
+                            if (displayQueue.isNotEmpty()) {
+                                val requestedIds = mediaItems.mapNotNull { it.mediaId.takeIf(String::isNotBlank) }
+                                if (requestedIds.isNotEmpty()) {
+                                    val selectedQueue = requestedIds
+                                        .mapNotNull { requestedId ->
+                                            displayQueue.firstOrNull { track -> trackIdsMatch(track.id, requestedId) }
+                                        }
+                                        .distinctBy { it.id }
+                                        .ifEmpty { displayQueue }
+                                    val requestedStartId = requestedIds.getOrNull(startIndex.coerceAtLeast(0))
+                                    val mappedStartIndex = requestedStartId
+                                        ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
+                                        ?.takeIf { it >= 0 }
+                                        ?: 0
+                                    playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
+                                    if (startPositionMs > 0L) {
+                                        playbackQueueManager.seekTo(startPositionMs)
+                                    }
+                                    val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
+                                    future.set(
+                                        MediaSession.MediaItemsWithStartPosition(
+                                            resolvedMediaItems,
+                                            mappedStartIndex,
+                                            startPositionMs.coerceAtLeast(0L)
+                                        )
+                                    )
+                                    return@launch
                                 }
-                                .distinctBy { it.id }
-                                .ifEmpty { displayQueue }
-                            val requestedStartId = requestedIds.getOrNull(startIndex.coerceAtLeast(0))
-                            val mappedStartIndex = requestedStartId
-                                ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
-                                ?.takeIf { it >= 0 }
-                                ?: 0
-                            playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
-                            if (startPositionMs > 0L) {
-                                playbackQueueManager.seekTo(startPositionMs)
-                            }
-                            val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
-                            return Futures.immediateFuture(
-                                MediaSession.MediaItemsWithStartPosition(
-                                    resolvedMediaItems,
-                                    mappedStartIndex,
-                                    startPositionMs.coerceAtLeast(0L)
+
+                                val safeStartIndex = startIndex.coerceIn(0, displayQueue.lastIndex)
+                                playbackQueueManager.playFromIndex(safeStartIndex)
+                                if (startPositionMs > 0L) {
+                                    playbackQueueManager.seekTo(startPositionMs)
+                                }
+                                val resolvedMediaItems = displayQueue.map { it.toLibraryMediaItem() }
+                                future.set(
+                                    MediaSession.MediaItemsWithStartPosition(
+                                        resolvedMediaItems,
+                                        safeStartIndex,
+                                        startPositionMs.coerceAtLeast(0L)
+                                    )
                                 )
-                            )
-                        }
+                                return@launch
+                            }
 
-                        val safeStartIndex = startIndex.coerceIn(0, displayQueue.lastIndex)
-                        playbackQueueManager.playFromIndex(safeStartIndex)
-                        if (startPositionMs > 0L) {
-                            playbackQueueManager.seekTo(startPositionMs)
+                            future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
+                        } catch (e: CancellationException) {
+                            future.cancel(false)
+                            throw e
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Failed to process media items during queue restoration", t)
+                            future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
                         }
-                        val resolvedMediaItems = displayQueue.map { it.toLibraryMediaItem() }
-                        return Futures.immediateFuture(
-                            MediaSession.MediaItemsWithStartPosition(
-                                resolvedMediaItems,
-                                safeStartIndex,
-                                startPositionMs.coerceAtLeast(0L)
-                            )
-                        )
+                    }.also { job ->
+                        job.invokeOnCompletion { cause ->
+                            if (cause is CancellationException && !future.isDone) {
+                                future.cancel(false)
+                            }
+                        }
                     }
-
-                    return Futures.immediateFuture(
-                        MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L)
-                    )
+                    return future
                 }
             }
         ).build()
@@ -290,6 +320,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = null
+        activeProjectionControllers = 0
         abandonAudioFocus()
         stopForeground(STOP_FOREGROUND_REMOVE)
         mediaLibrarySession?.run {
@@ -306,11 +339,26 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         private const val ACTION_PLAY_PAUSE = "com.anyplayer.android.action.PLAY_PAUSE"
         private const val ACTION_NEXT = "com.anyplayer.android.action.NEXT"
         private const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
+        private const val PROJECTION_DISCONNECT_GRACE_MS = 1500L
+        private const val RESTORE_TIMEOUT_MS = 5_000L
         private val TRUSTED_CONTROLLER_PACKAGES = setOf(
             "com.google.android.projection.gearhead",
             "com.android.car.media",
             "com.google.android.apps.automotive.media"
         )
+    }
+
+    private fun startProviderRestore(): Deferred<Unit> {
+        return restoreJob ?: serviceScope.async<Unit> {
+            try {
+                authRepository.restoreAll()
+                playbackQueueManager.restorePersistedStateNowIfNeeded()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to restore provider state", t)
+            }
+        }.also { restoreJob = it }
     }
 
     private fun isTrustedController(controllerInfo: MediaSession.ControllerInfo): Boolean {
@@ -336,6 +384,34 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         return false
     }
 
+    private fun onProjectionControllerConnected(controller: MediaSession.ControllerInfo) {
+        activeProjectionControllers += 1
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = null
+        Log.i(
+            TAG,
+            "Projection controller connected package=${controller.packageName} active=$activeProjectionControllers"
+        )
+    }
+
+    private fun onProjectionControllerDisconnected(controller: MediaSession.ControllerInfo) {
+        activeProjectionControllers = (activeProjectionControllers - 1).coerceAtLeast(0)
+        Log.i(
+            TAG,
+            "Projection controller disconnected package=${controller.packageName} active=$activeProjectionControllers"
+        )
+        if (activeProjectionControllers > 0) return
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = serviceScope.launch {
+            delay(PROJECTION_DISCONNECT_GRACE_MS)
+            val current = playbackQueueManager.status.value
+            if (activeProjectionControllers == 0 && current.state == PlaybackStateType.PLAYING) {
+                Log.i(TAG, "Projection controllers inactive after grace period; pausing playback")
+                playbackQueueManager.pause()
+            }
+        }
+    }
+
     private fun currentDisplayQueue(): List<Track> {
         val status = playbackQueueManager.status.value
         return status.orderedQueue.ifEmpty { status.queue }
@@ -358,7 +434,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     .setTitle(title)
                     .setArtist(artist)
                     .setAlbumTitle(album)
-                    .setArtworkUri(imageUrl?.let(android.net.Uri::parse))
+                    .setArtworkUri(resolvePlaybackArtworkUri())
                     .setIsBrowsable(false)
                     .setIsPlayable(true)
                     .build()
