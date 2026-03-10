@@ -14,7 +14,6 @@ import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.startup.StartupCatalogGateway
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -268,7 +267,7 @@ class ProviderCatalogRepository @Inject constructor(
                             ) ?: emptyList()
                         }
                     } catch (e: Exception) {
-                        throw Exception("Failed to fetch Jellyfin playlist tracks: ${e.message}")
+                        throw IllegalStateException("Failed to fetch Jellyfin playlist tracks", e)
                     }
                 } else {
                     emptyList()
@@ -504,7 +503,7 @@ class ProviderCatalogRepository @Inject constructor(
             "token" to token,
             "page_size" to pageSize.toString()
         )
-        Log.d(TAG, "buildPlexSession: pageSize=$pageSize, session=$session")
+        Log.d(TAG, "buildPlexSession: pageSize=$pageSize, url=$url, token=<redacted>")
         return session
     }
 

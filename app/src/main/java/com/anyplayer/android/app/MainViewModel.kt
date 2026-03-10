@@ -16,6 +16,7 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.network.SpotifyClientIds
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.AuthRequest
+import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
@@ -322,16 +323,14 @@ class MainViewModel @Inject constructor(
         plexPlaylistPageSizeInput,
         spotifyTokenInput
     ) { arr: Array<*> ->
-        @Suppress("UNCHECKED_CAST")
-        val values = arr as Array<String>
         ProviderInputPart(
-            jellyUrl = values[0],
-            jellyToken = values[1],
-            jellyPageSize = values[2],
-            plexUrl = values[3],
-            plexToken = values[4],
-            plexPageSize = values[5],
-            spotifyToken = values[6]
+            jellyUrl = arr[0] as String,
+            jellyToken = arr[1] as String,
+            jellyPageSize = arr[2] as String,
+            plexUrl = arr[3] as String,
+            plexToken = arr[4] as String,
+            plexPageSize = arr[5] as String,
+            spotifyToken = arr[6] as String
         )
     }
 
@@ -733,7 +732,7 @@ class MainViewModel @Inject constructor(
             providerConnectionFeedback.value = "Connecting to Jellyfin..."
 
             val result = runCatching {
-                val pageSize = jellyfinPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE
+                val pageSize = (jellyfinPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE).coerceIn(1, 1000)
                 authRepository.connect(
                     AuthRequest.Jellyfin(
                         serverUrl = normalizedUrl,
@@ -773,7 +772,7 @@ class MainViewModel @Inject constructor(
             providerConnectionFeedback.value = "Connecting to Plex..."
 
             val result = runCatching {
-                val pageSize = plexPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE
+                val pageSize = (plexPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE).coerceIn(1, 1000)
                 authRepository.connect(
                     AuthRequest.Plex(
                         serverUrl = normalizedUrl,
@@ -1771,7 +1770,6 @@ class MainViewModel @Inject constructor(
 }
 
 private const val SPOTIFY_REDIRECT_URI = "anyplayer://spotify-callback"
-private const val PROVIDER_DEFAULT_PAGE_SIZE = 300
 
 data class MainUiState(
     val startupMessage: String = "Starting...",

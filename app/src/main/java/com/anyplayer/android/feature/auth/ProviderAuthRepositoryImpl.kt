@@ -61,9 +61,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     val normalizedServerUrl = normalizeServerUrl(request.serverUrl)
                     val apiKey = request.apiKey.trim()
                     require(apiKey.isNotBlank()) { "Jellyfin API key is required" }
+                    val clampedPageSize = request.playlistPageSize.coerceIn(1, 1000)
                     val check = rustBridge.providerValidateConnection(
                         source = SourceType.JELLYFIN,
-                        session = buildJellyfinSession(normalizedServerUrl, apiKey, request.playlistPageSize)
+                        session = buildJellyfinSession(normalizedServerUrl, apiKey, clampedPageSize)
                     ) ?: ProviderConnectionCheck.Failed(
                         buildString {
                             append("Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
@@ -79,7 +80,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             token = apiKey,
                             refreshToken = check.metadata["userId"],
                             playbackReady = true,
-                            playlistPageSize = request.playlistPageSize
+                            playlistPageSize = clampedPageSize
                         )
 
                         is ProviderConnectionCheck.Failed -> {
@@ -92,9 +93,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     val normalizedServerUrl = normalizeServerUrl(request.serverUrl)
                     val token = request.token.trim()
                     require(token.isNotBlank()) { "Plex token is required" }
+                    val clampedPageSize = request.playlistPageSize.coerceIn(1, 1000)
                     val check = rustBridge.providerValidateConnection(
                         source = SourceType.PLEX,
-                        session = buildPlexSession(normalizedServerUrl, token, request.playlistPageSize)
+                        session = buildPlexSession(normalizedServerUrl, token, clampedPageSize)
                     ) ?: ProviderConnectionCheck.Failed(
                         buildString {
                             append("Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
@@ -109,7 +111,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             username = request.username ?: check.username,
                             token = token,
                             playbackReady = true,
-                            playlistPageSize = request.playlistPageSize
+                            playlistPageSize = clampedPageSize
                         )
 
                         is ProviderConnectionCheck.Failed -> {

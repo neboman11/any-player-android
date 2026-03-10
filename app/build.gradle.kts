@@ -119,8 +119,7 @@ android {
     kotlinOptions {
         jvmTarget = "17"
         freeCompilerArgs += listOf(
-            "-opt-in=kotlin.ExperimentalStdlibApi",
-            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
+            "-opt-in=kotlin.ExperimentalStdlibApi"
         )
     }
 
