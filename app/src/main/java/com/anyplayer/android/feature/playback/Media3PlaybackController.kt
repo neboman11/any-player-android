@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.playback.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -49,7 +50,7 @@ class Media3PlaybackController @Inject constructor(
                         .setTitle(track.title)
                         .setArtist(track.artist)
                         .setAlbumTitle(track.album)
-                        .setArtworkUri(track.imageUrl?.let(android.net.Uri::parse))
+                        .setArtworkUri(track.resolvePlaybackArtworkUri())
                         .build()
                 )
                 .build()

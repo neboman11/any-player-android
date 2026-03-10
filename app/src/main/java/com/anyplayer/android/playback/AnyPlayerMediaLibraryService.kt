@@ -27,6 +27,7 @@ import com.anyplayer.android.MainActivity
 import com.anyplayer.android.R
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
+import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
@@ -37,8 +38,10 @@ import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
@@ -56,8 +59,15 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
+    private var activeProjectionControllers = 0
+    private var projectionDisconnectPauseJob: Job? = null
     private var wasPlayingBeforeFocusLoss = false
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        val activeSource = playbackQueueManager.status.value.currentTrack?.source
+        if (activeSource != SourceType.SPOTIFY) {
+            wasPlayingBeforeFocusLoss = false
+            return@OnAudioFocusChangeListener
+        }
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 if (wasPlayingBeforeFocusLoss) {
@@ -108,6 +118,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         TAG,
                         "Accepted media controller package=${controller.packageName} uid=${controller.uid}"
                     )
+                    if (isProjectionController(controller.packageName)) {
+                        onProjectionControllerConnected(controller)
+                    }
                     return super.onConnect(session, controller)
                 }
 
@@ -120,11 +133,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         "Controller disconnected package=${controller.packageName} uid=${controller.uid}"
                     )
                     if (isProjectionController(controller.packageName)) {
-                        val current = playbackQueueManager.status.value
-                        if (current.state == PlaybackStateType.PLAYING) {
-                            Log.i(TAG, "Projection controller disconnected; pausing playback")
-                            playbackQueueManager.pause()
-                        }
+                        onProjectionControllerDisconnected(controller)
                     }
                     super.onDisconnected(session, controller)
                 }
@@ -286,6 +295,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = null
+        activeProjectionControllers = 0
         abandonAudioFocus()
         stopForeground(STOP_FOREGROUND_REMOVE)
         mediaLibrarySession?.run {
@@ -302,6 +314,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         private const val ACTION_PLAY_PAUSE = "com.anyplayer.android.action.PLAY_PAUSE"
         private const val ACTION_NEXT = "com.anyplayer.android.action.NEXT"
         private const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
+        private const val PROJECTION_DISCONNECT_GRACE_MS = 1500L
         private val TRUSTED_CONTROLLER_PACKAGES = setOf(
             "com.google.android.projection.gearhead",
             "com.android.car.media",
@@ -332,6 +345,34 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         return false
     }
 
+    private fun onProjectionControllerConnected(controller: MediaSession.ControllerInfo) {
+        activeProjectionControllers += 1
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = null
+        Log.i(
+            TAG,
+            "Projection controller connected package=${controller.packageName} active=$activeProjectionControllers"
+        )
+    }
+
+    private fun onProjectionControllerDisconnected(controller: MediaSession.ControllerInfo) {
+        activeProjectionControllers = (activeProjectionControllers - 1).coerceAtLeast(0)
+        Log.i(
+            TAG,
+            "Projection controller disconnected package=${controller.packageName} active=$activeProjectionControllers"
+        )
+        if (activeProjectionControllers > 0) return
+        projectionDisconnectPauseJob?.cancel()
+        projectionDisconnectPauseJob = serviceScope.launch {
+            delay(PROJECTION_DISCONNECT_GRACE_MS)
+            val current = playbackQueueManager.status.value
+            if (activeProjectionControllers == 0 && current.state == PlaybackStateType.PLAYING) {
+                Log.i(TAG, "Projection controllers inactive after grace period; pausing playback")
+                playbackQueueManager.pause()
+            }
+        }
+    }
+
     private fun currentDisplayQueue(): List<Track> {
         val status = playbackQueueManager.status.value
         return status.orderedQueue.ifEmpty { status.queue }
@@ -354,7 +395,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     .setTitle(title)
                     .setArtist(artist)
                     .setAlbumTitle(album)
-                    .setArtworkUri(imageUrl?.let(android.net.Uri::parse))
+                    .setArtworkUri(resolvePlaybackArtworkUri())
                     .setIsBrowsable(false)
                     .setIsPlayable(true)
                     .build()
@@ -452,7 +493,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
-        if (status.state == PlaybackStateType.PLAYING && status.currentTrack != null) {
+        val shouldManageFocus = status.currentTrack?.source == SourceType.SPOTIFY &&
+            status.state == PlaybackStateType.PLAYING
+        if (shouldManageFocus) {
             requestAudioFocus()
         } else {
             abandonAudioFocus()
