@@ -70,8 +70,11 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         }
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                if (wasPlayingBeforeFocusLoss) {
-                    wasPlayingBeforeFocusLoss = false
+                val shouldResume = wasPlayingBeforeFocusLoss
+                wasPlayingBeforeFocusLoss = false
+                if (shouldResume &&
+                    playbackQueueManager.status.value.state == PlaybackStateType.PAUSED
+                ) {
                     playbackQueueManager.play()
                 }
             }
@@ -506,9 +509,21 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun updateAudioFocus(status: PlaybackStatus) {
-        val shouldManageFocus = status.currentTrack?.source == SourceType.SPOTIFY &&
-            status.state == PlaybackStateType.PLAYING
-        if (shouldManageFocus) {
+        val currentTrack = status.currentTrack
+
+        // Only manage audio focus here for sources that do NOT rely on ExoPlayer's
+        // built-in audio focus handling (e.g., the Rust/Spotify path). Media3/ExoPlayer
+        // playback already handles audio focus via setAudioAttributes(..., handleAudioFocus = true),
+        // so we avoid double pause/resume handling by skipping those sources here.
+        if (currentTrack != null && currentTrack.source != SourceType.SPOTIFY) {
+            // We may still be holding audio focus from a previous Spotify track.
+            // Explicitly abandon it before deferring to ExoPlayer's own focus handling.
+            abandonAudioFocus()
+            wasPlayingBeforeFocusLoss = false
+            return
+        }
+
+        if (status.state == PlaybackStateType.PLAYING && currentTrack != null) {
             requestAudioFocus()
         } else {
             abandonAudioFocus()

@@ -129,9 +129,9 @@ class ProviderCatalogRepository @Inject constructor(
                 sourceType = playlist.source,
                 playlistId = playlist.id,
                 offset = 0,
-                limit = Int.MAX_VALUE,
+                limit = limit,
                 forceRefresh = true
-            )
+            ).take(limit)
             playlist.copy(
                 trackCount = tracks.takeIf { it.isNotEmpty() }?.size ?: playlist.trackCount,
                 tracks = tracks
@@ -213,7 +213,7 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.JELLYFIN -> {
                 val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-                    loadAllPages { pageOffset, pageLimit ->
+                    loadAllPages(effectivePageSize = PROVIDER_PAGE_SIZE) { pageOffset, pageLimit ->
                         rustBridge.providerGetPlaylistTracks(
                             source = SourceType.JELLYFIN,
                             session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken),
@@ -230,7 +230,7 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.PLEX -> {
                 val plex = secureConnectionStore.read(SourceType.PLEX)
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-                    loadAllPages { pageOffset, pageLimit ->
+                    loadAllPages(effectivePageSize = PROVIDER_PAGE_SIZE) { pageOffset, pageLimit ->
                         rustBridge.providerGetPlaylistTracks(
                             source = SourceType.PLEX,
                             session = buildPlexSession(plex.serverUrl, plex.token),
@@ -514,6 +514,7 @@ private const val PROVIDER_PLAYLIST_CACHE_VERSION = 1
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 1
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX = "provider_playlist_tracks_"
 private const val MAX_CACHE_JSON_CHARS = 500_000
+private const val PROVIDER_PAGE_SIZE = 300
 
 @Serializable
 private data class ProviderPlaylistCacheEntry(

@@ -239,16 +239,20 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
             val refreshToken = stored.refreshToken?.trim().orEmpty()
             if (refreshToken.isBlank()) {
-                return@withContext null
+                return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
             }
 
-            val refreshed = spotifyClient.refreshAccessToken(
-                clientId = SpotifyClientIds.ACTIVE,
-                refreshToken = refreshToken
-            ) ?: return@withContext null
+            val refreshed = runCatching {
+                spotifyClient.refreshAccessToken(
+                    clientId = SpotifyClientIds.ACTIVE,
+                    refreshToken = refreshToken
+                )
+            }.onFailure { e ->
+                Log.w(TAG, "Spotify token refresh network call failed", e)
+            }.getOrNull() ?: return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
 
             val refreshedToken = refreshed.accessToken.trim()
-            if (refreshedToken.isBlank()) return@withContext null
+            if (refreshedToken.isBlank()) return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
             val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
 
             val updatedConnection = stored.copy(
@@ -260,7 +264,9 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     tokenExpiresAt = refreshedTokenExpiresAt
                 )
             )
-            secureConnectionStore.save(updatedConnection)
+            runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { e ->
+                Log.w(TAG, "Failed to save refreshed Spotify token", e)
+            }
             refreshedToken
         }
     }
