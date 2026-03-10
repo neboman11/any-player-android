@@ -46,6 +46,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
@@ -264,9 +265,18 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                             }
 
                             future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
+                        } catch (e: CancellationException) {
+                            future.cancel(false)
+                            throw e
                         } catch (t: Throwable) {
                             Log.w(TAG, "Failed to process media items during queue restoration", t)
                             future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
+                        }
+                    }.also { job ->
+                        job.invokeOnCompletion { cause ->
+                            if (cause is CancellationException && !future.isDone) {
+                                future.cancel(false)
+                            }
                         }
                     }
                     return future
@@ -343,6 +353,8 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             try {
                 authRepository.restoreAll()
                 playbackQueueManager.restorePersistedStateNowIfNeeded()
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to restore provider state", t)
             }
