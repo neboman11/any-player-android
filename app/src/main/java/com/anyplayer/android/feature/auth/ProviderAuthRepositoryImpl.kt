@@ -63,7 +63,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     require(apiKey.isNotBlank()) { "Jellyfin API key is required" }
                     val check = rustBridge.providerValidateConnection(
                         source = SourceType.JELLYFIN,
-                        session = buildJellyfinSession(normalizedServerUrl, apiKey)
+                        session = buildJellyfinSession(normalizedServerUrl, apiKey, request.playlistPageSize)
                     ) ?: ProviderConnectionCheck.Failed(
                         buildString {
                             append("Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
@@ -78,7 +78,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             username = request.username ?: check.username,
                             token = apiKey,
                             refreshToken = check.metadata["userId"],
-                            playbackReady = true
+                            playbackReady = true,
+                            playlistPageSize = request.playlistPageSize
                         )
 
                         is ProviderConnectionCheck.Failed -> {
@@ -93,7 +94,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     require(token.isNotBlank()) { "Plex token is required" }
                     val check = rustBridge.providerValidateConnection(
                         source = SourceType.PLEX,
-                        session = buildPlexSession(normalizedServerUrl, token)
+                        session = buildPlexSession(normalizedServerUrl, token, request.playlistPageSize)
                     ) ?: ProviderConnectionCheck.Failed(
                         buildString {
                             append("Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE")
@@ -107,7 +108,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             serverUrl = normalizedServerUrl,
                             username = request.username ?: check.username,
                             token = token,
-                            playbackReady = true
+                            playbackReady = true,
+                            playlistPageSize = request.playlistPageSize
                         )
 
                         is ProviderConnectionCheck.Failed -> {
@@ -280,7 +282,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
                             val check = rustBridge.providerValidateConnection(
                                 source = SourceType.JELLYFIN,
-                                session = buildJellyfinSession(normalizedServerUrl, stored.token)
+                                session = buildJellyfinSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
                             ) ?: ProviderConnectionCheck.Failed(
                                 rustBridge.lastError ?: "Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
                             )
@@ -299,7 +301,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
                             val check = rustBridge.providerValidateConnection(
                                 source = SourceType.PLEX,
-                                session = buildPlexSession(normalizedServerUrl, stored.token)
+                                session = buildPlexSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
                             ) ?: ProviderConnectionCheck.Failed(
                                 rustBridge.lastError ?: "Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
                             )
@@ -387,6 +389,15 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun updatePlaylistPageSize(sourceType: SourceType, pageSize: Int) {
+        return withContext(Dispatchers.IO) {
+            val current = secureConnectionStore.read(sourceType) ?: return@withContext
+            val pagedSize = pageSize.coerceIn(1, 1000)
+            val updated = current.copy(playlistPageSize = pagedSize)
+            secureConnectionStore.save(updated)
+        }
+    }
+
     private fun StoredConnection.toStatus(): ProviderConnectionProfile {
         val isSpotify = source == SourceType.SPOTIFY
         val spotifyFallback = if (isSpotify && spotifyPremium != true) {
@@ -423,14 +434,16 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun buildJellyfinSession(serverUrl: String, apiKey: String): Map<String, String> = mapOf(
+    private fun buildJellyfinSession(serverUrl: String, apiKey: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> = mapOf(
         "url" to serverUrl,
-        "api_key" to apiKey
+        "api_key" to apiKey,
+        "page_size" to pageSize.toString()
     )
 
-    private fun buildPlexSession(serverUrl: String, token: String): Map<String, String> = mapOf(
+    private fun buildPlexSession(serverUrl: String, token: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> = mapOf(
         "url" to serverUrl,
-        "token" to token
+        "token" to token,
+        "page_size" to pageSize.toString()
     )
 
     private fun resolveSpotifyPlaybackReady(accessToken: String?): Boolean {
