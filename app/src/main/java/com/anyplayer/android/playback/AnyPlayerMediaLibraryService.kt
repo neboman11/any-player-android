@@ -349,7 +349,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun startProviderRestore(): Deferred<Unit> {
-        return restoreJob ?: serviceScope.async {
+        return restoreJob ?: serviceScope.async<Unit> {
             try {
                 authRepository.restoreAll()
                 playbackQueueManager.restorePersistedStateNowIfNeeded()
