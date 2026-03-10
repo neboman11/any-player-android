@@ -35,6 +35,7 @@ import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -45,7 +46,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
@@ -208,60 +208,68 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     startIndex: Int,
                     startPositionMs: Long
                 ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-                    runBlocking {
-                        withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
-                            startProviderRestore().await()
-                        } ?: Log.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
-                    }
-                    playbackQueueManager.ensureWarmSessionState()
+                    val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+                    serviceScope.launch {
+                        try {
+                            withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
+                                startProviderRestore().await()
+                            } ?: Log.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
 
-                    val displayQueue = currentDisplayQueue()
-                    if (displayQueue.isNotEmpty()) {
-                        val requestedIds = mediaItems.mapNotNull { it.mediaId.takeIf(String::isNotBlank) }
-                        if (requestedIds.isNotEmpty()) {
-                            val selectedQueue = requestedIds
-                                .mapNotNull { requestedId ->
-                                    displayQueue.firstOrNull { track -> trackIdsMatch(track.id, requestedId) }
+                            playbackQueueManager.ensureWarmSessionState()
+
+                            val displayQueue = currentDisplayQueue()
+                            if (displayQueue.isNotEmpty()) {
+                                val requestedIds = mediaItems.mapNotNull { it.mediaId.takeIf(String::isNotBlank) }
+                                if (requestedIds.isNotEmpty()) {
+                                    val selectedQueue = requestedIds
+                                        .mapNotNull { requestedId ->
+                                            displayQueue.firstOrNull { track -> trackIdsMatch(track.id, requestedId) }
+                                        }
+                                        .distinctBy { it.id }
+                                        .ifEmpty { displayQueue }
+                                    val requestedStartId = requestedIds.getOrNull(startIndex.coerceAtLeast(0))
+                                    val mappedStartIndex = requestedStartId
+                                        ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
+                                        ?.takeIf { it >= 0 }
+                                        ?: 0
+                                    playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
+                                    if (startPositionMs > 0L) {
+                                        playbackQueueManager.seekTo(startPositionMs)
+                                    }
+                                    val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
+                                    future.set(
+                                        MediaSession.MediaItemsWithStartPosition(
+                                            resolvedMediaItems,
+                                            mappedStartIndex,
+                                            startPositionMs.coerceAtLeast(0L)
+                                        )
+                                    )
+                                    return@launch
                                 }
-                                .distinctBy { it.id }
-                                .ifEmpty { displayQueue }
-                            val requestedStartId = requestedIds.getOrNull(startIndex.coerceAtLeast(0))
-                            val mappedStartIndex = requestedStartId
-                                ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
-                                ?.takeIf { it >= 0 }
-                                ?: 0
-                            playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
-                            if (startPositionMs > 0L) {
-                                playbackQueueManager.seekTo(startPositionMs)
-                            }
-                            val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
-                            return Futures.immediateFuture(
-                                MediaSession.MediaItemsWithStartPosition(
-                                    resolvedMediaItems,
-                                    mappedStartIndex,
-                                    startPositionMs.coerceAtLeast(0L)
+
+                                val safeStartIndex = startIndex.coerceIn(0, displayQueue.lastIndex)
+                                playbackQueueManager.playFromIndex(safeStartIndex)
+                                if (startPositionMs > 0L) {
+                                    playbackQueueManager.seekTo(startPositionMs)
+                                }
+                                val resolvedMediaItems = displayQueue.map { it.toLibraryMediaItem() }
+                                future.set(
+                                    MediaSession.MediaItemsWithStartPosition(
+                                        resolvedMediaItems,
+                                        safeStartIndex,
+                                        startPositionMs.coerceAtLeast(0L)
+                                    )
                                 )
-                            )
-                        }
+                                return@launch
+                            }
 
-                        val safeStartIndex = startIndex.coerceIn(0, displayQueue.lastIndex)
-                        playbackQueueManager.playFromIndex(safeStartIndex)
-                        if (startPositionMs > 0L) {
-                            playbackQueueManager.seekTo(startPositionMs)
+                            future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Failed to process media items during queue restoration", t)
+                            future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
                         }
-                        val resolvedMediaItems = displayQueue.map { it.toLibraryMediaItem() }
-                        return Futures.immediateFuture(
-                            MediaSession.MediaItemsWithStartPosition(
-                                resolvedMediaItems,
-                                safeStartIndex,
-                                startPositionMs.coerceAtLeast(0L)
-                            )
-                        )
                     }
-
-                    return Futures.immediateFuture(
-                        MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L)
-                    )
+                    return future
                 }
             }
         ).build()
@@ -334,10 +342,10 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         return restoreJob ?: serviceScope.async {
             try {
                 authRepository.restoreAll()
-            } catch (error: Exception) {
-                Log.w(TAG, "Failed to restore provider sessions: ${error.message}")
+                playbackQueueManager.restorePersistedStateNowIfNeeded()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to restore provider state", t)
             }
-            playbackQueueManager.restorePersistedStateNowIfNeeded()
         }.also { restoreJob = it }
     }
 
