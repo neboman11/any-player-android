@@ -37,13 +37,16 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -62,6 +65,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var activeProjectionControllers = 0
     private var projectionDisconnectPauseJob: Job? = null
     private var wasPlayingBeforeFocusLoss = false
+    private var restoreJob: Deferred<Unit>? = null
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         val activeSource = playbackQueueManager.status.value.currentTrack?.source
         if (activeSource != SourceType.SPOTIFY) {
@@ -99,16 +103,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        runBlocking {
-            // Restore provider sessions first to ensure playback has valid sessions ready
-            try {
-                authRepository.restoreAll()
-            } catch (error: Exception) {
-                Log.w(TAG, "Failed to restore provider sessions during startup: ${error.message}")
-            }
-            // Now restore playback state with ready provider sessions
-            playbackQueueManager.restorePersistedStateNowIfNeeded()
-        }
+        startProviderRestore()
 
         mediaLibrarySession = MediaLibrarySession.Builder(
             this,
@@ -214,13 +209,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     startPositionMs: Long
                 ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
                     runBlocking {
-                        // Ensure provider sessions are ready before loading playback state
-                        try {
-                            authRepository.restoreAll()
-                        } catch (error: Exception) {
-                            Log.w(TAG, "Failed to restore provider sessions in onSetMediaItems: ${error.message}")
-                        }
-                        playbackQueueManager.restorePersistedStateNowIfNeeded()
+                        withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
+                            startProviderRestore().await()
+                        } ?: Log.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
                     }
                     playbackQueueManager.ensureWarmSessionState()
 
@@ -331,11 +322,23 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         private const val ACTION_NEXT = "com.anyplayer.android.action.NEXT"
         private const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
         private const val PROJECTION_DISCONNECT_GRACE_MS = 1500L
+        private const val RESTORE_TIMEOUT_MS = 5_000L
         private val TRUSTED_CONTROLLER_PACKAGES = setOf(
             "com.google.android.projection.gearhead",
             "com.android.car.media",
             "com.google.android.apps.automotive.media"
         )
+    }
+
+    private fun startProviderRestore(): Deferred<Unit> {
+        return restoreJob ?: serviceScope.async {
+            try {
+                authRepository.restoreAll()
+            } catch (error: Exception) {
+                Log.w(TAG, "Failed to restore provider sessions: ${error.message}")
+            }
+            playbackQueueManager.restorePersistedStateNowIfNeeded()
+        }.also { restoreJob = it }
     }
 
     private fun isTrustedController(controllerInfo: MediaSession.ControllerInfo): Boolean {

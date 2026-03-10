@@ -1,11 +1,8 @@
 package com.anyplayer.android.playback
 
 import android.net.Uri
-import android.util.Log
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
-
-private const val TAG = "PlaybackArtworkUri"
 
 internal fun Track.resolvePlaybackArtworkUri(): Uri? {
     val rawArtwork = imageUrl?.trim().orEmpty()
@@ -28,18 +25,11 @@ internal fun Track.resolvePlaybackArtworkUri(): Uri? {
         else -> parsedArtwork
     }
 
-    val result = if (source == SourceType.PLEX) {
+    return if (source == SourceType.PLEX) {
         candidate.withPlexTokenIfMissing(plexStreamInfo?.token)
     } else {
         candidate
     }
-    
-    // Log artwork URI resolution for debugging
-    if (source == SourceType.PLEX && result != null) {
-        Log.d(TAG, "Resolved Plex artwork URI for track: $title - has token: ${result.getQueryParameter("X-Plex-Token") != null}")
-    }
-    
-    return result
 }
 
 private data class PlexStreamInfo(
