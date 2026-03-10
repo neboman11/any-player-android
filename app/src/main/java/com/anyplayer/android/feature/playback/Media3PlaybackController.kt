@@ -100,13 +100,18 @@ class Media3PlaybackController @Inject constructor(
     }
 
     fun next() {
+        if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToNextMediaItem()
         playerInstance.playWhenReady = true
     }
 
     fun previous() {
-        playerInstance.seekToPreviousMediaItem()
-        playerInstance.playWhenReady = true
+        if (playerInstance.mediaItemCount == 0) return
+        // Only seek to previous if we're not at the first item
+        if (playerInstance.currentMediaItemIndex > 0) {
+            playerInstance.seekToPreviousMediaItem()
+            playerInstance.playWhenReady = true
+        }
     }
 
     fun seekTo(positionMs: Long) {

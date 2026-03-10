@@ -187,18 +187,21 @@ class PlaybackQueueManager @Inject constructor(
                 position = 0,
                 duration = tracks[index].durationMs ?: 0
             )
-            if (autoPlay) {
-                scope.launch {
-                    val started = spotifyPlaybackController.startQueue(tracks.map { it.id }, index)
-                    if (started) {
-                        spotifyPlaybackController.setVolume(mutableStatus.value.volume)
+            // Always initialize the Spotify queue, regardless of autoPlay state.
+            // This ensures the queue is ready to play when needed.
+            scope.launch {
+                val started = spotifyPlaybackController.startQueue(tracks.map { it.id }, index)
+                if (started) {
+                    spotifyPlaybackController.setVolume(mutableStatus.value.volume)
+                    // If we shouldn't autoplay, pause after initializing the queue
+                    if (!autoPlay) {
+                        spotifyPlaybackController.pause()
                     }
-                    if (!started) {
-                        mutableStatus.value = mutableStatus.value.copy(
-                            state = PlaybackStateType.ERROR,
-                            errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
-                        )
-                    }
+                } else {
+                    mutableStatus.value = mutableStatus.value.copy(
+                        state = PlaybackStateType.ERROR,
+                        errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
+                    )
                 }
             }
             persistStateAsync()
@@ -669,6 +672,11 @@ class PlaybackQueueManager @Inject constructor(
             scope.launch {
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex - 1).coerceAtLeast(0)
+                // Only attempt to skip if we're not already at the first track
+                if (targetIndex == currentIndex && currentIndex == 0) {
+                    // Already at first track, don't do anything
+                    return@launch
+                }
                 val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
                     currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
@@ -682,6 +690,8 @@ class PlaybackQueueManager @Inject constructor(
             return
         }
 
+        // Only call previous if there's a queue and we're not at the first track
+        if (state.queue.isEmpty()) return
         media3PlaybackController.previous()
         mutableStatus.value = mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
         persistStateAsync()
@@ -952,10 +962,13 @@ class PlaybackQueueManager @Inject constructor(
         val startIndex = persisted.currentQueueIndex?.coerceIn(0, persisted.queue.lastIndex) ?: 0
         val shouldAutoPlay = false
 
+        // Set shuffle state in mutableStatus before setQueue to prevent double shuffle generation
+        mutableStatus.value = mutableStatus.value.copy(shuffle = persisted.shuffle)
+        
         setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
         setVolume(persisted.volume)
         setRepeatMode(persisted.repeatMode)
-        setShuffle(persisted.shuffle)
+        // Don't call setShuffle here since we already set it above before setQueue was called
         if (persisted.positionMs > 0) {
             seekTo(persisted.positionMs)
         }

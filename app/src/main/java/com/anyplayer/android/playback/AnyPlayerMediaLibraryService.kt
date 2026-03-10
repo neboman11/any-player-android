@@ -97,6 +97,13 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     override fun onCreate() {
         super.onCreate()
         runBlocking {
+            // Restore provider sessions first to ensure playback has valid sessions ready
+            try {
+                authRepository.restoreAll()
+            } catch (error: Exception) {
+                Log.w(TAG, "Failed to restore provider sessions during startup: ${error.message}")
+            }
+            // Now restore playback state with ready provider sessions
             playbackQueueManager.restorePersistedStateNowIfNeeded()
         }
 
@@ -204,6 +211,12 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     startPositionMs: Long
                 ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
                     runBlocking {
+                        // Ensure provider sessions are ready before loading playback state
+                        try {
+                            authRepository.restoreAll()
+                        } catch (error: Exception) {
+                            Log.w(TAG, "Failed to restore provider sessions in onSetMediaItems: ${error.message}")
+                        }
                         playbackQueueManager.restorePersistedStateNowIfNeeded()
                     }
                     playbackQueueManager.ensureWarmSessionState()
