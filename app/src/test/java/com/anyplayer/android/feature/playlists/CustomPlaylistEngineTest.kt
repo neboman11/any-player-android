@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.playlists
 
+import android.util.Log
 import com.anyplayer.android.core.model.PlaylistTrack
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
@@ -8,10 +9,15 @@ import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import org.mockito.ArgumentMatchers.anyString
+import org.mockito.MockedStatic
+import org.mockito.Mockito.mockStatic
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
@@ -28,6 +34,21 @@ class CustomPlaylistEngineTest {
         providerCatalogRepository = providerCatalogRepository,
         playbackQueueManager = playbackQueueManager
     )
+
+    private lateinit var mockedLog: MockedStatic<Log>
+
+    @Before
+    fun setUp() {
+        // Mock Android's Log static methods to prevent "not mocked" exceptions in unit tests
+        mockedLog = mockStatic(Log::class.java)
+        // Define behavior for Log.d() and other Log methods to return 0 (success)
+        mockedLog.`when`<Any> { Log.d(anyString(), anyString()) }.thenReturn(0)
+    }
+
+    @After
+    fun tearDown() {
+        mockedLog.close()
+    }
 
     @Test
     fun materializeUnionTracks_includesSpotifyTracks() = runTest {

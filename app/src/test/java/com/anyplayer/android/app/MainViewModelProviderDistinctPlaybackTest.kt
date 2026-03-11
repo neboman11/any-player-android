@@ -98,6 +98,7 @@ class MainViewModelProviderDistinctPlaybackTest {
                 )
             )
             whenever(authRepository.readStoredConnection(any())).thenReturn(null)
+            whenever(authRepository.updatePlaylistPageSize(any(), any())).thenReturn(Unit)
         }
 
         viewModel = MainViewModel(
