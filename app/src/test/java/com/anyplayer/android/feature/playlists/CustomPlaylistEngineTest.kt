@@ -52,6 +52,7 @@ class CustomPlaylistEngineTest {
                 eq("sp-playlist"),
                 any(),
                 anyOrNull(),
+                anyOrNull(),
                 any()
             )
         ).thenReturn(listOf(sampleTrack(id = "sp-track-1", source = SourceType.SPOTIFY)))
@@ -73,6 +74,7 @@ class CustomPlaylistEngineTest {
                 eq(SourceType.SPOTIFY),
                 eq("sp-playlist"),
                 any(),
+                anyOrNull(),
                 anyOrNull(),
                 any()
             )
@@ -107,6 +109,7 @@ class CustomPlaylistEngineTest {
                 eq(SourceType.SPOTIFY),
                 any(),
                 any(),
+                anyOrNull(),
                 anyOrNull(),
                 any()
             )
@@ -145,6 +148,7 @@ class CustomPlaylistEngineTest {
                 eq(SourceType.SPOTIFY),
                 eq("sp-1"),
                 any(),
+                anyOrNull(),
                 anyOrNull(),
                 any()
             )
@@ -215,7 +219,7 @@ class CustomPlaylistEngineTest {
         ))
         // Two tracks with same title+artist but different source IDs (pass 1 keeps both, pass 2 removes one)
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).thenReturn(listOf(
             sampleTrack(id = "sp-1", source = SourceType.SPOTIFY, title = "Tune", artist = "Band"),
             sampleTrack(id = "sp-2", source = SourceType.SPOTIFY, title = "Tune", artist = "Band") // same title+artist, different id
@@ -314,7 +318,7 @@ class CustomPlaylistEngineTest {
         val track2 = sampleTrack(id = "sp-b", source = SourceType.SPOTIFY, title = "Other", artist = "Band")
         val track3 = sampleTrack(id = "sp-c", source = SourceType.SPOTIFY, title = "Melody", artist = "Band") // dup of sp-a
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).thenReturn(listOf(track1, track2, track3))
 
         // User clicks index 2 (track3 = duplicate of track1) — should resolve to index 0

@@ -224,7 +224,7 @@ class CustomPlaylistEngine @Inject constructor(
                     durationMs = track.durationMs ?: 0L
                 )
             }
-        Log.d(TAG, "materializeUnionTracks END: ${result.size} tracks (dedup handled by flag)")
+        Log.d(TAG, "materializeUnionTracks END: ${result.size} tracks after deduplication")
         return result
     }
 

@@ -626,6 +626,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
+                if (state.queue.isEmpty()) return@launch
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex + 1).coerceAtMost(state.queue.lastIndex)
                 val targetTrack = state.queue.getOrNull(targetIndex)

@@ -51,7 +51,7 @@ interface ProviderAuthRepository {
     suspend fun restoreAll(): List<ProviderConnectionProfile>
     suspend fun status(sourceType: SourceType): ProviderConnectionProfile
     suspend fun readStoredConnection(sourceType: SourceType): StoredConnection?
-    suspend fun updatePlaylistPageSize(sourceType: SourceType, pageSize: Int)
+    suspend fun updatePlaylistPageSize(sourceType: SourceType, pageSize: Int): Boolean
 }
 
 /**
