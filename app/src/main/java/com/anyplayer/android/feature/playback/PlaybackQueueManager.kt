@@ -677,6 +677,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
+                if (state.queue.isEmpty()) return@launch
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex - 1).coerceAtLeast(0)
                 // Only attempt to skip if we're not already at the first track

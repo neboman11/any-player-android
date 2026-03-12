@@ -698,6 +698,7 @@ class MainViewModel @Inject constructor(
         jellyfinPageSizeSaveJob?.cancel()
         jellyfinPageSizeSaveJob = viewModelScope.launch {
             try {
+                delay(500)
                 val saved = authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
                 if (saved) {
                     jellyfinPageSizeSaved.value = true
@@ -735,6 +736,7 @@ class MainViewModel @Inject constructor(
         plexPageSizeSaveJob?.cancel()
         plexPageSizeSaveJob = viewModelScope.launch {
             try {
+                delay(500)
                 val saved = authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
                 if (saved) {
                     plexPageSizeSaved.value = true
