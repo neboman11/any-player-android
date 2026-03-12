@@ -13,7 +13,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.any
@@ -40,11 +39,6 @@ class ProviderCatalogRepositoryTest {
         appCacheEntryDao = appCacheEntryDao,
         json = json
     )
-
-    @Before
-    fun setUp() {
-        // Mocks are configured per-test; no global reset needed
-    }
 
     companion object {
         // Matches PROVIDER_DEFAULT_PAGE_SIZE from AuthModels

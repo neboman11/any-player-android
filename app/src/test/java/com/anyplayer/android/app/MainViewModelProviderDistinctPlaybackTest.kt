@@ -99,7 +99,7 @@ class MainViewModelProviderDistinctPlaybackTest {
                 )
             )
             whenever(authRepository.readStoredConnection(any())).thenReturn(null)
-            whenever(authRepository.updatePlaylistPageSize(any(), any())).thenReturn(Unit)
+            whenever(authRepository.updatePlaylistPageSize(any(), any())).thenReturn(true)
         }
 
         viewModel = MainViewModel(
@@ -133,7 +133,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-3", "Harmony", "Band A") // duplicate of t-1
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
             playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
@@ -157,7 +157,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-2", "Harmony", "Band A") // duplicate — kept when distinct=false
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
             playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
@@ -182,7 +182,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-3", "SONG", "ARTIST")              // same key after normalize
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
             playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
@@ -376,7 +376,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             tracks = rawTracks
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
             playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())

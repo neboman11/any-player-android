@@ -2,6 +2,7 @@ package com.anyplayer.android.app
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyplayer.android.core.model.PlaybackStateType
@@ -38,6 +39,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.math.abs
 import kotlin.math.max
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -685,9 +687,9 @@ class MainViewModel @Inject constructor(
         // Filter out newlines and non-digit characters
         val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
         jellyfinPlaylistPageSizeInput.value = filtered
-        
+
         val pageSize = filtered.toIntOrNull()
-        if (pageSize == null || pageSize == PROVIDER_DEFAULT_PAGE_SIZE) {
+        if (pageSize == null || pageSize !in 1..1000) {
             jellyfinPageSizeSaveJob?.cancel()
             jellyfinPageSizeSaved.value = false
             return
@@ -695,11 +697,17 @@ class MainViewModel @Inject constructor(
 
         jellyfinPageSizeSaveJob?.cancel()
         jellyfinPageSizeSaveJob = viewModelScope.launch {
-            runCatching {
-                authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
-                jellyfinPageSizeSaved.value = true
-                delay(1500)
-                jellyfinPageSizeSaved.value = false
+            try {
+                val saved = authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
+                if (saved) {
+                    jellyfinPageSizeSaved.value = true
+                    delay(1500)
+                    jellyfinPageSizeSaved.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save Jellyfin page size", e)
             }
         }
     }
@@ -716,9 +724,9 @@ class MainViewModel @Inject constructor(
         // Filter out newlines and non-digit characters
         val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
         plexPlaylistPageSizeInput.value = filtered
-        
+
         val pageSize = filtered.toIntOrNull()
-        if (pageSize == null || pageSize == PROVIDER_DEFAULT_PAGE_SIZE) {
+        if (pageSize == null || pageSize !in 1..1000) {
             plexPageSizeSaveJob?.cancel()
             plexPageSizeSaved.value = false
             return
@@ -726,11 +734,17 @@ class MainViewModel @Inject constructor(
 
         plexPageSizeSaveJob?.cancel()
         plexPageSizeSaveJob = viewModelScope.launch {
-            runCatching {
-                authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
-                plexPageSizeSaved.value = true
-                delay(1500)
-                plexPageSizeSaved.value = false
+            try {
+                val saved = authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
+                if (saved) {
+                    plexPageSizeSaved.value = true
+                    delay(1500)
+                    plexPageSizeSaved.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save Plex page size", e)
             }
         }
     }
@@ -1282,23 +1296,24 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             customPlaylistRefreshInProgress.value = true
             customPlaylistRefreshStatus.value = "Materializing union playlist..."
-            
-            runCatching {
-                customPlaylistEngine.materializeUnionTracks(
+
+            try {
+                val tracks = customPlaylistEngine.materializeUnionTracks(
                     playlistId,
                     onProgressUpdate = { status ->
                         customPlaylistRefreshStatus.value = status
                     },
                     forceRefresh = true
                 )
-            }.onSuccess { tracks ->
                 activeCustomPlaylistTracks.value = tracks
                 customPlaylistRefreshStatus.value = "Union playlist materialized successfully!"
-            }.onFailure { throwable ->
-                customPlaylistRefreshStatus.value = throwable.message?.takeIf { it.isNotBlank() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
                     ?: "Failed to materialize union playlist."
             }
-            
+
             customPlaylistRefreshInProgress.value = false
         }
     }
@@ -1786,6 +1801,7 @@ class MainViewModel @Inject constructor(
 }
 
 private const val SPOTIFY_REDIRECT_URI = "anyplayer://spotify-callback"
+private const val TAG = "MainViewModel"
 
 data class MainUiState(
     val startupMessage: String = "Starting...",

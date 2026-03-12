@@ -57,8 +57,11 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.PlaylistType
@@ -332,7 +335,11 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     enabled = !state.providerPlaylistRefreshInProgress
                 ) { 
                     if (state.providerPlaylistRefreshInProgress) {
-                        Text("⟳ Refreshing...")
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = null
+                        )
+                        Text(" Refreshing...")
                     } else {
                         Text("Refresh")
                     }
@@ -361,10 +368,20 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                         .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        "⟳ Refreshing...",
-                        style = androidx.compose.material3.MaterialTheme.typography.labelMedium
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Refreshing",
+                            modifier = Modifier.padding(end = 2.dp)
+                        )
+                        Text(
+                            "Refreshing...",
+                            style = androidx.compose.material3.MaterialTheme.typography.labelMedium
+                        )
+                    }
                     Text(
                         state.providerPlaylistRefreshStatus ?: "Processing...",
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
@@ -372,7 +389,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
             }
-            
+
             // Status message after refresh completes
             state.providerPlaylistRefreshStatus?.let { refreshStatus ->
                 if (!state.providerPlaylistRefreshInProgress && refreshStatus.isNotBlank()) {
@@ -382,18 +399,38 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        val isSuccess = refreshStatus.contains("complete", ignoreCase = true) || 
+                        val isSuccess = refreshStatus.contains("complete", ignoreCase = true) ||
                                        refreshStatus.contains("successfully", ignoreCase = true)
                         if (isSuccess) {
-                            Text(
-                                "✓ $refreshStatus",
-                                style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Success",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    refreshStatus,
+                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                )
+                            }
                         } else {
-                            Text(
-                                "⚠ $refreshStatus",
-                                style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Warning,
+                                    contentDescription = "Warning",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    refreshStatus,
+                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
                 }
@@ -505,7 +542,11 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                         enabled = !state.customPlaylistRefreshInProgress
                     ) { 
                         if (state.customPlaylistRefreshInProgress) {
-                            Text("⟳ Refreshing...")
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null
+                            )
+                            Text(" Refreshing...")
                         } else {
                             Text("Refresh")
                         }
@@ -536,10 +577,20 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            "⟳ Materializing union...",
-                            style = androidx.compose.material3.MaterialTheme.typography.labelMedium
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = "Materializing",
+                                modifier = Modifier.padding(end = 2.dp)
+                            )
+                            Text(
+                                "Materializing union...",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelMedium
+                            )
+                        }
                         Text(
                             state.customPlaylistRefreshStatus ?: "Processing...",
                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
@@ -547,10 +598,10 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                         )
                     }
                 }
-                
+
                 // Status message after refresh completes
                 state.customPlaylistRefreshStatus?.let { refreshStatus ->
-                    if (!state.customPlaylistRefreshInProgress && !refreshStatus.isEmpty()) {
+                    if (!state.customPlaylistRefreshInProgress && refreshStatus.isNotBlank()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -559,15 +610,35 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                         ) {
                             val isSuccess = refreshStatus.contains("successfully", ignoreCase = true)
                             if (isSuccess) {
-                                Text(
-                                    "✓ $refreshStatus",
-                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = "Success",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        refreshStatus,
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             } else {
-                                Text(
-                                    "⚠ $refreshStatus",
-                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Warning,
+                                        contentDescription = "Warning",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Text(
+                                        refreshStatus,
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             }
                         }
                     }
@@ -716,7 +787,11 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 if (state.providerPlaylistRefreshInProgress) {
-                    Text("⟳", fontSize = 12.sp)
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Refreshing playlists",
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
                 } else {
                     Text("Refresh", fontSize = 12.sp)
                 }
@@ -731,10 +806,20 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     .padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(
-                    "⟳ Refreshing playlists...",
-                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Refreshing playlists",
+                        modifier = Modifier.padding(end = 2.dp)
+                    )
+                    Text(
+                        "Refreshing playlists...",
+                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall
+                    )
+                }
                 state.providerPlaylistRefreshStatus?.let { status ->
                     Text(
                         status,
@@ -1464,10 +1549,10 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     trailingIcon = {
                         if (state.jellyfinPageSizeSaved) {
-                            Text(
-                                "✓",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 20.sp
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Saved",
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -1526,10 +1611,10 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     trailingIcon = {
                         if (state.plexPageSizeSaved) {
-                            Text(
-                                "✓",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 20.sp
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Saved",
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -1607,10 +1692,10 @@ private fun ProviderCheckmarkTooltip(tooltipText: String) {
         },
         state = rememberTooltipState()
     ) {
-        Text(
-            text = "✓",
-            color = MaterialTheme.colorScheme.primary,
-            style = MaterialTheme.typography.labelLarge
+        Icon(
+            imageVector = Icons.Filled.Check,
+            contentDescription = "Connected",
+            tint = MaterialTheme.colorScheme.primary
         )
     }
 }
