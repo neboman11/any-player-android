@@ -230,6 +230,13 @@ class MainViewModel @Inject constructor(
         val stateTransferStatus: String
     )
 
+    private data class LocalBasicStatePart(
+        val playlists: List<com.anyplayer.android.core.model.CustomPlaylist>,
+        val tracks: List<Track>,
+        val playlistId: String?,
+        val unionSources: List<UnionPlaylistSource>
+    )
+
     private val customPlaylistRefreshState = combine(
         customPlaylistRefreshInProgress,
         customPlaylistRefreshStatus
@@ -243,7 +250,7 @@ class MainViewModel @Inject constructor(
         selectedCustomPlaylistId,
         selectedCustomUnionSources
     ) { playlists, tracks, playlistId, unionSources ->
-        Triple(Triple(playlists, tracks, playlistId), unionSources, Unit)
+        LocalBasicStatePart(playlists, tracks, playlistId, unionSources)
     }
 
     private val localCoreState = combine(
@@ -251,13 +258,11 @@ class MainViewModel @Inject constructor(
         customPlaylistRefreshState,
         stateTransferStatus
     ) { basic, refreshState, transferStatus ->
-        val (basicTriple, unionSources, _) = basic
-        val (playlists, tracks, playlistId) = basicTriple
         LocalCoreUiState(
-            customPlaylists = playlists,
-            activeCustomPlaylistTracks = tracks,
-            selectedCustomPlaylistId = playlistId,
-            selectedCustomUnionSources = unionSources,
+            customPlaylists = basic.playlists,
+            activeCustomPlaylistTracks = basic.tracks,
+            selectedCustomPlaylistId = basic.playlistId,
+            selectedCustomUnionSources = basic.unionSources,
             customPlaylistRefreshInProgress = refreshState.first,
             customPlaylistRefreshStatus = refreshState.second,
             stateTransferStatus = transferStatus

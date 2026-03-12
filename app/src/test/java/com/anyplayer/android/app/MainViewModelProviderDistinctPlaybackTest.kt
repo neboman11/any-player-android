@@ -136,7 +136,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(true)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
@@ -160,7 +160,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(false)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
@@ -185,7 +185,7 @@ class MainViewModelProviderDistinctPlaybackTest {
             providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(true)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
