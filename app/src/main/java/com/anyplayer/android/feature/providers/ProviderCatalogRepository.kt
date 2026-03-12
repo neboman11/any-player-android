@@ -211,12 +211,10 @@ class ProviderCatalogRepository @Inject constructor(
 
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         
-        // Get the configured page size for this provider, or use default
-        val configuredPageSize = when (sourceType) {
-            SourceType.JELLYFIN -> secureConnectionStore.read(SourceType.JELLYFIN)?.playlistPageSize
-            SourceType.PLEX -> secureConnectionStore.read(SourceType.PLEX)?.playlistPageSize
-            else -> null
-        } ?: PROVIDER_DEFAULT_PAGE_SIZE
+        // Get the configured page size for this provider, or use default.
+        // Read the stored connection once and reuse it for credentials below.
+        val storedConnection = secureConnectionStore.read(sourceType)
+        val configuredPageSize = storedConnection?.playlistPageSize ?: PROVIDER_DEFAULT_PAGE_SIZE
         
         val effectivePageSize = (pageSize ?: configuredPageSize).coerceAtLeast(1)
 
@@ -243,7 +241,7 @@ class ProviderCatalogRepository @Inject constructor(
 
         when (sourceType) {
             SourceType.JELLYFIN -> {
-                val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
+                val jelly = storedConnection
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
                     try {
                         loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->
@@ -264,7 +262,7 @@ class ProviderCatalogRepository @Inject constructor(
             }
 
             SourceType.PLEX -> {
-                val plex = secureConnectionStore.read(SourceType.PLEX)
+                val plex = storedConnection
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
                     try {
                         loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->

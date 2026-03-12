@@ -642,7 +642,7 @@ class PlaybackQueueManager @Inject constructor(
                     Log.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
                 }
                 mutableStatus.value = mutableStatus.value.copy(
-                    currentTrack = targetTrack,
+                    currentTrack = if (success) targetTrack else state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     position = if (success) 0L else state.position,
                     duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
@@ -694,7 +694,7 @@ class PlaybackQueueManager @Inject constructor(
                 }
                 val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
-                    currentTrack = targetTrack,
+                    currentTrack = if (success) targetTrack else state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     position = if (success) 0L else state.position,
                     duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
