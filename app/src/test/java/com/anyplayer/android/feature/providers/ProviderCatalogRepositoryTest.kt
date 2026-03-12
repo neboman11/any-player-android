@@ -12,7 +12,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -20,7 +22,9 @@ import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class ProviderCatalogRepositoryTest {
     private val secureConnectionStore: SecureConnectionStore = mock()
     private val spotifyClient: SpotifyClient = mock()
@@ -35,6 +39,11 @@ class ProviderCatalogRepositoryTest {
         appCacheEntryDao = appCacheEntryDao,
         json = json
     )
+
+    @Before
+    fun setUp() {
+        // Mocks are configured per-test; no global reset needed
+    }
 
     companion object {
         // Must match PROVIDER_PAGE_SIZE in ProviderCatalogRepository

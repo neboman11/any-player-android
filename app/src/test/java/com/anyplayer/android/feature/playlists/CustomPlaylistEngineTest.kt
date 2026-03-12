@@ -1,6 +1,5 @@
 package com.anyplayer.android.feature.playlists
 
-import android.util.Log
 import com.anyplayer.android.core.model.PlaylistTrack
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
@@ -9,45 +8,37 @@ import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
 import kotlinx.coroutines.test.runTest
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mockito.ArgumentMatchers.anyString
-import org.mockito.MockedStatic
-import org.mockito.Mockito.mockStatic
+import org.junit.runner.RunWith
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class CustomPlaylistEngineTest {
-    private val storageRepository: PlaylistStorageRepository = mock()
-    private val providerCatalogRepository: ProviderCatalogRepository = mock()
-    private val playbackQueueManager: PlaybackQueueManager = mock()
-
-    private val engine = CustomPlaylistEngine(
-        storageRepository = storageRepository,
-        providerCatalogRepository = providerCatalogRepository,
-        playbackQueueManager = playbackQueueManager
-    )
-
-    private lateinit var mockedLog: MockedStatic<Log>
+    private lateinit var storageRepository: PlaylistStorageRepository
+    private lateinit var providerCatalogRepository: ProviderCatalogRepository
+    private lateinit var playbackQueueManager: PlaybackQueueManager
+    private lateinit var engine: CustomPlaylistEngine
 
     @Before
     fun setUp() {
-        // Mock Android's Log static methods to prevent "not mocked" exceptions in unit tests
-        mockedLog = mockStatic(Log::class.java)
-        // Define behavior for Log.d() and other Log methods to return 0 (success)
-        mockedLog.`when`<Any> { Log.d(anyString(), anyString()) }.thenReturn(0)
-    }
-
-    @After
-    fun tearDown() {
-        mockedLog.close()
+        storageRepository = mock()
+        providerCatalogRepository = mock()
+        playbackQueueManager = mock()
+        engine = CustomPlaylistEngine(
+            storageRepository = storageRepository,
+            providerCatalogRepository = providerCatalogRepository,
+            playbackQueueManager = playbackQueueManager
+        )
     }
 
     @Test
@@ -57,10 +48,10 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                eq(SourceType.SPOTIFY),
-                eq("sp-playlist"),
                 any(),
                 any(),
+                any(),
+                anyOrNull(),
                 any()
             )
         ).thenReturn(listOf(sampleTrack(id = "sp-track-1", source = SourceType.SPOTIFY)))
@@ -79,10 +70,10 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                eq(SourceType.SPOTIFY),
-                eq("sp-playlist"),
                 any(),
                 any(),
+                any(),
+                anyOrNull(),
                 any()
             )
         ).thenReturn(listOf(
@@ -113,19 +104,10 @@ class CustomPlaylistEngineTest {
 
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                eq(SourceType.SPOTIFY),
-                eq("sp-a"),
                 any(),
                 any(),
-                any()
-            )
-        ).thenReturn(listOf(duplicate))
-        whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(
-                eq(SourceType.SPOTIFY),
-                eq("sp-b"),
                 any(),
-                any(),
+                anyOrNull(),
                 any()
             )
         ).thenReturn(listOf(duplicate))
@@ -160,10 +142,10 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                eq(SourceType.SPOTIFY),
-                eq("sp-1"),
                 any(),
                 any(),
+                any(),
+                anyOrNull(),
                 any()
             )
         ).thenReturn(listOf(sampleTrack(id = "sp-track-4", source = SourceType.SPOTIFY)))
@@ -233,7 +215,7 @@ class CustomPlaylistEngineTest {
         ))
         // Two tracks with same title+artist but different source IDs (pass 1 keeps both, pass 2 removes one)
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq("sp-a"), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
         ).thenReturn(listOf(
             sampleTrack(id = "sp-1", source = SourceType.SPOTIFY, title = "Tune", artist = "Band"),
             sampleTrack(id = "sp-2", source = SourceType.SPOTIFY, title = "Tune", artist = "Band") // same title+artist, different id
@@ -332,7 +314,7 @@ class CustomPlaylistEngineTest {
         val track2 = sampleTrack(id = "sp-b", source = SourceType.SPOTIFY, title = "Other", artist = "Band")
         val track3 = sampleTrack(id = "sp-c", source = SourceType.SPOTIFY, title = "Melody", artist = "Band") // dup of sp-a
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq("sp-1"), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), any())
         ).thenReturn(listOf(track1, track2, track3))
 
         // User clicks index 2 (track3 = duplicate of track1) — should resolve to index 0

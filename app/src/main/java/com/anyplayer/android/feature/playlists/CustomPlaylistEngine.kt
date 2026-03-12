@@ -215,7 +215,9 @@ class CustomPlaylistEngine @Inject constructor(
 
         Log.d(TAG, "materializeUnionTracks: finalized ${materialized.size} total tracks")
         onProgressUpdate("Finalizing...")
-        val result = materialized
+        // Deduplicate by source and track ID to avoid same track from multiple union sources
+        val deduplicatedBySourceAndId = materialized.distinctBy { Pair(it.source, it.id) }
+        val result = deduplicatedBySourceAndId
             .mapIndexed { index, track ->
                 track.copy(
                     enriched = track.enriched ?: true,
