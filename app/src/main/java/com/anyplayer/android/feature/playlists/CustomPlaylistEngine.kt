@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.playlists
 
+import android.util.Log
 import com.anyplayer.android.core.model.CustomPlaylist
 import com.anyplayer.android.core.model.PlaylistType
 import com.anyplayer.android.core.model.PlaylistTrack
@@ -14,6 +15,8 @@ import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TAG = "CustomPlaylistEngine"
 
 @Singleton
 class CustomPlaylistEngine @Inject constructor(
@@ -170,33 +173,53 @@ class CustomPlaylistEngine @Inject constructor(
         refreshUnionTrackCount(unionPlaylistId)
     }
 
-    suspend fun materializeUnionTracks(unionPlaylistId: String): List<Track> {
+    suspend fun materializeUnionTracks(
+        unionPlaylistId: String,
+        onProgressUpdate: (String) -> Unit = {},
+        forceRefresh: Boolean = false
+    ): List<Track> {
         val unionSources = storageRepository.getUnionSources(unionPlaylistId).sortedBy { it.position }
         val materialized = mutableListOf<Track>()
+        val totalSources = unionSources.size
 
-        unionSources.forEach { source ->
+        unionSources.forEachIndexed { index, source ->
+            val sourceLabel = when (source.sourceType) {
+                SourceType.CUSTOM -> "custom playlist"
+                SourceType.SPOTIFY -> "Spotify"
+                SourceType.JELLYFIN -> "Jellyfin"
+                SourceType.PLEX -> "Plex"
+                SourceType.ALL -> "all"
+            }
+            onProgressUpdate("Processing source ${index + 1}/$totalSources from $sourceLabel...")
+            
             val tracks = when (source.sourceType) {
                 SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
                 SourceType.JELLYFIN,
                 SourceType.PLEX,
-                SourceType.SPOTIFY -> providerCatalogRepository.getPlaylistTracksWithCache(
-                    sourceType = source.sourceType,
-                    playlistId = source.sourcePlaylistId,
-                    forceRefresh = false
-                )
+                SourceType.SPOTIFY -> {
+                    providerCatalogRepository.getPlaylistTracksWithCache(
+                        sourceType = source.sourceType,
+                        playlistId = source.sourcePlaylistId,
+                        forceRefresh = forceRefresh
+                    )
+                }
                 SourceType.ALL -> emptyList()
             }
             materialized += tracks
         }
 
-        return materialized
-            .distinctBy { "${it.source.name}:${it.id}" }
-            .mapIndexed { index, track ->
+        onProgressUpdate("Finalizing...")
+        // Deduplicate by source and track ID to avoid same track from multiple union sources
+        val deduplicatedBySourceAndId = materialized.distinctBy { Pair(it.source, it.id) }
+        val result = deduplicatedBySourceAndId
+            .map { track ->
                 track.copy(
                     enriched = track.enriched ?: true,
                     durationMs = track.durationMs ?: 0L
                 )
             }
+        Log.d(TAG, "materializeUnionTracks END: ${result.size} tracks after deduplication")
+        return result
     }
 
     suspend fun playPlaylist(playlistId: String) {

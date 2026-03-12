@@ -140,6 +140,10 @@ private class FakeAuthRepository(
     }
 
     override suspend fun readStoredConnection(sourceType: SourceType): StoredConnection? = null
+
+    override suspend fun updatePlaylistPageSize(sourceType: SourceType, pageSize: Int): Boolean {
+        return false // No-op for test
+    }
 }
 
 private class FakeStartupCatalogGateway(

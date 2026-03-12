@@ -384,6 +384,8 @@ class RustBridge @Inject constructor() {
             throw IllegalArgumentException("Unsupported source for providerCall: $source")
         }
 
+        Log.d(TAG, "providerCall: source=$source, operation=$operation, offset=$offset, limit=$limit")
+
         val sessionJson = JSONObject().apply {
             session.forEach { (key, value) ->
                 if (value.isNotBlank()) {
@@ -405,6 +407,8 @@ class RustBridge @Inject constructor() {
         if (!query.isNullOrBlank()) {
             payload.put("query", query.trim())
         }
+
+        Log.d(TAG, "providerCall: sending to Rust FFI (payload redacted)")
 
         val response = callJson("providerApiCall") {
             RustBridgeNative.providerApiCall(payload.toString())

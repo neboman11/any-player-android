@@ -2,6 +2,7 @@ package com.anyplayer.android.app
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyplayer.android.core.model.PlaybackStateType
@@ -16,6 +17,7 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.network.SpotifyClientIds
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.AuthRequest
+import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
@@ -37,6 +39,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.math.abs
 import kotlin.math.max
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -108,13 +111,21 @@ class MainViewModel @Inject constructor(
     private val activeCustomPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
     private val selectedCustomPlaylistId = MutableStateFlow<String?>(null)
     private val selectedCustomUnionSources = MutableStateFlow<List<UnionPlaylistSource>>(emptyList())
+    private val customPlaylistRefreshInProgress = MutableStateFlow(false)
+    private val customPlaylistRefreshStatus = MutableStateFlow<String?>(null)
     private val stateTransferStatus = MutableStateFlow("State transfer idle")
     private val providerConnectionFeedback = MutableStateFlow<String?>(null)
     private val providerConnectionInProgress = MutableStateFlow(false)
     private val jellyfinUrlInput = MutableStateFlow("")
     private val jellyfinTokenInput = MutableStateFlow("")
+    private val jellyfinPlaylistPageSizeInput = MutableStateFlow("300")
+    private val jellyfinPageSizeSaved = MutableStateFlow(false)
+    private var jellyfinPageSizeSaveJob: Job? = null
     private val plexUrlInput = MutableStateFlow("")
     private val plexTokenInput = MutableStateFlow("")
+    private val plexPlaylistPageSizeInput = MutableStateFlow("300")
+    private val plexPageSizeSaved = MutableStateFlow(false)
+    private var plexPageSizeSaveJob: Job? = null
     private val spotifyTokenInput = MutableStateFlow("")
     private val spotifyAuthLaunchUrl = MutableStateFlow<String?>(null)
     private val syncServerTarget = MutableStateFlow("")
@@ -185,13 +196,19 @@ class MainViewModel @Inject constructor(
         val activeCustomPlaylistTracks: List<Track>,
         val selectedCustomPlaylistId: String?,
         val selectedCustomUnionSources: List<UnionPlaylistSource>,
+        val customPlaylistRefreshInProgress: Boolean,
+        val customPlaylistRefreshStatus: String?,
         val stateTransferStatus: String,
         val providerConnectionFeedback: String?,
         val providerConnectionInProgress: Boolean,
         val jellyfinUrlInput: String,
         val jellyfinTokenInput: String,
+        val jellyfinPlaylistPageSizeInput: String,
+        val jellyfinPageSizeSaved: Boolean,
         val plexUrlInput: String,
         val plexTokenInput: String,
+        val plexPlaylistPageSizeInput: String,
+        val plexPageSizeSaved: Boolean,
         val spotifyTokenInput: String,
         val spotifyAuthLaunchUrl: String?,
         val syncServerTarget: String,
@@ -208,21 +225,46 @@ class MainViewModel @Inject constructor(
         val activeCustomPlaylistTracks: List<Track>,
         val selectedCustomPlaylistId: String?,
         val selectedCustomUnionSources: List<UnionPlaylistSource>,
+        val customPlaylistRefreshInProgress: Boolean,
+        val customPlaylistRefreshStatus: String?,
         val stateTransferStatus: String
     )
 
-    private val localCoreState = combine(
+    private data class LocalBasicStatePart(
+        val playlists: List<com.anyplayer.android.core.model.CustomPlaylist>,
+        val tracks: List<Track>,
+        val playlistId: String?,
+        val unionSources: List<UnionPlaylistSource>
+    )
+
+    private val customPlaylistRefreshState = combine(
+        customPlaylistRefreshInProgress,
+        customPlaylistRefreshStatus
+    ) { inProgress, status ->
+        inProgress to status
+    }
+
+    private val localBasicState = combine(
         customPlaylists,
         activeCustomPlaylistTracks,
         selectedCustomPlaylistId,
-        selectedCustomUnionSources,
+        selectedCustomUnionSources
+    ) { playlists, tracks, playlistId, unionSources ->
+        LocalBasicStatePart(playlists, tracks, playlistId, unionSources)
+    }
+
+    private val localCoreState = combine(
+        localBasicState,
+        customPlaylistRefreshState,
         stateTransferStatus
-    ) { localPlaylists, localTracks, selectedLocalId, localUnionSources, transferStatus ->
+    ) { basic, refreshState, transferStatus ->
         LocalCoreUiState(
-            customPlaylists = localPlaylists,
-            activeCustomPlaylistTracks = localTracks,
-            selectedCustomPlaylistId = selectedLocalId,
-            selectedCustomUnionSources = localUnionSources,
+            customPlaylists = basic.playlists,
+            activeCustomPlaylistTracks = basic.tracks,
+            selectedCustomPlaylistId = basic.playlistId,
+            selectedCustomUnionSources = basic.unionSources,
+            customPlaylistRefreshInProgress = refreshState.first,
+            customPlaylistRefreshStatus = refreshState.second,
             stateTransferStatus = transferStatus
         )
     }
@@ -242,8 +284,10 @@ class MainViewModel @Inject constructor(
     private data class ProviderInputPart(
         val jellyUrl: String,
         val jellyToken: String,
+        val jellyPageSize: String,
         val plexUrl: String,
         val plexToken: String,
+        val plexPageSize: String,
         val spotifyToken: String
     )
 
@@ -279,18 +323,30 @@ class MainViewModel @Inject constructor(
         )
     }
 
-    private val providerInputPart = combine(
+    private val jellyfinInputPart = combine(
         jellyfinUrlInput,
         jellyfinTokenInput,
+        jellyfinPlaylistPageSizeInput
+    ) { url, token, pageSize -> Triple(url, token, pageSize) }
+
+    private val plexInputPart = combine(
         plexUrlInput,
         plexTokenInput,
+        plexPlaylistPageSizeInput
+    ) { url, token, pageSize -> Triple(url, token, pageSize) }
+
+    private val providerInputPart = combine(
+        jellyfinInputPart,
+        plexInputPart,
         spotifyTokenInput
-    ) { jellyUrl, jellyToken, plexUrl, plexToken, spotifyToken ->
+    ) { jelly, plex, spotifyToken ->
         ProviderInputPart(
-            jellyUrl = jellyUrl,
-            jellyToken = jellyToken,
-            plexUrl = plexUrl,
-            plexToken = plexToken,
+            jellyUrl = jelly.first,
+            jellyToken = jelly.second,
+            jellyPageSize = jelly.third,
+            plexUrl = plex.first,
+            plexToken = plex.second,
+            plexPageSize = plex.third,
             spotifyToken = spotifyToken
         )
     }
@@ -302,8 +358,10 @@ class MainViewModel @Inject constructor(
         ProviderSettingsInputs(
             providerPart.jellyUrl,
             providerPart.jellyToken,
+            providerPart.jellyPageSize,
             providerPart.plexUrl,
             providerPart.plexToken,
+            providerPart.plexPageSize,
             providerPart.spotifyToken,
             syncInputs.serverTarget,
             syncInputs.authToken,
@@ -410,19 +468,34 @@ class MainViewModel @Inject constructor(
                 providerPlaylistRefreshStatus = summaryState.providerPlaylistRefreshStatus
             )
         },
-        combine(localCoreState, connectionState, providerInputState, spotifyAuthLaunchUrl) { localCore, connectionState, providerInputs, spotifyLaunchUrl ->
+        combine(
+            combine(localCoreState, connectionState, providerInputState) { localCore, connectionStateVal, providerInputs ->
+                Triple(localCore, connectionStateVal, providerInputs)
+            },
+            spotifyAuthLaunchUrl,
+            jellyfinPageSizeSaved,
+            plexPageSizeSaved
+        ) { localAndConnection, spotifyLaunchUrl, jellyFinSaved, plexSaved ->
+            val (localCore, connectionStateVal, providerInputs) = localAndConnection
+            
             LocalUiState(
                 customPlaylists = localCore.customPlaylists,
                 activeCustomPlaylistTracks = localCore.activeCustomPlaylistTracks,
                 selectedCustomPlaylistId = localCore.selectedCustomPlaylistId,
                 selectedCustomUnionSources = localCore.selectedCustomUnionSources,
+                customPlaylistRefreshInProgress = localCore.customPlaylistRefreshInProgress,
+                customPlaylistRefreshStatus = localCore.customPlaylistRefreshStatus,
                 stateTransferStatus = localCore.stateTransferStatus,
-                providerConnectionFeedback = connectionState.first,
-                providerConnectionInProgress = connectionState.second,
+                providerConnectionFeedback = connectionStateVal.first,
+                providerConnectionInProgress = connectionStateVal.second,
                 jellyfinUrlInput = providerInputs.jellyfinUrl,
                 jellyfinTokenInput = providerInputs.jellyfinToken,
+                jellyfinPlaylistPageSizeInput = providerInputs.jellyfinPlaylistPageSize,
+                jellyfinPageSizeSaved = jellyFinSaved,
                 plexUrlInput = providerInputs.plexUrl,
                 plexTokenInput = providerInputs.plexToken,
+                plexPlaylistPageSizeInput = providerInputs.plexPlaylistPageSize,
+                plexPageSizeSaved = plexSaved,
                 spotifyTokenInput = providerInputs.spotifyToken,
                 spotifyAuthLaunchUrl = spotifyLaunchUrl,
                 syncServerTarget = providerInputs.syncServerTarget,
@@ -490,13 +563,19 @@ class MainViewModel @Inject constructor(
             selectedCustomPlaylistIsDistinct = selectedCustomPlaylist?.isDistinct ?: false,
             selectedCustomPlaylistDuplicateGroups = customDuplicateGroups,
             selectedCustomUnionSources = local.selectedCustomUnionSources,
+            customPlaylistRefreshInProgress = local.customPlaylistRefreshInProgress,
+            customPlaylistRefreshStatus = local.customPlaylistRefreshStatus,
             stateTransferStatus = local.stateTransferStatus,
             providerConnectionFeedback = local.providerConnectionFeedback,
             providerConnectionInProgress = local.providerConnectionInProgress,
             jellyfinUrlInput = local.jellyfinUrlInput,
             jellyfinTokenInput = local.jellyfinTokenInput,
+            jellyfinPlaylistPageSizeInput = local.jellyfinPlaylistPageSizeInput,
+            jellyfinPageSizeSaved = local.jellyfinPageSizeSaved,
             plexUrlInput = local.plexUrlInput,
             plexTokenInput = local.plexTokenInput,
+            plexPlaylistPageSizeInput = local.plexPlaylistPageSizeInput,
+            plexPageSizeSaved = local.plexPageSizeSaved,
             spotifyTokenInput = local.spotifyTokenInput,
             spotifyAuthLaunchUrl = local.spotifyAuthLaunchUrl,
             syncServerTarget = local.syncServerTarget,
@@ -609,12 +688,72 @@ class MainViewModel @Inject constructor(
         jellyfinTokenInput.value = value
     }
 
+    fun updateJellyfinPlaylistPageSizeInput(value: String) {
+        // Filter out newlines and non-digit characters
+        val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
+        jellyfinPlaylistPageSizeInput.value = filtered
+
+        val pageSize = filtered.toIntOrNull()
+        if (pageSize == null || pageSize !in 1..1000) {
+            jellyfinPageSizeSaveJob?.cancel()
+            jellyfinPageSizeSaved.value = false
+            return
+        }
+
+        jellyfinPageSizeSaveJob?.cancel()
+        jellyfinPageSizeSaveJob = viewModelScope.launch {
+            try {
+                delay(500)
+                val saved = authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
+                if (saved) {
+                    jellyfinPageSizeSaved.value = true
+                    delay(1500)
+                    jellyfinPageSizeSaved.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save Jellyfin page size", e)
+            }
+        }
+    }
+
     fun updatePlexUrlInput(value: String) {
         plexUrlInput.value = value
     }
 
     fun updatePlexTokenInput(value: String) {
         plexTokenInput.value = value
+    }
+
+    fun updatePlexPlaylistPageSizeInput(value: String) {
+        // Filter out newlines and non-digit characters
+        val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
+        plexPlaylistPageSizeInput.value = filtered
+
+        val pageSize = filtered.toIntOrNull()
+        if (pageSize == null || pageSize !in 1..1000) {
+            plexPageSizeSaveJob?.cancel()
+            plexPageSizeSaved.value = false
+            return
+        }
+
+        plexPageSizeSaveJob?.cancel()
+        plexPageSizeSaveJob = viewModelScope.launch {
+            try {
+                delay(500)
+                val saved = authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
+                if (saved) {
+                    plexPageSizeSaved.value = true
+                    delay(1500)
+                    plexPageSizeSaved.value = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save Plex page size", e)
+            }
+        }
     }
 
     fun connectJellyfin(url: String, apiKey: String) {
@@ -630,7 +769,14 @@ class MainViewModel @Inject constructor(
             providerConnectionFeedback.value = "Connecting to Jellyfin..."
 
             val result = runCatching {
-                authRepository.connect(AuthRequest.Jellyfin(serverUrl = normalizedUrl, apiKey = normalizedApiKey))
+                val pageSize = (jellyfinPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE).coerceIn(1, 1000)
+                authRepository.connect(
+                    AuthRequest.Jellyfin(
+                        serverUrl = normalizedUrl,
+                        apiKey = normalizedApiKey,
+                        playlistPageSize = pageSize
+                    )
+                )
             }
 
             result.onFailure {
@@ -663,7 +809,14 @@ class MainViewModel @Inject constructor(
             providerConnectionFeedback.value = "Connecting to Plex..."
 
             val result = runCatching {
-                authRepository.connect(AuthRequest.Plex(serverUrl = normalizedUrl, token = normalizedToken))
+                val pageSize = (plexPlaylistPageSizeInput.value.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE).coerceIn(1, 1000)
+                authRepository.connect(
+                    AuthRequest.Plex(
+                        serverUrl = normalizedUrl,
+                        token = normalizedToken,
+                        playlistPageSize = pageSize
+                    )
+                )
             }
 
             result.onFailure {
@@ -846,13 +999,17 @@ class MainViewModel @Inject constructor(
     fun refreshProviderPlaylistData() {
         viewModelScope.launch {
             providerPlaylistRefreshInProgress.value = true
-            providerPlaylistRefreshStatus.value = "Refreshing playlist data..."
+            providerPlaylistRefreshStatus.value = "Starting playlist refresh..."
 
             runCatching {
-                providerCatalogRepository.refreshAllProviderPlaylistDataWithCache()
+                providerCatalogRepository.refreshAllProviderPlaylistDataWithCache(
+                    onProgressUpdate = { status ->
+                        providerPlaylistRefreshStatus.value = status
+                    }
+                )
             }.onSuccess { refreshedPlaylists ->
                 providerPlaylists.value = refreshedPlaylists
-                providerPlaylistRefreshStatus.value = "Playlist data refreshed."
+                providerPlaylistRefreshStatus.value = "Playlist data refreshed successfully!"
 
                 val selected = selectedProviderPlaylist.value
                 if (selected != null) {
@@ -1144,7 +1301,27 @@ class MainViewModel @Inject constructor(
     fun materializeSelectedUnion() {
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
-            activeCustomPlaylistTracks.value = customPlaylistEngine.materializeUnionTracks(playlistId)
+            customPlaylistRefreshInProgress.value = true
+            customPlaylistRefreshStatus.value = "Materializing union playlist..."
+
+            try {
+                val tracks = customPlaylistEngine.materializeUnionTracks(
+                    playlistId,
+                    onProgressUpdate = { status ->
+                        customPlaylistRefreshStatus.value = status
+                    },
+                    forceRefresh = true
+                )
+                activeCustomPlaylistTracks.value = tracks
+                customPlaylistRefreshStatus.value = "Union playlist materialized successfully!"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Failed to materialize union playlist."
+            }
+
+            customPlaylistRefreshInProgress.value = false
         }
     }
 
@@ -1595,16 +1772,20 @@ class MainViewModel @Inject constructor(
 
         jellyfinUrlInput.value = jelly?.serverUrl.orEmpty()
         jellyfinTokenInput.value = jelly?.token.orEmpty()
+        jellyfinPlaylistPageSizeInput.value = jelly?.playlistPageSize?.toString() ?: "300"
         plexUrlInput.value = plex?.serverUrl.orEmpty()
         plexTokenInput.value = plex?.token.orEmpty()
+        plexPlaylistPageSizeInput.value = plex?.playlistPageSize?.toString() ?: "300"
         spotifyTokenInput.value = spotify?.token.orEmpty()
     }
 
     private data class ProviderSettingsInputs(
         val jellyfinUrl: String,
         val jellyfinToken: String,
+        val jellyfinPlaylistPageSize: String,
         val plexUrl: String,
         val plexToken: String,
+        val plexPlaylistPageSize: String,
         val spotifyToken: String,
         val syncServerTarget: String,
         val syncAuthToken: String,
@@ -1627,6 +1808,7 @@ class MainViewModel @Inject constructor(
 }
 
 private const val SPOTIFY_REDIRECT_URI = "anyplayer://spotify-callback"
+private const val TAG = "MainViewModel"
 
 data class MainUiState(
     val startupMessage: String = "Starting...",
@@ -1665,13 +1847,19 @@ data class MainUiState(
     val selectedCustomPlaylistIsDistinct: Boolean = false,
     val selectedCustomPlaylistDuplicateGroups: List<DuplicateGroup> = emptyList(),
     val selectedCustomUnionSources: List<UnionPlaylistSource> = emptyList(),
+    val customPlaylistRefreshInProgress: Boolean = false,
+    val customPlaylistRefreshStatus: String? = null,
     val stateTransferStatus: String = "State transfer idle",
     val providerConnectionFeedback: String? = null,
     val providerConnectionInProgress: Boolean = false,
     val jellyfinUrlInput: String = "",
     val jellyfinTokenInput: String = "",
+    val jellyfinPlaylistPageSizeInput: String = "300",
+    val jellyfinPageSizeSaved: Boolean = false,
     val plexUrlInput: String = "",
     val plexTokenInput: String = "",
+    val plexPlaylistPageSizeInput: String = "300",
+    val plexPageSizeSaved: Boolean = false,
     val spotifyTokenInput: String = "",
     val spotifyAuthLaunchUrl: String? = null,
     val syncServerTarget: String = "",

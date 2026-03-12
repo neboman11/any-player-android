@@ -6,6 +6,7 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.network.SpotifyClient
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
+import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.auth.StoredConnection
 import kotlinx.coroutines.test.runTest
@@ -13,6 +14,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -20,7 +22,9 @@ import org.mockito.kotlin.never
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class ProviderCatalogRepositoryTest {
     private val secureConnectionStore: SecureConnectionStore = mock()
     private val spotifyClient: SpotifyClient = mock()
@@ -37,8 +41,8 @@ class ProviderCatalogRepositoryTest {
     )
 
     companion object {
-        // Must match PROVIDER_PAGE_SIZE in ProviderCatalogRepository
-        private const val PROVIDER_PAGE_SIZE = 300
+        // Matches PROVIDER_DEFAULT_PAGE_SIZE from AuthModels
+        private const val PROVIDER_PAGE_SIZE = PROVIDER_DEFAULT_PAGE_SIZE
     }
 
     @Test

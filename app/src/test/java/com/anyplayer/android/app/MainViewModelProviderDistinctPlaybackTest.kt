@@ -33,6 +33,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.clearInvocations
 import org.mockito.kotlin.doReturn
@@ -98,6 +99,7 @@ class MainViewModelProviderDistinctPlaybackTest {
                 )
             )
             whenever(authRepository.readStoredConnection(any())).thenReturn(null)
+            whenever(authRepository.updatePlaylistPageSize(any(), any())).thenReturn(true)
         }
 
         viewModel = MainViewModel(
@@ -131,13 +133,14 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-3", "Harmony", "Band A") // duplicate of t-1
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq(playlistId), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct("SPOTIFY", playlistId)
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(true)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
+        advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
         verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
@@ -154,13 +157,14 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-2", "Harmony", "Band A") // duplicate — kept when distinct=false
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq(playlistId), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct("SPOTIFY", playlistId)
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(false)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
+        advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
         verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
@@ -178,13 +182,14 @@ class MainViewModelProviderDistinctPlaybackTest {
             track("t-3", "SONG", "ARTIST")              // same key after normalize
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.SPOTIFY), eq(playlistId), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct("SPOTIFY", playlistId)
+            playlistStorageRepository.getProviderPlaylistIsDistinct(eq("SPOTIFY"), eq(playlistId))
         ).doReturn(true)
 
         viewModel.playPlaylist(SourceType.SPOTIFY, playlistId)
+        advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
         verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
@@ -371,14 +376,15 @@ class MainViewModelProviderDistinctPlaybackTest {
             tracks = rawTracks
         )
         whenever(
-            providerCatalogRepository.getPlaylistTracksWithCache(eq(SourceType.PLEX), eq(playlistId), any(), any(), any())
+            providerCatalogRepository.getPlaylistTracksWithCache(any(), any(), any(), anyOrNull(), anyOrNull(), any())
         ).doReturn(rawTracks)
         whenever(
-            playlistStorageRepository.getProviderPlaylistIsDistinct("PLEX", playlistId)
+            playlistStorageRepository.getProviderPlaylistIsDistinct(any(), any())
         ).doReturn(true)
 
         // Test via playPlaylist
         viewModel.playPlaylist(SourceType.PLEX, playlistId)
+        advanceUntilIdle()
         val captorA = argumentCaptor<List<Track>>()
         verify(playbackQueueManager).setQueue(captorA.capture(), startIndex = eq(0), autoPlay = eq(true))
         val queueFromPlayPlaylist = captorA.firstValue
@@ -387,6 +393,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         clearInvocations(playbackQueueManager)
         viewModel.openProviderPlaylistSummary(playlist)
         viewModel.playSelectedProviderPlaylist()
+        advanceUntilIdle()
         val captorB = argumentCaptor<List<Track>>()
         verify(playbackQueueManager).setQueue(captorB.capture(), startIndex = eq(0), autoPlay = eq(true))
         val queueFromSelected = captorB.firstValue

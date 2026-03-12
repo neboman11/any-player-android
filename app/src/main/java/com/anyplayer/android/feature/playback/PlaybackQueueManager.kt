@@ -626,18 +626,26 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
+                if (state.queue.isEmpty()) return@launch
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex + 1).coerceAtMost(state.queue.lastIndex)
+                val targetTrack = state.queue.getOrNull(targetIndex)
+                if (targetTrack == null) {
+                    mutableStatus.value = mutableStatus.value.copy(
+                        errorMessage = "No track available at target index"
+                    )
+                    return@launch
+                }
                 val success = startSpotifyAtQueueIndex(targetIndex)
                 if (!success) {
                     spotifyAutoAdvanceInFlight = false
                     Log.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
                 }
                 mutableStatus.value = mutableStatus.value.copy(
-                    currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
+                    currentTrack = if (success) targetTrack else state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     position = if (success) 0L else state.position,
-                    duration = if (success) (state.queue.getOrNull(targetIndex)?.durationMs ?: state.duration) else state.duration,
+                    duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
                     errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
                 )
                 persistStateAsync()
@@ -669,6 +677,7 @@ class PlaybackQueueManager @Inject constructor(
 
         if (spotifyMode) {
             scope.launch {
+                if (state.queue.isEmpty()) return@launch
                 val currentIndex = resolveSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex - 1).coerceAtLeast(0)
                 // Only attempt to skip if we're not already at the first track
@@ -676,12 +685,19 @@ class PlaybackQueueManager @Inject constructor(
                     // Already at first track, don't do anything
                     return@launch
                 }
+                val targetTrack = state.queue.getOrNull(targetIndex)
+                if (targetTrack == null) {
+                    mutableStatus.value = mutableStatus.value.copy(
+                        errorMessage = "No track available at target index"
+                    )
+                    return@launch
+                }
                 val success = startSpotifyAtQueueIndex(targetIndex)
                 mutableStatus.value = mutableStatus.value.copy(
-                    currentTrack = state.queue.getOrNull(targetIndex) ?: state.currentTrack,
+                    currentTrack = if (success) targetTrack else state.currentTrack,
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
                     position = if (success) 0L else state.position,
-                    duration = if (success) (state.queue.getOrNull(targetIndex)?.durationMs ?: state.duration) else state.duration,
+                    duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
                     errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to go to previous track")
                 )
                 persistStateAsync()

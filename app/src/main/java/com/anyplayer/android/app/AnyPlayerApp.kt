@@ -50,12 +50,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.PlaylistType
@@ -327,7 +333,17 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 Button(
                     onClick = viewModel::refreshProviderPlaylistData,
                     enabled = !state.providerPlaylistRefreshInProgress
-                ) { Text("Refresh") }
+                ) { 
+                    if (state.providerPlaylistRefreshInProgress) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = null
+                        )
+                        Text(" Refreshing...")
+                    } else {
+                        Text("Refresh")
+                    }
+                }
             }
 
             Text("${selectedProviderPlaylist.name} (${selectedProviderPlaylist.source.name.lowercase()})")
@@ -344,11 +360,80 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
             }
 
+            // Enhanced refresh feedback section
             if (state.providerPlaylistRefreshInProgress) {
-                Text("Refreshing playlist data...")
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Refreshing",
+                            modifier = Modifier.padding(end = 2.dp)
+                        )
+                        Text(
+                            "Refreshing...",
+                            style = androidx.compose.material3.MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Text(
+                        state.providerPlaylistRefreshStatus ?: "Processing...",
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        maxLines = 3
+                    )
+                }
             }
+
+            // Status message after refresh completes
             state.providerPlaylistRefreshStatus?.let { refreshStatus ->
-                Text(refreshStatus)
+                if (!state.providerPlaylistRefreshInProgress && refreshStatus.isNotBlank()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val isSuccess = refreshStatus.contains("complete", ignoreCase = true) ||
+                                       refreshStatus.contains("successfully", ignoreCase = true)
+                        if (isSuccess) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Success",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    refreshStatus,
+                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        } else {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Warning,
+                                    contentDescription = "Warning",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    refreshStatus,
+                                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             if (state.selectedProviderPlaylistLoading) {
@@ -452,7 +537,20 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 Button(onClick = viewModel::closeCustomPlaylistDetails) { Text("Back") }
                 Button(onClick = { viewModel.playCustomPlaylist(selectedCustomPlaylist.id) }) { Text("Play") }
                 if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
-                    Button(onClick = viewModel::materializeSelectedUnion) { Text("Refresh") }
+                    Button(
+                        onClick = viewModel::materializeSelectedUnion,
+                        enabled = !state.customPlaylistRefreshInProgress
+                    ) { 
+                        if (state.customPlaylistRefreshInProgress) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null
+                            )
+                            Text(" Refreshing...")
+                        } else {
+                            Text("Refresh")
+                        }
+                    }
                 }
             }
 
@@ -470,7 +568,82 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
             }
 
+            // Enhanced refresh feedback for union playlists
             if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
+                if (state.customPlaylistRefreshInProgress) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = "Materializing",
+                                modifier = Modifier.padding(end = 2.dp)
+                            )
+                            Text(
+                                "Materializing union...",
+                                style = androidx.compose.material3.MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        Text(
+                            state.customPlaylistRefreshStatus ?: "Processing...",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                            maxLines = 2
+                        )
+                    }
+                }
+
+                // Status message after refresh completes
+                state.customPlaylistRefreshStatus?.let { refreshStatus ->
+                    if (!state.customPlaylistRefreshInProgress && refreshStatus.isNotBlank()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val isSuccess = refreshStatus.contains("successfully", ignoreCase = true)
+                            if (isSuccess) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = "Success",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        refreshStatus,
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Warning,
+                                        contentDescription = "Warning",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Text(
+                                        refreshStatus,
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Text("Source playlists")
                 if (unionSourceLabels.isEmpty()) {
                     Text("No source playlists added")
@@ -478,19 +651,6 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         unionSourceLabels.forEachIndexed { index, label ->
                             Text("${index + 1}. $label")
-                        }
-                    }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    state.providerPlaylists.take(3).forEach { providerPlaylist ->
-                        Button(onClick = {
-                            viewModel.addProviderPlaylistSourceToSelectedUnion(
-                                sourcePlaylistId = providerPlaylist.id,
-                                sourceType = providerPlaylist.source
-                            )
-                        }) {
-                            Text("+ ${providerPlaylist.name.take(10)}")
                         }
                     }
                 }
@@ -615,7 +775,61 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Text("Provider playlists")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Provider playlists")
+            Button(
+                onClick = viewModel::refreshProviderPlaylistData,
+                enabled = !state.providerPlaylistRefreshInProgress,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                if (state.providerPlaylistRefreshInProgress) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Refreshing playlists",
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                } else {
+                    Text("Refresh", fontSize = 12.sp)
+                }
+            }
+        }
+        
+        // Show refresh status when in progress
+        if (state.providerPlaylistRefreshInProgress) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Refreshing playlists",
+                        modifier = Modifier.padding(end = 2.dp)
+                    )
+                    Text(
+                        "Refreshing playlists...",
+                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall
+                    )
+                }
+                state.providerPlaylistRefreshStatus?.let { status ->
+                    Text(
+                        status,
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        maxLines = 2
+                    )
+                }
+            }
+        }
+        
         if (state.providerPlaylists.isEmpty()) {
             Text("No provider playlists loaded")
         }
@@ -1325,6 +1539,24 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
+                OutlinedTextField(
+                    value = state.jellyfinPlaylistPageSizeInput,
+                    onValueChange = viewModel::updateJellyfinPlaylistPageSizeInput,
+                    label = { Text("Playlist Page Size") },
+                    placeholder = { Text("300") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 1,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    trailingIcon = {
+                        if (state.jellyfinPageSizeSaved) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Saved",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { viewModel.connectJellyfin(state.jellyfinUrlInput, state.jellyfinTokenInput) },
@@ -1368,6 +1600,24 @@ private fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = state.plexPlaylistPageSizeInput,
+                    onValueChange = viewModel::updatePlexPlaylistPageSizeInput,
+                    label = { Text("Playlist Page Size") },
+                    placeholder = { Text("300") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 1,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    trailingIcon = {
+                        if (state.plexPageSizeSaved) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Saved",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -1442,10 +1692,10 @@ private fun ProviderCheckmarkTooltip(tooltipText: String) {
         },
         state = rememberTooltipState()
     ) {
-        Text(
-            text = "✓",
-            color = MaterialTheme.colorScheme.primary,
-            style = MaterialTheme.typography.labelLarge
+        Icon(
+            imageVector = Icons.Filled.Check,
+            contentDescription = "Connected",
+            tint = MaterialTheme.colorScheme.primary
         )
     }
 }
