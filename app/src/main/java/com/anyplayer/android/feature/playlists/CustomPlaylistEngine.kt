@@ -218,7 +218,7 @@ class CustomPlaylistEngine @Inject constructor(
         // Deduplicate by source and track ID to avoid same track from multiple union sources
         val deduplicatedBySourceAndId = materialized.distinctBy { Pair(it.source, it.id) }
         val result = deduplicatedBySourceAndId
-            .mapIndexed { index, track ->
+            .map { track ->
                 track.copy(
                     enriched = track.enriched ?: true,
                     durationMs = track.durationMs ?: 0L

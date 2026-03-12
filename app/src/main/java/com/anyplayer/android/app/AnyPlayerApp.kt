@@ -375,7 +375,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             
             // Status message after refresh completes
             state.providerPlaylistRefreshStatus?.let { refreshStatus ->
-                if (!state.providerPlaylistRefreshInProgress && !refreshStatus.isEmpty()) {
+                if (!state.providerPlaylistRefreshInProgress && refreshStatus.isNotBlank()) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()

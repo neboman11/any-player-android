@@ -142,7 +142,7 @@ class ProviderCatalogRepository @Inject constructor(
                 sourceType = playlist.source,
                 playlistId = playlist.id,
                 offset = 0,
-                limit = limit,
+                pageSize = limit,
                 forceRefresh = true
             ).take(limit)
             playlist.copy(
@@ -161,10 +161,10 @@ class ProviderCatalogRepository @Inject constructor(
         sourceType: SourceType,
         playlistId: String,
         offset: Int = 0,
-        limit: Int? = null,
+        pageSize: Int? = null,
         forceRefresh: Boolean = false
     ): List<Track> {
-        Log.d(TAG, "getPlaylistTracksWithCache: sourceType=$sourceType, playlistId=$playlistId, offset=$offset, limit=$limit, forceRefresh=$forceRefresh")
+        Log.d(TAG, "getPlaylistTracksWithCache: sourceType=$sourceType, playlistId=$playlistId, offset=$offset, pageSize=$pageSize, forceRefresh=$forceRefresh")
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         if (!forceRefresh) {
             val cached = getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
@@ -174,12 +174,12 @@ class ProviderCatalogRepository @Inject constructor(
             }
         }
 
-        Log.d(TAG, "  cache miss or forceRefresh, calling getPlaylistTracks with limit=$limit")
+        Log.d(TAG, "  cache miss or forceRefresh, calling getPlaylistTracks with pageSize=$pageSize")
         val remoteTracks = getPlaylistTracks(
             sourceType = sourceType,
             playlistId = resolvedPlaylistId,
             offset = offset,
-            limit = limit
+            pageSize = pageSize
         )
         Log.d(TAG, "  getPlaylistTracks returned ${remoteTracks.size} tracks")
         if (remoteTracks.isNotEmpty()) {
@@ -195,7 +195,7 @@ class ProviderCatalogRepository @Inject constructor(
         sourceType: SourceType,
         playlistId: String,
         offset: Int = 0,
-        limit: Int? = null
+        pageSize: Int? = null
     ): List<Track> = withContext(Dispatchers.IO) {
         // Rust provider bridge is required for non-Spotify provider tracks.
         // Without JNI we only keep Spotify behavior available.
@@ -204,7 +204,7 @@ class ProviderCatalogRepository @Inject constructor(
                 return@withContext loadSpotifyPlaylistTracksOnly(
                     playlistId = normalizePlaylistId(sourceType, playlistId),
                     offset = offset,
-                    limit = limit ?: PROVIDER_PAGE_SIZE
+                    limit = pageSize ?: PROVIDER_DEFAULT_PAGE_SIZE
                 )
             }
             return@withContext emptyList()
@@ -217,35 +217,27 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.JELLYFIN -> secureConnectionStore.read(SourceType.JELLYFIN)?.playlistPageSize
             SourceType.PLEX -> secureConnectionStore.read(SourceType.PLEX)?.playlistPageSize
             else -> null
-        } ?: PROVIDER_PAGE_SIZE
+        } ?: PROVIDER_DEFAULT_PAGE_SIZE
         
-        val pageSize = limit ?: configuredPageSize
+        val effectivePageSize = (pageSize ?: configuredPageSize).coerceAtLeast(1)
         
-        Log.d(TAG, "getPlaylistTracks() called: sourceType=$sourceType, playlistId=$playlistId, limit=$limit")
-        Log.d(TAG, "  configuredPageSize=$configuredPageSize, final pageSize=$pageSize")
+        Log.d(TAG, "getPlaylistTracks() called: sourceType=$sourceType, playlistId=$playlistId, pageSize=$pageSize")
+        Log.d(TAG, "  configuredPageSize=$configuredPageSize, effectivePageSize=$effectivePageSize")
 
         suspend fun loadAllPages(
-            effectivePageSize: Int = pageSize,
+            pageLimit: Int = effectivePageSize,
             fetchPage: suspend (offset: Int, limit: Int) -> List<Track>
         ): List<Track> {
-            Log.d(TAG, "loadAllPages() starting: effectivePageSize=$effectivePageSize")
+            Log.d(TAG, "loadAllPages() starting: pageLimit=$pageLimit")
             val allTracks = mutableListOf<Track>()
             var currentOffset = offset.coerceAtLeast(0)
             var pageCount = 0
             while (true) {
                 pageCount++
-                Log.d(TAG, "  fetching page $pageCount: offset=$currentOffset, limit=$effectivePageSize")
-                val page = fetchPage(currentOffset, effectivePageSize)
-                Log.d(TAG, "  page $pageCount returned ${page.size} tracks (expected max $effectivePageSize)")
-                if (page.isEmpty()) {
-                    Log.d(TAG, "  empty page received, stopping pagination")
-                    break
-                }
+                val page = fetchPage(currentOffset, pageLimit)
+                if (page.isEmpty()) break
                 allTracks += page
-                if (page.size < effectivePageSize) {
-                    Log.d(TAG, "  received ${page.size} tracks < $effectivePageSize, stopping pagination")
-                    break
-                }
+                if (page.size < pageLimit) break
                 currentOffset += page.size
             }
             Log.d(TAG, "loadAllPages() completed: total ${allTracks.size} tracks across $pageCount pages")
@@ -257,10 +249,10 @@ class ProviderCatalogRepository @Inject constructor(
                 val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
                     try {
-                        loadAllPages(effectivePageSize = pageSize) { pageOffset, pageLimit ->
+                        loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->
                             rustBridge.providerGetPlaylistTracks(
                                 source = SourceType.JELLYFIN,
-                                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, effectivePageSize),
                                 playlistId = resolvedPlaylistId,
                                 offset = pageOffset,
                                 limit = pageLimit
@@ -278,22 +270,19 @@ class ProviderCatalogRepository @Inject constructor(
                 val plex = secureConnectionStore.read(SourceType.PLEX)
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
                     try {
-                        Log.d(TAG, "Plex: fetch starting with pageSize=$pageSize, stored playlistPageSize=${plex.playlistPageSize}")
-                        loadAllPages(effectivePageSize = pageSize) { pageOffset, pageLimit ->
-                            Log.d(TAG, "Plex: calling rustBridge.providerGetPlaylistTracks with pageOffset=$pageOffset, pageLimit=$pageLimit")
-                            val result = rustBridge.providerGetPlaylistTracks(
+                        Log.d(TAG, "Plex: fetch starting with effectivePageSize=$effectivePageSize")
+                        loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->
+                            rustBridge.providerGetPlaylistTracks(
                                 source = SourceType.PLEX,
-                                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                                session = buildPlexSession(plex.serverUrl, plex.token, effectivePageSize),
                                 playlistId = resolvedPlaylistId,
                                 offset = pageOffset,
                                 limit = pageLimit
                             ) ?: emptyList()
-                            Log.d(TAG, "Plex: rustBridge returned ${result.size} tracks")
-                            result
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to fetch Plex playlist tracks: ${e.message}", e)
-                        throw Exception("Failed to fetch Plex playlist tracks: ${e.message}")
+                        throw IllegalStateException("Failed to fetch Plex playlist tracks", e)
                     }
                 } else {
                     Log.w(TAG, "Plex: missing serverUrl or token")
@@ -304,8 +293,8 @@ class ProviderCatalogRepository @Inject constructor(
             SourceType.SPOTIFY -> {
                 val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
                 if (!spotify?.token.isNullOrBlank()) {
-                    val spotifyPageSize = pageSize.coerceAtMost(100)
-                    loadAllPages(effectivePageSize = spotifyPageSize) { pageOffset, pageLimit ->
+                    val spotifyPageSize = effectivePageSize.coerceAtMost(100)
+                    loadAllPages(pageLimit = spotifyPageSize) { pageOffset, pageLimit ->
                         spotifyClient.getPlaylistTracks(
                             accessToken = spotify.token,
                             playlistId = resolvedPlaylistId,
@@ -577,7 +566,6 @@ private const val PROVIDER_PLAYLIST_CACHE_VERSION = 1
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 1
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX = "provider_playlist_tracks_"
 private const val MAX_CACHE_JSON_CHARS = 500_000
-private const val PROVIDER_PAGE_SIZE = 300
 
 @Serializable
 private data class ProviderPlaylistCacheEntry(

@@ -48,8 +48,8 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                any(),
-                any(),
+                eq(SourceType.SPOTIFY),
+                eq("sp-playlist"),
                 any(),
                 anyOrNull(),
                 any()
@@ -70,8 +70,8 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                any(),
-                any(),
+                eq(SourceType.SPOTIFY),
+                eq("sp-playlist"),
                 any(),
                 anyOrNull(),
                 any()
@@ -104,7 +104,7 @@ class CustomPlaylistEngineTest {
 
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                any(),
+                eq(SourceType.SPOTIFY),
                 any(),
                 any(),
                 anyOrNull(),
@@ -142,8 +142,8 @@ class CustomPlaylistEngineTest {
         ))
         whenever(
             providerCatalogRepository.getPlaylistTracksWithCache(
-                any(),
-                any(),
+                eq(SourceType.SPOTIFY),
+                eq("sp-1"),
                 any(),
                 anyOrNull(),
                 any()
