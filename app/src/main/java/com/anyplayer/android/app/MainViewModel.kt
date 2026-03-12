@@ -118,10 +118,12 @@ class MainViewModel @Inject constructor(
     private val jellyfinTokenInput = MutableStateFlow("")
     private val jellyfinPlaylistPageSizeInput = MutableStateFlow("300")
     private val jellyfinPageSizeSaved = MutableStateFlow(false)
+    private var jellyfinPageSizeSaveJob: Job? = null
     private val plexUrlInput = MutableStateFlow("")
     private val plexTokenInput = MutableStateFlow("")
     private val plexPlaylistPageSizeInput = MutableStateFlow("300")
     private val plexPageSizeSaved = MutableStateFlow(false)
+    private var plexPageSizeSaveJob: Job? = null
     private val spotifyTokenInput = MutableStateFlow("")
     private val spotifyAuthLaunchUrl = MutableStateFlow<String?>(null)
     private val syncServerTarget = MutableStateFlow("")
@@ -314,23 +316,31 @@ class MainViewModel @Inject constructor(
         )
     }
 
-    private val providerInputPart = combine(
+    private val jellyfinInputPart = combine(
         jellyfinUrlInput,
         jellyfinTokenInput,
-        jellyfinPlaylistPageSizeInput,
+        jellyfinPlaylistPageSizeInput
+    ) { url, token, pageSize -> Triple(url, token, pageSize) }
+
+    private val plexInputPart = combine(
         plexUrlInput,
         plexTokenInput,
-        plexPlaylistPageSizeInput,
+        plexPlaylistPageSizeInput
+    ) { url, token, pageSize -> Triple(url, token, pageSize) }
+
+    private val providerInputPart = combine(
+        jellyfinInputPart,
+        plexInputPart,
         spotifyTokenInput
-    ) { arr: Array<*> ->
+    ) { jelly, plex, spotifyToken ->
         ProviderInputPart(
-            jellyUrl = arr[0] as String,
-            jellyToken = arr[1] as String,
-            jellyPageSize = arr[2] as String,
-            plexUrl = arr[3] as String,
-            plexToken = arr[4] as String,
-            plexPageSize = arr[5] as String,
-            spotifyToken = arr[6] as String
+            jellyUrl = jelly.first,
+            jellyToken = jelly.second,
+            jellyPageSize = jelly.third,
+            plexUrl = plex.first,
+            plexToken = plex.second,
+            plexPageSize = plex.third,
+            spotifyToken = spotifyToken
         )
     }
 
@@ -451,15 +461,15 @@ class MainViewModel @Inject constructor(
                 providerPlaylistRefreshStatus = summaryState.providerPlaylistRefreshStatus
             )
         },
-        combine(localCoreState, connectionState, providerInputState, spotifyAuthLaunchUrl, jellyfinPageSizeSaved, plexPageSizeSaved) { arr: Array<*> ->
-            @Suppress("UNCHECKED_CAST")
-            val values = arr as Array<Any?>
-            val localCore = values[0] as LocalCoreUiState
-            val connectionStateVal = values[1] as Pair<String?, Boolean>
-            val providerInputs = values[2] as ProviderSettingsInputs
-            val spotifyLaunchUrl = values[3] as String?
-            val jellyFinSaved = values[4] as Boolean
-            val plexSaved = values[5] as Boolean
+        combine(
+            combine(localCoreState, connectionState, providerInputState) { localCore, connectionStateVal, providerInputs ->
+                Triple(localCore, connectionStateVal, providerInputs)
+            },
+            spotifyAuthLaunchUrl,
+            jellyfinPageSizeSaved,
+            plexPageSizeSaved
+        ) { localAndConnection, spotifyLaunchUrl, jellyFinSaved, plexSaved ->
+            val (localCore, connectionStateVal, providerInputs) = localAndConnection
             
             LocalUiState(
                 customPlaylists = localCore.customPlaylists,
@@ -676,17 +686,20 @@ class MainViewModel @Inject constructor(
         val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
         jellyfinPlaylistPageSizeInput.value = filtered
         
-        // Only save if valid and different from default
-        if (filtered.isNotBlank()) {
-            viewModelScope.launch {
-                runCatching {
-                    val pageSize = filtered.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE
-                    authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
-                    // Show checkmark feedback
-                    jellyfinPageSizeSaved.value = true
-                    delay(1500)
-                    jellyfinPageSizeSaved.value = false
-                }
+        val pageSize = filtered.toIntOrNull()
+        if (pageSize == null || pageSize == PROVIDER_DEFAULT_PAGE_SIZE) {
+            jellyfinPageSizeSaveJob?.cancel()
+            jellyfinPageSizeSaved.value = false
+            return
+        }
+
+        jellyfinPageSizeSaveJob?.cancel()
+        jellyfinPageSizeSaveJob = viewModelScope.launch {
+            runCatching {
+                authRepository.updatePlaylistPageSize(SourceType.JELLYFIN, pageSize)
+                jellyfinPageSizeSaved.value = true
+                delay(1500)
+                jellyfinPageSizeSaved.value = false
             }
         }
     }
@@ -704,17 +717,20 @@ class MainViewModel @Inject constructor(
         val filtered = value.replace("\n", "").replace("\r", "").filter { it.isDigit() }
         plexPlaylistPageSizeInput.value = filtered
         
-        // Only save if valid and different from default
-        if (filtered.isNotBlank()) {
-            viewModelScope.launch {
-                runCatching {
-                    val pageSize = filtered.toIntOrNull() ?: PROVIDER_DEFAULT_PAGE_SIZE
-                    authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
-                    // Show checkmark feedback
-                    plexPageSizeSaved.value = true
-                    delay(1500)
-                    plexPageSizeSaved.value = false
-                }
+        val pageSize = filtered.toIntOrNull()
+        if (pageSize == null || pageSize == PROVIDER_DEFAULT_PAGE_SIZE) {
+            plexPageSizeSaveJob?.cancel()
+            plexPageSizeSaved.value = false
+            return
+        }
+
+        plexPageSizeSaveJob?.cancel()
+        plexPageSizeSaveJob = viewModelScope.launch {
+            runCatching {
+                authRepository.updatePlaylistPageSize(SourceType.PLEX, pageSize)
+                plexPageSizeSaved.value = true
+                delay(1500)
+                plexPageSizeSaved.value = false
             }
         }
     }

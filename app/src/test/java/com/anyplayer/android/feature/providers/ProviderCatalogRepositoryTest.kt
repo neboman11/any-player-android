@@ -6,6 +6,7 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.network.SpotifyClient
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
+import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.auth.StoredConnection
 import kotlinx.coroutines.test.runTest
@@ -46,8 +47,8 @@ class ProviderCatalogRepositoryTest {
     }
 
     companion object {
-        // Must match PROVIDER_PAGE_SIZE in ProviderCatalogRepository
-        private const val PROVIDER_PAGE_SIZE = 300
+        // Matches PROVIDER_DEFAULT_PAGE_SIZE from AuthModels
+        private const val PROVIDER_PAGE_SIZE = PROVIDER_DEFAULT_PAGE_SIZE
     }
 
     @Test

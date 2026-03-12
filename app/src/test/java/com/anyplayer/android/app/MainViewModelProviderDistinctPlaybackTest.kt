@@ -143,7 +143,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
-        verify(playbackQueueManager).setQueue(captor.capture(), any(), any())
+        verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
 
         assertEquals(2, captor.firstValue.size)
         assertEquals(listOf("t-1", "t-2"), captor.firstValue.map { it.id })
@@ -167,7 +167,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
-        verify(playbackQueueManager).setQueue(captor.capture(), any(), any())
+        verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
 
         assertEquals(2, captor.firstValue.size)
         assertEquals(listOf("t-1", "t-2"), captor.firstValue.map { it.id })
@@ -192,7 +192,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         advanceUntilIdle()
 
         val captor = argumentCaptor<List<Track>>()
-        verify(playbackQueueManager).setQueue(captor.capture(), any(), any())
+        verify(playbackQueueManager).setQueue(captor.capture(), startIndex = eq(0), autoPlay = eq(true))
 
         assertEquals(2, captor.firstValue.size)
         assertEquals(listOf("t-1", "t-2"), captor.firstValue.map { it.id })
@@ -386,7 +386,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         viewModel.playPlaylist(SourceType.PLEX, playlistId)
         advanceUntilIdle()
         val captorA = argumentCaptor<List<Track>>()
-        verify(playbackQueueManager).setQueue(captorA.capture(), any(), any())
+        verify(playbackQueueManager).setQueue(captorA.capture(), startIndex = eq(0), autoPlay = eq(true))
         val queueFromPlayPlaylist = captorA.firstValue
 
         // Reset mock and test via playSelectedProviderPlaylist
@@ -395,7 +395,7 @@ class MainViewModelProviderDistinctPlaybackTest {
         viewModel.playSelectedProviderPlaylist()
         advanceUntilIdle()
         val captorB = argumentCaptor<List<Track>>()
-        verify(playbackQueueManager).setQueue(captorB.capture(), any(), any())
+        verify(playbackQueueManager).setQueue(captorB.capture(), startIndex = eq(0), autoPlay = eq(true))
         val queueFromSelected = captorB.firstValue
 
         // Both paths must produce identical deduped results
