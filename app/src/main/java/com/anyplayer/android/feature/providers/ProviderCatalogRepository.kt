@@ -234,7 +234,11 @@ class ProviderCatalogRepository @Inject constructor(
                 if (page.size < pageLimit) break
                 currentOffset += page.size
             }
-            return allTracks
+            return if (maxTracks != null && allTracks.size > maxTracks) {
+                allTracks.take(maxTracks)
+            } else {
+                allTracks
+            }
         }
 
         when (sourceType) {
@@ -478,13 +482,11 @@ class ProviderCatalogRepository @Inject constructor(
     }
 
     private fun buildPlexSession(url: String, token: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> {
-        val session = mapOf(
+        return mapOf(
             "url" to url,
             "token" to token,
             "page_size" to pageSize.toString()
         )
-        Log.d(TAG, "buildPlexSession: pageSize=$pageSize, url=$url, token=<redacted>")
-        return session
     }
 
     private fun isRustProviderBridgeEnabled(): Boolean = rustBridge.isAvailable()

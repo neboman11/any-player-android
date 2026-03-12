@@ -393,11 +393,20 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
     override suspend fun updatePlaylistPageSize(sourceType: SourceType, pageSize: Int): Boolean {
         return withContext(Dispatchers.IO) {
-            val current = secureConnectionStore.read(sourceType) ?: return@withContext false
-            val pagedSize = pageSize.coerceIn(1, 1000)
-            val updated = current.copy(playlistPageSize = pagedSize)
-            secureConnectionStore.save(updated)
-            true
+            when (sourceType) {
+                SourceType.JELLYFIN,
+                SourceType.PLEX -> {
+                    val current = secureConnectionStore.read(sourceType) ?: return@withContext false
+                    val pagedSize = pageSize.coerceIn(1, 1000)
+                    val updated = current.copy(playlistPageSize = pagedSize)
+                    secureConnectionStore.save(updated)
+                    true
+                }
+                else -> {
+                    Log.d(TAG, "updatePlaylistPageSize not supported for source: $sourceType")
+                    false
+                }
+            }
         }
     }
 

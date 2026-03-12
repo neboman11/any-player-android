@@ -178,11 +178,9 @@ class CustomPlaylistEngine @Inject constructor(
         onProgressUpdate: (String) -> Unit = {},
         forceRefresh: Boolean = false
     ): List<Track> {
-        Log.d(TAG, "materializeUnionTracks START: unionPlaylistId=$unionPlaylistId, forceRefresh=$forceRefresh")
         val unionSources = storageRepository.getUnionSources(unionPlaylistId).sortedBy { it.position }
         val materialized = mutableListOf<Track>()
         val totalSources = unionSources.size
-        Log.d(TAG, "  found $totalSources sources")
 
         unionSources.forEachIndexed { index, source ->
             val sourceLabel = when (source.sourceType) {
@@ -199,21 +197,17 @@ class CustomPlaylistEngine @Inject constructor(
                 SourceType.JELLYFIN,
                 SourceType.PLEX,
                 SourceType.SPOTIFY -> {
-                    Log.d(TAG, "  source ${index + 1}: $sourceLabel (id=${source.sourcePlaylistId}), calling getPlaylistTracksWithCache")
-                    val result = providerCatalogRepository.getPlaylistTracksWithCache(
+                    providerCatalogRepository.getPlaylistTracksWithCache(
                         sourceType = source.sourceType,
                         playlistId = source.sourcePlaylistId,
                         forceRefresh = forceRefresh
                     )
-                    Log.d(TAG, "  source ${index + 1}: $sourceLabel returned ${result.size} tracks")
-                    result
                 }
                 SourceType.ALL -> emptyList()
             }
             materialized += tracks
         }
 
-        Log.d(TAG, "materializeUnionTracks: finalized ${materialized.size} total tracks")
         onProgressUpdate("Finalizing...")
         // Deduplicate by source and track ID to avoid same track from multiple union sources
         val deduplicatedBySourceAndId = materialized.distinctBy { Pair(it.source, it.id) }
