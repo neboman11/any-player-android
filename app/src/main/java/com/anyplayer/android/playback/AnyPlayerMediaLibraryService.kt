@@ -352,11 +352,15 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         return restoreJob ?: serviceScope.async<Unit> {
             try {
                 authRepository.restoreAll()
+                playbackQueueManager.signalProviderRestoreComplete()
                 playbackQueueManager.restorePersistedStateNowIfNeeded()
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to restore provider state", t)
+                // Signal the gate even on failure so the queue manager doesn't hang
+                // waiting forever — it will simply restore without a Spotify session.
+                playbackQueueManager.signalProviderRestoreComplete()
             }
         }.also { restoreJob = it }
     }
