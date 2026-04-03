@@ -50,7 +50,7 @@ class MediaSessionPlayerBridge @Inject constructor(
 ) : ForwardingPlayer(media3PlaybackController.player) {
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     @Volatile
     private var currentStatusSnapshot: PlaybackStatus = playbackQueueManager.status.value
 
@@ -111,30 +111,32 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun addListener(listener: Player.Listener) {
         Log.d(TAG, "addListener: ${listener.javaClass.simpleName} (total after=${listeners.size + 1})")
         listeners.add(listener)
-        val status   = currentStatus()
-        val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
-        val state    = mapState(status.state)
-        val playing  = status.state == PlaybackStateType.PLAYING
-        Log.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
-        listener.onPlaybackStateChanged(state)
-        listener.onIsPlayingChanged(playing)
-        if (hasTrack) listener.onMediaItemTransition(
-            status.currentTrack?.toMediaItem(),
-            Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
-        )
-        listener.onMediaMetadataChanged(getMediaMetadata())
-        listener.onAvailableCommandsChanged(buildCommands(hasTrack))
-        val bootstrapEvents = Player.Events(
-            FlagSet.Builder().apply {
-                add(Player.EVENT_PLAYBACK_STATE_CHANGED)
-                add(Player.EVENT_IS_PLAYING_CHANGED)
-                if (hasTrack) add(Player.EVENT_MEDIA_ITEM_TRANSITION)
-                add(Player.EVENT_MEDIA_METADATA_CHANGED)
-                add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
-                add(Player.EVENT_TIMELINE_CHANGED)
-            }.build()
-        )
-        listener.onEvents(this, bootstrapEvents)
+        scope.launch {
+            val status   = currentStatus()
+            val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
+            val state    = mapState(status.state)
+            val playing  = status.state == PlaybackStateType.PLAYING
+            Log.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
+            listener.onPlaybackStateChanged(state)
+            listener.onIsPlayingChanged(playing)
+            if (hasTrack) listener.onMediaItemTransition(
+                status.currentTrack?.toMediaItem(),
+                Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+            )
+            listener.onMediaMetadataChanged(getMediaMetadata())
+            listener.onAvailableCommandsChanged(buildCommands(hasTrack))
+            val bootstrapEvents = Player.Events(
+                FlagSet.Builder().apply {
+                    add(Player.EVENT_PLAYBACK_STATE_CHANGED)
+                    add(Player.EVENT_IS_PLAYING_CHANGED)
+                    if (hasTrack) add(Player.EVENT_MEDIA_ITEM_TRANSITION)
+                    add(Player.EVENT_MEDIA_METADATA_CHANGED)
+                    add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                    add(Player.EVENT_TIMELINE_CHANGED)
+                }.build()
+            )
+            listener.onEvents(this@MediaSessionPlayerBridge, bootstrapEvents)
+        }
     }
     override fun removeListener(listener: Player.Listener) {
         Log.d(TAG, "removeListener: ${listener.javaClass.simpleName}")

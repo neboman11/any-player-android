@@ -61,7 +61,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     lateinit var authRepository: ProviderAuthRepository
 
     private var mediaLibrarySession: MediaLibrarySession? = null
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
     private var activeProjectionControllers = 0
     private var projectionDisconnectPauseJob: Job? = null
@@ -233,6 +233,29 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                                         ?.let { id -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, id) } }
                                         ?.takeIf { it >= 0 }
                                         ?: 0
+
+                                    val currentStatus = playbackQueueManager.status.value
+                                    val currentQueueIds = currentStatus.queue.map { it.id }
+                                    val selectedQueueIds = selectedQueue.map { it.id }
+                                    val queueAlreadyLoaded = currentQueueIds.isNotEmpty() &&
+                                        currentQueueIds.toSet() == selectedQueueIds.toSet()
+
+                                    if (queueAlreadyLoaded) {
+                                        val currentIndex = currentStatus.currentTrack
+                                            ?.let { ct -> selectedQueue.indexOfFirst { trackIdsMatch(it.id, ct.id) } }
+                                            ?.takeIf { it >= 0 }
+                                            ?: 0
+                                        val resolvedMediaItems = selectedQueue.map { it.toLibraryMediaItem() }
+                                        future.set(
+                                            MediaSession.MediaItemsWithStartPosition(
+                                                resolvedMediaItems,
+                                                currentIndex,
+                                                currentStatus.position.coerceAtLeast(0L)
+                                            )
+                                        )
+                                        return@launch
+                                    }
+
                                     playbackQueueManager.setQueue(selectedQueue, mappedStartIndex, autoPlay = true)
                                     if (startPositionMs > 0L) {
                                         playbackQueueManager.seekTo(startPositionMs)

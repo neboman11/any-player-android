@@ -38,7 +38,7 @@ class PlaybackQueueManager @Inject constructor(
 
     private val maxPersistedQueueTracks = 5000
     private val errorHandler = CoroutineExceptionHandler { _, _ -> }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var playableQueueIndices: List<Int> = emptyList()
     private var isRestoring = false
     private var spotifyMode = false
@@ -217,7 +217,12 @@ class PlaybackQueueManager @Inject constructor(
             // which falls back to startQueue() when resume fails.
             if (autoPlay) {
                 scope.launch {
-                    val started = spotifyPlaybackController.startQueue(tracks.map { it.id }, index)
+                    val trackIds = tracks.map { it.id }
+                    var started = spotifyPlaybackController.startQueue(trackIds, index)
+                    if (!started) {
+                        delay(350)
+                        started = spotifyPlaybackController.startQueue(trackIds, index)
+                    }
                     if (started) {
                         spotifyPlaybackController.setVolume(mutableStatus.value.volume)
                     } else {
