@@ -19,6 +19,9 @@ interface PlaylistTrackDao {
     @Query("SELECT * FROM playlist_tracks WHERE playlistId = :playlistId ORDER BY position ASC")
     suspend fun getByPlaylist(playlistId: String): List<PlaylistTrackEntity>
 
+    @Query("SELECT * FROM playlist_tracks WHERE playlistId IN (:playlistIds) ORDER BY position ASC")
+    suspend fun getByPlaylistIds(playlistIds: List<String>): List<PlaylistTrackEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(tracks: List<PlaylistTrackEntity>)
 

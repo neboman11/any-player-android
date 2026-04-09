@@ -228,7 +228,7 @@ class RustBridge @Inject constructor() {
         return SpotifyPlaybackState(
             isPlaying = data.optBoolean("is_playing", false),
             progressMs = data.optLong("progress_ms", 0L).coerceAtLeast(0L),
-            endOfTrack = data.optBoolean("end_of_track", false),
+            endOfTrackCount = data.optLong("end_of_track_count", 0L),
             volumePercent = data.optInt("volume_percent", 100).coerceIn(0, 100),
             shuffleEnabled = data.optBoolean("shuffle_enabled", false),
             repeatMode = repeatModeFromWireValue(data.optString("repeat_mode", "off")),

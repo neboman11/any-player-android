@@ -73,7 +73,8 @@ class MediaSessionPlayerBridge @Inject constructor(
                 val hasItemsNow = status.currentTrack != null || status.queue.isNotEmpty()
                 val hadItemsBefore = prevSnap.currentTrack != null || prevSnap.queue.isNotEmpty()
                 val commandsChanged = hasItemsNow != hadItemsBefore
-                val timelineChanged = status.queue.map { it.id } != prevSnap.queue.map { it.id }
+                val timelineChanged = status.queue !== prevSnap.queue &&
+                    (status.queue.size != prevSnap.queue.size || status.queue.map { it.id } != prevSnap.queue.map { it.id })
                 val metadataChanged = trackChanged
 
                 // Build the events bitmask for onEvents — DefaultMediaNotificationProvider

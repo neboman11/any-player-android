@@ -160,14 +160,25 @@ class SpotifyClient @Inject constructor(
                 owner = obj["owner"].jsonObject["display_name"].jsonPrimitiveStringOrNull ?: "Spotify",
                 trackCount = obj["tracks"].jsonObject["total"].jsonPrimitiveIntOrZero,
                 source = SourceType.SPOTIFY,
-                imageUrl = (obj["images"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("url").jsonPrimitiveStringOrNull,
+                imageUrl = bestImageUrl(obj["images"] as? JsonArray),
                 description = obj["description"].jsonPrimitiveStringOrNull,
                 tracks = null
             )
         }
     }
 
-    fun getPlaylistTracks(accessToken: String, playlistId: String, offset: Int = 0, limit: Int = 100): List<Track> {
+    fun getPlaylistTracks(accessToken: String, playlistId: String, offset: Int = 0, limit: Int = 100): List<Track> =
+        getPlaylistTracksPage(accessToken, playlistId, offset, limit).tracks
+
+    /**
+     * Returns a page of playlist tracks together with the total track count
+     * reported by the Spotify API. Callers that need to paginate through all
+     * tracks should use [SpotifyPlaylistTracksPage.total] to decide when to
+     * stop instead of relying on page size, because [mapNotNull] filtering
+     * (e.g. null track IDs) can shrink a page below [limit] even when more
+     * pages remain.
+     */
+    fun getPlaylistTracksPage(accessToken: String, playlistId: String, offset: Int = 0, limit: Int = 100): SpotifyPlaylistTracksPage {
         val root = execute(
             path = "playlists/$playlistId/tracks",
             token = accessToken,
@@ -176,10 +187,11 @@ class SpotifyClient @Inject constructor(
                 "offset" to offset.coerceAtLeast(0).toString(),
                 "limit" to limit.coerceIn(1, 100).toString()
             )
-        ) ?: return emptyList()
+        ) ?: return SpotifyPlaylistTracksPage(tracks = emptyList(), total = 0)
 
+        val total = root["total"].jsonPrimitiveIntOrZero
         val items = root["items"] as? JsonArray ?: JsonArray(emptyList())
-        return items.mapNotNull { item ->
+        val tracks = items.mapNotNull { item ->
             val trackObj = item.jsonObject["track"].jsonObject
             val id = trackObj["id"].jsonPrimitiveStringOrNull ?: return@mapNotNull null
             val artists = trackObj["artists"] as? JsonArray
@@ -192,10 +204,11 @@ class SpotifyClient @Inject constructor(
                 durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.SPOTIFY,
                 url = "spotify:track:$id",
-                imageUrl = (album["images"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("url").jsonPrimitiveStringOrNull,
+                imageUrl = bestImageUrl(album["images"] as? JsonArray),
                 enriched = true
             )
         }
+        return SpotifyPlaylistTracksPage(tracks = tracks, total = total)
     }
 
     fun searchTracks(accessToken: String, query: String, offset: Int = 0, limit: Int = 50): List<Track> {
@@ -228,7 +241,7 @@ class SpotifyClient @Inject constructor(
                 durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.SPOTIFY,
                 url = "spotify:track:$id",
-                imageUrl = (album["images"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("url").jsonPrimitiveStringOrNull,
+                imageUrl = bestImageUrl(album["images"] as? JsonArray),
                 enriched = true
             )
         }
@@ -355,7 +368,7 @@ class SpotifyClient @Inject constructor(
                 owner = obj["owner"].jsonObject["display_name"].jsonPrimitiveStringOrNull ?: "Spotify",
                 trackCount = obj["tracks"].jsonObject["total"].jsonPrimitiveIntOrZero,
                 source = SourceType.SPOTIFY,
-                imageUrl = (obj["images"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("url").jsonPrimitiveStringOrNull,
+                imageUrl = bestImageUrl(obj["images"] as? JsonArray),
                 description = obj["description"].jsonPrimitiveStringOrNull,
                 tracks = null
             )
@@ -452,14 +465,36 @@ private val JsonElement?.jsonPrimitiveIntOrZero: Int
 private val JsonElement?.jsonPrimitiveBooleanOrFalse: Boolean
     get() = this?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
 
+private const val PREFERRED_IMAGE_WIDTH = 300
+
+private fun bestImageUrl(images: JsonArray?): String? {
+    if (images == null || images.isEmpty()) return null
+    var best = images.first().jsonObject
+    var bestDiff = Int.MAX_VALUE
+    for (img in images) {
+        val w = img.jsonObject["width"]?.jsonPrimitive?.intOrNull ?: continue
+        val diff = kotlin.math.abs(w - PREFERRED_IMAGE_WIDTH)
+        if (diff < bestDiff) {
+            bestDiff = diff
+            best = img.jsonObject
+        }
+    }
+    return best["url"].jsonPrimitiveStringOrNull
+}
+
 data class SpotifyPlaybackState(
     val isPlaying: Boolean,
     val progressMs: Long,
-    val endOfTrack: Boolean = false,
+    val endOfTrackCount: Long = 0,
     val volumePercent: Int,
     val shuffleEnabled: Boolean,
     val repeatMode: RepeatMode,
     val currentTrackId: String?
+)
+
+data class SpotifyPlaylistTracksPage(
+    val tracks: List<Track>,
+    val total: Int
 )
 
 data class SpotifyDevice(

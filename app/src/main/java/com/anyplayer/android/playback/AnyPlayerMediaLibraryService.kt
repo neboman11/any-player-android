@@ -47,6 +47,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
@@ -310,8 +312,24 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         serviceScope.launch {
             playbackQueueManager.status.collect { status ->
                 updateAudioFocus(status)
-                startForegroundCompat(buildPlaybackNotification(status))
             }
+        }
+
+        serviceScope.launch {
+            data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val isPlaying: Boolean)
+            playbackQueueManager.status
+                .map { status ->
+                    NotificationKey(
+                        trackId = status.currentTrack?.id,
+                        title = status.currentTrack?.title,
+                        artist = status.currentTrack?.artist,
+                        isPlaying = status.state == PlaybackStateType.PLAYING
+                    ) to status
+                }
+                .distinctUntilChanged { old, new -> old.first == new.first }
+                .collect { (_, status) ->
+                    startForegroundCompat(buildPlaybackNotification(status))
+                }
         }
 
     }
@@ -415,6 +433,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         activeProjectionControllers += 1
         projectionDisconnectPauseJob?.cancel()
         projectionDisconnectPauseJob = null
+        playbackQueueManager.resetSpotifyConnectionState()
         Log.i(
             TAG,
             "Projection controller connected package=${controller.packageName} active=$activeProjectionControllers"

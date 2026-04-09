@@ -140,9 +140,10 @@ class SyncSnapshotClient @Inject constructor(
 ) {
     fun getClientId(): String = syncPreferencesStore.getOrCreateClientId()
 
+    private val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
+
     private fun normalizeToken(raw: String): String {
         val trimmed = raw.trim()
-        val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
         return bearerRegex.replace(trimmed, "")
     }
 

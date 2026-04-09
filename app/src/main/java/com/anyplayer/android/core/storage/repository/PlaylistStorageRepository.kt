@@ -96,12 +96,9 @@ class PlaylistStorageRepository @Inject constructor(
     suspend fun getSnapshot(
         customPlaylists: List<CustomPlaylist>
     ): Triple<List<PlaylistTrack>, List<UnionPlaylistSource>, List<ColumnPreferences>> {
-        val tracks = customPlaylists.flatMap { playlist ->
-            playlistTrackDao.getByPlaylist(playlist.id).map { it.toModel() }
-        }
-        val unionSources = customPlaylists.flatMap { playlist ->
-            unionPlaylistSourceDao.getByUnionPlaylist(playlist.id).map { it.toModel() }
-        }
+        val playlistIds = customPlaylists.map { it.id }
+        val tracks = playlistTrackDao.getByPlaylistIds(playlistIds).map { it.toModel() }
+        val unionSources = unionPlaylistSourceDao.getByUnionPlaylistIds(playlistIds).map { it.toModel() }
         val columns = columnPreferenceDao.getAll().map { it.toModel() }
         return Triple(tracks, unionSources, columns)
     }

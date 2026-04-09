@@ -6,6 +6,7 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.network.ProviderSearchResult
 import com.anyplayer.android.core.network.SpotifyClient
+import com.anyplayer.android.core.network.SpotifyPlaylistTracksPage
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.core.storage.entity.AppCacheEntryEntity
@@ -13,6 +14,12 @@ import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.startup.StartupCatalogGateway
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -61,8 +68,6 @@ class ProviderCatalogRepository @Inject constructor(
     }
 
     suspend fun getAllProviderPlaylists(offset: Int = 0, limit: Int = 100): List<Playlist> = withContext(Dispatchers.IO) {
-        // Rust provider bridge is the canonical path for Jellyfin/Plex.
-        // If JNI is unavailable, we intentionally degrade to Spotify-only data.
         if (!isRustProviderBridgeEnabled()) {
             return@withContext loadSpotifyPlaylistsOnly(offset, limit)
         }
@@ -71,35 +76,43 @@ class ProviderCatalogRepository @Inject constructor(
         val plex = secureConnectionStore.read(SourceType.PLEX)
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
 
-        val jellyPlaylists = if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            rustBridge.providerGetPlaylists(
-                source = SourceType.JELLYFIN,
-                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
+        coroutineScope {
+            val jellyDeferred = async {
+                if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
+                    rustBridge.providerGetPlaylists(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
 
-        val plexPlaylists = if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            rustBridge.providerGetPlaylists(
-                source = SourceType.PLEX,
-                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
+            val plexDeferred = async {
+                if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
+                    rustBridge.providerGetPlaylists(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
 
-        val spotifyPlaylists = if (!spotify?.token.isNullOrBlank()) {
-            spotifyClient.getPlaylists(spotify.token, offset = offset, limit = limit.coerceAtMost(50))
-        } else {
-            emptyList()
-        }
+            val spotifyDeferred = async {
+                if (!spotify?.token.isNullOrBlank()) {
+                    spotifyClient.getPlaylists(spotify.token, offset = offset, limit = limit.coerceAtMost(50))
+                } else {
+                    emptyList()
+                }
+            }
 
-        jellyPlaylists + plexPlaylists + spotifyPlaylists
+            jellyDeferred.await() + plexDeferred.await() + spotifyDeferred.await()
+        }
     }
 
     private suspend fun saveProviderPlaylistCache(playlists: List<Playlist>) = withContext(Dispatchers.IO) {
@@ -135,21 +148,32 @@ class ProviderCatalogRepository @Inject constructor(
         }
 
         val totalPlaylists = remotePlaylists.size
-        val enrichedPlaylists = remotePlaylists.mapIndexed { index, playlist ->
-            val playlistNumber = index + 1
-            onProgressUpdate("Fetching tracks for \"${playlist.name}\" ($playlistNumber/$totalPlaylists) from ${playlist.source.name}...")
-            val tracks = getPlaylistTracksWithCache(
-                sourceType = playlist.source,
-                playlistId = playlist.id,
-                offset = 0,
-                pageSize = limit,
-                maxTracks = limit,
-                forceRefresh = true
-            )
-            playlist.copy(
-                trackCount = tracks.takeIf { it.isNotEmpty() }?.size ?: playlist.trackCount,
-                tracks = tracks
-            )
+        val semaphore = Semaphore(4)
+        val progressMutex = Mutex()
+        var completedCount = 0
+        val enrichedPlaylists = coroutineScope {
+            remotePlaylists.map { playlist ->
+                async {
+                    semaphore.withPermit {
+                        progressMutex.withLock {
+                            completedCount++
+                            onProgressUpdate("Fetching tracks for \"${playlist.name}\" ($completedCount/$totalPlaylists) from ${playlist.source.name}...")
+                        }
+                        val tracks = getPlaylistTracksWithCache(
+                            sourceType = playlist.source,
+                            playlistId = playlist.id,
+                            offset = 0,
+                            pageSize = limit,
+                            maxTracks = limit,
+                            forceRefresh = true
+                        )
+                        playlist.copy(
+                            trackCount = tracks.takeIf { it.isNotEmpty() }?.size ?: playlist.trackCount,
+                            tracks = tracks
+                        )
+                    }
+                }
+            }.map { it.await() }
         }
 
         onProgressUpdate("Saving playlist data...")
@@ -287,13 +311,25 @@ class ProviderCatalogRepository @Inject constructor(
                 val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
                 if (!spotify?.token.isNullOrBlank()) {
                     val spotifyPageSize = effectivePageSize.coerceAtMost(100)
-                    loadAllPages(pageLimit = spotifyPageSize) { pageOffset, pageLimit ->
-                        spotifyClient.getPlaylistTracks(
+                    val allTracks = mutableListOf<Track>()
+                    var currentOffset = offset.coerceAtLeast(0)
+                    while (true) {
+                        val page = spotifyClient.getPlaylistTracksPage(
                             accessToken = spotify.token,
                             playlistId = resolvedPlaylistId,
-                            offset = pageOffset,
-                            limit = pageLimit
+                            offset = currentOffset,
+                            limit = spotifyPageSize
                         )
+                        if (page.tracks.isEmpty()) break
+                        allTracks += page.tracks
+                        if (maxTracks != null && allTracks.size >= maxTracks) break
+                        currentOffset += spotifyPageSize
+                        if (currentOffset >= page.total) break
+                    }
+                    if (maxTracks != null && allTracks.size > maxTracks) {
+                        allTracks.take(maxTracks)
+                    } else {
+                        allTracks
                     }
                 } else {
                     emptyList()

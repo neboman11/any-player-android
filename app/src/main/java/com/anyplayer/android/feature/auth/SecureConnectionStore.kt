@@ -27,17 +27,24 @@ class SecureConnectionStore @Inject constructor(
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
+    private val cache = mutableMapOf<SourceType, StoredConnection?>()
+
     fun save(connection: StoredConnection) {
         prefs.edit().putString(connection.source.name, json.encodeToString(connection)).apply()
+        cache[connection.source] = connection
     }
 
     fun remove(source: SourceType) {
         prefs.edit().remove(source.name).apply()
+        cache.remove(source)
     }
 
     fun read(source: SourceType): StoredConnection? {
+        cache[source]?.let { return it }
         val payload = prefs.getString(source.name, null) ?: return null
-        return json.decodeFromString(StoredConnection.serializer(), payload)
+        val connection = json.decodeFromString(StoredConnection.serializer(), payload)
+        cache[source] = connection
+        return connection
     }
 
     fun readAll(): List<StoredConnection> =

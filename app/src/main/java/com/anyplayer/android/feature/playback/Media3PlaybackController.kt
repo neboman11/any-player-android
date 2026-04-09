@@ -7,6 +7,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
@@ -20,7 +21,18 @@ import javax.inject.Singleton
 class Media3PlaybackController @Inject constructor(
     @ApplicationContext context: Context
 ) {
-    private val playerInstance: ExoPlayer = ExoPlayer.Builder(context).build().apply {
+    private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    30_000,
+                    60_000,
+                    1_000,
+                    3_000
+                )
+                .build()
+        )
+        .build().apply {
         setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -183,124 +184,141 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val upcomingTracks = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
     val pastTracks    = if (currentIdx >  0) displayQueue.take(currentIdx)     else emptyList()
 
-    Column(
-        modifier = Modifier.verticalScroll(rememberScrollState()),
+    LazyColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
-            ElevatedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f),
-                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                AsyncImage(
-                    model = artworkUrl,
-                    contentDescription = "Album artwork",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+            item {
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f),
+                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    AsyncImage(
+                        model = artworkUrl,
+                        contentDescription = "Album artwork",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
 
-        Text("Track: ${status.currentTrack?.title ?: "-"}")
-        Text("Artist: ${status.currentTrack?.artist ?: "-"}")
-        Text("State: ${status.state}")
+        item {
+            Text("Track: ${status.currentTrack?.title ?: "-"}")
+        }
+        item {
+            Text("Artist: ${status.currentTrack?.artist ?: "-"}")
+        }
+        item {
+            Text("State: ${status.state}")
+        }
         if (playbackDisabledMessage != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = playbackDisabledMessage,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(14.dp)
-                )
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = playbackDisabledMessage,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(14.dp)
+                    )
+                }
             }
         }
         status.errorMessage?.let { err ->
-            Text(
-                text = "Error: $err",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = viewModel::previous) { Text("Previous") }
-            Button(
-                onClick = viewModel::togglePlayPause,
-                enabled = playbackDisabledMessage == null
-            ) { Text("Play/Pause") }
-            Button(onClick = viewModel::next) { Text("Next") }
-        }
-
-        Slider(
-            value = status.position.toFloat(),
-            valueRange = 0f..(status.duration.takeIf { it > 0 } ?: 1L).toFloat(),
-            onValueChange = { viewModel.seekTo(it.toLong()) }
-        )
-        Slider(
-            value = status.volume.toFloat(),
-            valueRange = 0f..100f,
-            onValueChange = { viewModel.setVolume(it.toInt()) }
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = status.shuffle,
-                onClick = { viewModel.setShuffle(!status.shuffle) },
-                label = { Text("Shuffle") }
-            )
-            RepeatMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = status.repeatMode == mode,
-                    onClick = { viewModel.setRepeatMode(mode) },
-                    label = { Text(mode.name) }
+            item {
+                Text(
+                    text = "Error: $err",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
                 )
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = viewModel::previous) { Text("Previous") }
+                Button(
+                    onClick = viewModel::togglePlayPause,
+                    enabled = playbackDisabledMessage == null
+                ) { Text("Play/Pause") }
+                Button(onClick = viewModel::next) { Text("Next") }
+            }
+        }
+
+        item {
+            Slider(
+                value = status.position.toFloat(),
+                valueRange = 0f..(status.duration.takeIf { it > 0 } ?: 1L).toFloat(),
+                onValueChange = { viewModel.seekTo(it.toLong()) }
+            )
+        }
+        item {
+            Slider(
+                value = status.volume.toFloat(),
+                valueRange = 0f..100f,
+                onValueChange = { viewModel.setVolume(it.toInt()) }
+            )
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = status.shuffle,
+                    onClick = { viewModel.setShuffle(!status.shuffle) },
+                    label = { Text("Shuffle") }
+                )
+                RepeatMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = status.repeatMode == mode,
+                        onClick = { viewModel.setRepeatMode(mode) },
+                        label = { Text(mode.name) }
+                    )
+                }
             }
         }
 
         if (upcomingTracks.isNotEmpty() || pastTracks.isNotEmpty()) {
-            Text("Up Next")
-            QueueTableHeader()
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                upcomingTracks.forEach { track ->
+            item { Text("Up Next") }
+            item { QueueTableHeader() }
+            items(upcomingTracks, key = { it.id }) { track ->
+                QueueTrackRow(
+                    track = track,
+                    onPlay = {
+                        val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
+                        if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)
+                    }
+                )
+            }
+
+            if (pastTracks.isNotEmpty()) {
+                item {
+                    Text(
+                        "${pastTracks.size} track${if (pastTracks.size == 1) "" else "s"} already played",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                item { QueueTableHeader() }
+                items(pastTracks, key = { it.id }) { track ->
                     QueueTrackRow(
                         track = track,
                         onPlay = {
                             val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
                             if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)
-                        }
+                        },
+                        subdued = true
                     )
                 }
             }
-
-            if (pastTracks.isNotEmpty()) {
-                Text(
-                    "${pastTracks.size} track${if (pastTracks.size == 1) "" else "s"} already played",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                QueueTableHeader()
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    pastTracks.forEach { track ->
-                        QueueTrackRow(
-                            track = track,
-                            onPlay = {
-                                val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
-                                if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)
-                            },
-                            subdued = true
-                        )
-                    }
-                }
-            }
         } else if (displayQueue.isEmpty()) {
-            Text("No queue loaded", style = MaterialTheme.typography.bodySmall)
+            item { Text("No queue loaded", style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
@@ -487,7 +505,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
 
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(sortedProviderTracks) { _, row ->
+                    itemsIndexed(sortedProviderTracks, key = { _, row -> row.track.id }) { _, row ->
                         TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.")
                     }
                 }
@@ -700,7 +718,7 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
 
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(sortedCustomTracks) { _, row ->
+                    itemsIndexed(sortedCustomTracks, key = { _, row -> row.track.id }) { _, row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(onClick = {
                                 viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, row.originalIndex)
@@ -954,7 +972,7 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
             )
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                itemsIndexed(sortedSearchTracks) { _, row ->
+                itemsIndexed(sortedSearchTracks, key = { _, row -> row.track.id }) { _, row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button(onClick = { viewModel.playFromSearch(row.originalIndex) }) { Text("Play") }
                         TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.", modifier = Modifier.weight(1f))
@@ -968,7 +986,7 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                itemsIndexed(state.searchPlaylistResults) { index, playlist ->
+                itemsIndexed(state.searchPlaylistResults, key = { _, playlist -> "${playlist.source}_${playlist.id}" }) { index, playlist ->
                     Button(onClick = { viewModel.playPlaylistFromSearch(index) }) {
                         Text("${playlist.name} (${playlist.source.name.lowercase()}) • ${playlist.trackCount}")
                     }
