@@ -15,9 +15,11 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.playback.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import androidx.media3.common.util.UnstableApi
 import javax.inject.Singleton
 
 @Singleton
+@UnstableApi
 class Media3PlaybackController @Inject constructor(
     @ApplicationContext context: Context
 ) {
