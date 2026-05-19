@@ -578,10 +578,10 @@ class PlaybackQueueManager @Inject constructor(
                     }
                     ok
                 }
-                if (success && state.state != PlaybackStateType.PLAYING) {
+                val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
+                if (success && nextState == PlaybackStateType.PLAYING) {
                     spotifyQueueRequiresReload = false
                 }
-                val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
                 mutableStatus.value = state.copy(
                     state = nextState,
                     errorMessage = if (!success) spotifyErrorOrDefault("Spotify command failed") else null
