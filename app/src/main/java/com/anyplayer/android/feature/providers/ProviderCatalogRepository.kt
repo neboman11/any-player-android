@@ -486,8 +486,8 @@ class ProviderCatalogRepository @Inject constructor(
             return@withContext ProviderSearchResult()
         }
 
-        // All provider search uses the Rust provider bridge; Spotify search
-        // goes through the Rust bridge as well (no Kotlin fallback).
+        // Provider search prefers the Rust provider bridge where available.
+        // Spotify search falls back to the Kotlin spotifyClient when Rust is unavailable.
         val jelly = secureConnectionStore.read(SourceType.JELLYFIN)
         val plex = secureConnectionStore.read(SourceType.PLEX)
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
