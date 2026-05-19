@@ -1,6 +1,6 @@
 package com.anyplayer.android.feature.playback
 
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
@@ -10,6 +10,8 @@ import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,6 +32,8 @@ class SpotifyPlaybackController @Inject constructor(
         private const val TAG = "SpotifyPlaybackCtrl"
     }
 
+    private val rustCommandMutex = Mutex()
+
     /** Human-readable reason for the most recent operation failure. Null when healthy. */
     @Volatile var lastError: String? = null
         private set
@@ -41,7 +45,8 @@ class SpotifyPlaybackController @Inject constructor(
      * directly to the Rust engine for gapless, in-process audio output.
      */
     suspend fun startQueue(trackIds: List<String>, startIndex: Int): Boolean =
-        withContext(Dispatchers.IO) {
+        rustCommandMutex.withLock {
+            withContext(Dispatchers.IO) {
             if (trackIds.isEmpty()) {
                 lastError = "Spotify queue is empty"
                 return@withContext false
@@ -61,6 +66,7 @@ class SpotifyPlaybackController @Inject constructor(
 
             lastError = null
             true
+            }
         }
 
     suspend fun play(): Boolean = runRustCommand("play") { rustBridge.spotifyPlay() }
@@ -92,7 +98,7 @@ class SpotifyPlaybackController @Inject constructor(
         if (result != null) return result
         val errorMessage =
             "Failed to set audio normalization settings. ${rustBridge.lastError ?: ""}".trim()
-        Log.e(TAG, errorMessage)
+        CompatLog.e(TAG, errorMessage)
         lastError = errorMessage
         return false
     }
@@ -103,8 +109,10 @@ class SpotifyPlaybackController @Inject constructor(
     suspend fun setRepeatMode(mode: RepeatMode): Boolean =
         runRustCommand("setRepeatMode") { rustBridge.spotifySetRepeatMode(mode) }
 
-    suspend fun snapshot(): SpotifyPlaybackState? = withContext(Dispatchers.IO) {
-        rustBridge.spotifySnapshot()
+    suspend fun snapshot(): SpotifyPlaybackState? = rustCommandMutex.withLock {
+        withContext(Dispatchers.IO) {
+            rustBridge.spotifySnapshot()
+        }
     }
 
     /**
@@ -114,20 +122,22 @@ class SpotifyPlaybackController @Inject constructor(
     private suspend fun runRustCommand(
         action: String,
         block: () -> Boolean?
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (requireReadyAccessToken() == null) {
-            return@withContext false
-        }
+    ): Boolean = rustCommandMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (requireReadyAccessToken() == null) {
+                return@withContext false
+            }
 
-        val success = block()
-        if (success != true) {
-            lastError = "Rust Spotify playback command failed: $action. ${rustBridge.lastError ?: ""}"
-            Log.w(TAG, "Rust command '$action' failed: ${rustBridge.lastError}")
-            return@withContext false
-        }
+            val success = block()
+            if (success != true) {
+                lastError = "Rust Spotify playback command failed: $action. ${rustBridge.lastError ?: ""}"
+                CompatLog.w(TAG, "Rust command '$action' failed: ${rustBridge.lastError}")
+                return@withContext false
+            }
 
-        lastError = null
-        true
+            lastError = null
+            true
+        }
     }
 
     private suspend fun requireReadyAccessToken(): String? {

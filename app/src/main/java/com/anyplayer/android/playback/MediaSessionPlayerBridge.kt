@@ -1,6 +1,6 @@
 package com.anyplayer.android.playback
 
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import androidx.media3.common.C
 import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
@@ -57,13 +57,13 @@ class MediaSessionPlayerBridge @Inject constructor(
     init {
         scope.launch {
             var prev = currentStatusSnapshot
-            Log.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
+            CompatLog.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
             playbackQueueManager.status.collect { status ->
                 if (status === prev) return@collect
                 val prevSnap = prev
                 prev = status
                 currentStatusSnapshot = status
-                Log.d(TAG, "StateFlow emitted: ${prevSnap.state}->${status.state} track=${status.currentTrack?.id} listeners=${listeners.size}")
+                CompatLog.d(TAG, "StateFlow emitted: ${prevSnap.state}->${status.state} track=${status.currentTrack?.id} listeners=${listeners.size}")
 
                 val newState    = mapState(status.state)
                 val prevState   = mapState(prevSnap.state)
@@ -88,7 +88,7 @@ class MediaSessionPlayerBridge @Inject constructor(
                 if (commandsChanged)          eventBits.add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
                 val playerEvents = Player.Events(eventBits.build())
 
-                Log.d(TAG, "Firing events: stateCh=${ newState != prevState} playingCh=${nowPlaying != wasPlaying} trackCh=$trackChanged cmdCh=$commandsChanged")
+                CompatLog.d(TAG, "Firing events: stateCh=${ newState != prevState} playingCh=${nowPlaying != wasPlaying} trackCh=$trackChanged cmdCh=$commandsChanged")
                 listeners.forEach { l ->
                     if (newState != prevState)    l.onPlaybackStateChanged(newState)
                     if (nowPlaying != wasPlaying) l.onIsPlayingChanged(nowPlaying)
@@ -110,14 +110,18 @@ class MediaSessionPlayerBridge @Inject constructor(
     // Bootstrap each new listener with the current state immediately so the session
     // and DefaultMediaNotificationProvider are in sync from the moment they register.
     override fun addListener(listener: Player.Listener) {
-        Log.d(TAG, "addListener: ${listener.javaClass.simpleName} (total after=${listeners.size + 1})")
+        if (listeners.contains(listener)) {
+            CompatLog.d(TAG, "addListener: ${listener.javaClass.simpleName} already registered")
+            return
+        }
+        CompatLog.d(TAG, "addListener: ${listener.javaClass.simpleName} (total after=${listeners.size + 1})")
         listeners.add(listener)
         scope.launch {
             val status   = currentStatus()
             val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
             val state    = mapState(status.state)
             val playing  = status.state == PlaybackStateType.PLAYING
-            Log.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
+            CompatLog.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
             listener.onPlaybackStateChanged(state)
             listener.onIsPlayingChanged(playing)
             if (hasTrack) listener.onMediaItemTransition(
@@ -140,8 +144,10 @@ class MediaSessionPlayerBridge @Inject constructor(
         }
     }
     override fun removeListener(listener: Player.Listener) {
-        Log.d(TAG, "removeListener: ${listener.javaClass.simpleName}")
-        listeners.remove(listener)
+        CompatLog.d(TAG, "removeListener: ${listener.javaClass.simpleName}")
+        while (listeners.remove(listener)) {
+            // Remove all stale duplicate registrations, if any exist.
+        }
     }
 
     // State — always from PlaybackQueueManager
@@ -216,7 +222,7 @@ class MediaSessionPlayerBridge @Inject constructor(
                 if (status.state == PlaybackStateType.PLAYING) {
                     playbackQueueManager.pause()
                 }
-                Log.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
+                CompatLog.w(TAG, "Blocked MediaSession play: current track provider is not configured/authenticated")
             }
         }
     }
