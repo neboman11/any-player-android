@@ -99,6 +99,66 @@ class ProviderCatalogRepositoryTest {
     }
 
     @Test
+    fun getPlaylistTracks_spotifyFallbackAdvancesByRequestedPageSize() = runTest {
+        whenever(rustBridge.isAvailable()).thenReturn(false)
+        whenever(secureConnectionStore.read(SourceType.SPOTIFY)).thenReturn(
+            StoredConnection(
+                source = SourceType.SPOTIFY,
+                token = "spotify-token",
+                spotifyPremium = false,
+                playbackReady = false
+            )
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 0,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(
+                tracks = listOf(sampleTrack(id = "sp-track-1", source = SourceType.SPOTIFY)),
+                total = 250
+            )
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 100,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(tracks = emptyList(), total = 250)
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 200,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(
+                tracks = listOf(sampleTrack(id = "sp-track-2", source = SourceType.SPOTIFY)),
+                total = 250
+            )
+        )
+
+        val result = repository.getPlaylistTracks(
+            sourceType = SourceType.SPOTIFY,
+            playlistId = "sp-playlist"
+        )
+
+        assertEquals(listOf("sp-track-1", "sp-track-2"), result.map { it.id })
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 100, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 200, 100)
+        verify(spotifyClient, never()).getPlaylistTracksPage("spotify-token", "sp-playlist", 1, 100)
+    }
+
+    @Test
     fun search_spotifyQueriesRunWithTokenOnly() = runTest {
         val spotifyTrack = sampleTrack(id = "s-1", source = SourceType.SPOTIFY)
         val spotifyPlaylist = samplePlaylist(id = "p-1", source = SourceType.SPOTIFY)

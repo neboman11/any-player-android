@@ -8,36 +8,42 @@ package com.anyplayer.android.core.log
  * stdout when android.util.Log isn't present.
  */
 object CompatLog {
-    private fun tryAndroidLog(block: () -> Unit) {
+    private fun tryAndroidLog(block: () -> Unit): Boolean {
         try {
             block()
+            return true
         } catch (t: Throwable) {
             // android.util.Log methods throw in plain JVM tests ("not mocked").
             // Fall back to stdout instead of letting the exception escape tests.
             // Deliberately swallow the original exception after printing for debugging.
+            return false
         }
     }
 
     fun d(tag: String, msg: String) {
-        tryAndroidLog { android.util.Log.d(tag, msg) }
-        println("D/$tag: $msg")
+        if (!tryAndroidLog { android.util.Log.d(tag, msg) }) {
+            println("D/$tag: $msg")
+        }
     }
 
     fun i(tag: String, msg: String) {
-        tryAndroidLog { android.util.Log.i(tag, msg) }
-        println("I/$tag: $msg")
+        if (!tryAndroidLog { android.util.Log.i(tag, msg) }) {
+            println("I/$tag: $msg")
+        }
     }
 
     fun w(tag: String, msg: String) {
-        tryAndroidLog { android.util.Log.w(tag, msg) }
-        println("W/$tag: $msg")
+        if (!tryAndroidLog { android.util.Log.w(tag, msg) }) {
+            println("W/$tag: $msg")
+        }
     }
 
     fun e(tag: String, msg: String, t: Throwable? = null) {
-        tryAndroidLog {
+        if (!tryAndroidLog {
             if (t != null) android.util.Log.e(tag, msg, t) else android.util.Log.e(tag, msg)
+        }) {
+            println("E/$tag: $msg")
+            t?.printStackTrace()
         }
-        println("E/$tag: $msg")
-        t?.printStackTrace()
     }
 }

@@ -76,6 +76,7 @@ class CustomPlaylistEngineReplaceSourcesTest {
 
         // Verify replace called
         verify(storageRepository).replaceUnionSources(eq(playlistId), eq(newSources))
+        verify(storageRepository).clearCachedUnionPlaylistTracks(playlistId)
 
         // Verify upsertCustomPlaylists was called with updated trackCount = 1
         val captor = argumentCaptor<List<com.anyplayer.android.core.model.CustomPlaylist>>()

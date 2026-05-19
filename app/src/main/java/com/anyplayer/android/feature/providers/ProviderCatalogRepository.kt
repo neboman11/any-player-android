@@ -336,12 +336,12 @@ class ProviderCatalogRepository @Inject constructor(
                                     offset = currentOffset,
                                     limit = pageSize
                                 )
-                                if (page.tracks.isEmpty()) break
                                 allTracks += page.tracks
-                                total = page.total.coerceAtLeast(allTracks.size)
+                                total = page.total.coerceAtLeast(0)
                                 if (maxTracks != null && allTracks.size >= maxTracks) break
-                                if (allTracks.size >= total) break
-                                currentOffset += page.tracks.size
+                                val nextOffset = currentOffset + pageSize
+                                if (nextOffset >= total) break
+                                currentOffset = nextOffset
                             }
                             if (maxTracks != null && allTracks.size > maxTracks) allTracks.take(maxTracks) else allTracks
                         }

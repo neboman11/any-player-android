@@ -180,6 +180,7 @@ class CustomPlaylistEngine @Inject constructor(
      */
     suspend fun replaceUnionSources(unionPlaylistId: String, sources: List<UnionPlaylistSource>) {
         storageRepository.replaceUnionSources(unionPlaylistId, sources.reindexedUnion())
+        storageRepository.clearCachedUnionPlaylistTracks(unionPlaylistId)
         refreshUnionTrackCount(unionPlaylistId)
     }
 
