@@ -253,16 +253,23 @@ internal fun buildJellyfinRequestHeaders(
     if (connection?.source != SourceType.JELLYFIN) return emptyMap()
 
     val token = connection.token?.trim().orEmpty()
-    val serverAuthority = connection.serverUrl
+    val serverUri = connection.serverUrl
         ?.trim()
         ?.takeIf { it.isNotBlank() }
         ?.let(Uri::parse)
-        ?.authority
-        ?.lowercase()
-        .orEmpty()
+    val serverAuthority = serverUri?.authority?.lowercase().orEmpty()
+    val serverScheme = serverUri?.scheme?.lowercase().orEmpty()
     val requestAuthority = requestUri.authority?.lowercase().orEmpty()
+    val requestScheme = requestUri.scheme?.lowercase().orEmpty()
 
-    if (token.isBlank() || serverAuthority.isBlank() || serverAuthority != requestAuthority) {
+    if (
+        token.isBlank() ||
+        serverAuthority.isBlank() ||
+        serverScheme.isBlank() ||
+        requestScheme.isBlank() ||
+        serverAuthority != requestAuthority ||
+        serverScheme != requestScheme
+    ) {
         return emptyMap()
     }
 

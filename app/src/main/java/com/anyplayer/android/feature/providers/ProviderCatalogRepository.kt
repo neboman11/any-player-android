@@ -225,8 +225,8 @@ class ProviderCatalogRepository @Inject constructor(
         pageSize: Int? = null,
         maxTracks: Int? = null
     ): List<Track> = withContext(Dispatchers.IO) {
-        // All provider track fetching uses the Rust provider bridge.
-        // Spotify no longer has a Kotlin fallback and is fetched via the Rust bridge.
+        // Provider track fetching prefers the Rust provider bridge.
+        // Spotify falls back to SpotifyClient pagination when the Rust bridge is unavailable.
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         
         // Get the configured page size for this provider, or use default.
@@ -263,10 +263,9 @@ class ProviderCatalogRepository @Inject constructor(
                 if (jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
                     try {
                         loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->
-                            val requestedPageSize = (pageOffset + pageLimit)
                             rustBridge.providerGetPlaylistTracks(
                                 source = SourceType.JELLYFIN,
-                                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, requestedPageSize),
+                                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, pageLimit),
                                 playlistId = resolvedPlaylistId,
                                 offset = pageOffset,
                                 limit = pageLimit
@@ -285,10 +284,9 @@ class ProviderCatalogRepository @Inject constructor(
                 if (plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
                     try {
                         loadAllPages(pageLimit = effectivePageSize) { pageOffset, pageLimit ->
-                            val requestedPageSize = (pageOffset + pageLimit)
                             rustBridge.providerGetPlaylistTracks(
                                 source = SourceType.PLEX,
-                                session = buildPlexSession(plex.serverUrl, plex.token, requestedPageSize),
+                                session = buildPlexSession(plex.serverUrl, plex.token, pageLimit),
                                 playlistId = resolvedPlaylistId,
                                 offset = pageOffset,
                                 limit = pageLimit
@@ -314,10 +312,9 @@ class ProviderCatalogRepository @Inject constructor(
                         if (rustBridge.isAvailable()) {
                             val spotifyPageSize = effectivePageSize.coerceAtMost(100)
                             loadAllPages(pageLimit = spotifyPageSize) { pageOffset, pageLimit ->
-                                val requestedPageSize = (pageOffset + pageLimit)
                                 rustBridge.providerGetPlaylistTracks(
                                     source = SourceType.SPOTIFY,
-                                    session = buildSpotifySession(spotify.token, spotify.refreshToken, requestedPageSize),
+                                    session = buildSpotifySession(spotify.token, spotify.refreshToken, pageLimit),
                                     playlistId = resolvedPlaylistId,
                                     offset = pageOffset,
                                     limit = pageLimit

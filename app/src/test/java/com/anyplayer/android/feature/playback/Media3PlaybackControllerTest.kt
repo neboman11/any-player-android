@@ -51,4 +51,22 @@ class Media3PlaybackControllerTest {
 
         assertTrue(headers.isEmpty())
     }
+
+    @Test
+    fun buildJellyfinRequestHeaders_returnsEmptyForDifferentScheme() {
+        val headers = buildJellyfinRequestHeaders(
+            requestUri = Uri.parse("http://jellyfin.example.com/Audio/track-1/universal"),
+            connection = StoredConnection(
+                source = SourceType.JELLYFIN,
+                serverUrl = "https://jellyfin.example.com",
+                token = "token-123"
+            ),
+            clientName = "Any Player",
+            deviceName = "Pixel",
+            deviceId = "device-1",
+            version = "1.0.0"
+        )
+
+        assertTrue(headers.isEmpty())
+    }
 }

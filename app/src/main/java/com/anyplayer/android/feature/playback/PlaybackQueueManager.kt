@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
@@ -61,6 +60,7 @@ class PlaybackQueueManager @Inject constructor(
     private var manualSkipInFlight = false
     private var lastAcknowledgedEndOfTrackCount = 0L
     private var spotifyCurrentQueueIndex = 0
+    private var spotifyQueueRequiresReload = false
     private var persistTickCounter = 0
     private var lastPersistFingerprint = 0L
     /** O(1) track-ID → queue-index lookup; rebuilt by [rebuildQueueCaches]. */
@@ -228,6 +228,7 @@ class PlaybackQueueManager @Inject constructor(
             resetSpotifyRecoveryState()
             resetMixedMediaEndStallState()
             playableQueueIndices = emptyList()
+            spotifyQueueRequiresReload = false
             rebuildQueueCaches(emptyList())
             media3PlaybackController.setQueue(emptyList(), 0, false)
             mutableStatus.value = mutableStatus.value.copy(
@@ -266,6 +267,7 @@ class PlaybackQueueManager @Inject constructor(
             // Only start the Spotify queue when autoPlay is true. startQueue() begins playback
             // immediately; when autoPlay is false we defer until play()/togglePlayPause() is called,
             // which falls back to startQueue() when resume fails.
+            spotifyQueueRequiresReload = !autoPlay
             if (autoPlay) {
                 scope.launch {
                     var started = spotifyPlaybackController.startQueue(cachedQueueTrackIds, index)
@@ -274,8 +276,10 @@ class PlaybackQueueManager @Inject constructor(
                         started = spotifyPlaybackController.startQueue(cachedQueueTrackIds, index)
                     }
                     if (started) {
+                        spotifyQueueRequiresReload = false
                         spotifyPlaybackController.setVolume(mutableStatus.value.volume)
                     } else {
+                        spotifyQueueRequiresReload = true
                         mutableStatus.value = mutableStatus.value.copy(
                             state = PlaybackStateType.ERROR,
                             errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
@@ -318,6 +322,7 @@ class PlaybackQueueManager @Inject constructor(
             return
         }
 
+        spotifyQueueRequiresReload = false
         playableQueueIndices = tracks.mapIndexedNotNull { queueIndex, track ->
             queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
         }
@@ -415,11 +420,16 @@ class PlaybackQueueManager @Inject constructor(
                 if (wasPlaying) {
                     val started = spotifyPlaybackController.startQueue(spotifyTrackIds, currentSpotifyIndex)
                     if (started) {
+                        spotifyQueueRequiresReload = false
                         if (currentPositionMs > 0) {
                             spotifyPlaybackController.seekTo(currentPositionMs)
                         }
                         spotifyPlaybackController.setVolume(mutableStatus.value.volume)
+                    } else {
+                        spotifyQueueRequiresReload = true
                     }
+                } else {
+                    spotifyQueueRequiresReload = true
                 }
             }
         } else if (!mixedMode) {
@@ -461,6 +471,7 @@ class PlaybackQueueManager @Inject constructor(
                     ?: target.coerceIn(0, activeTrackIds.lastIndex)
                 val started = spotifyPlaybackController.startQueue(activeTrackIds, activeIndex)
                 if (started) {
+                    spotifyQueueRequiresReload = false
                     spotifyCurrentQueueIndex = activeIndex
                     spotifyPlaybackController.setVolume(mutableStatus.value.volume)
                 }
@@ -549,13 +560,26 @@ class PlaybackQueueManager @Inject constructor(
                     // Try to resume first (works if track is already loaded/paused).
                     // If that fails (e.g. player is in Stopped state after app restart),
                     // fall back to reloading the queue and playing from the current track.
-                    var ok = spotifyPlaybackController.play()
+                    var ok = if (spotifyQueueRequiresReload && state.queue.isNotEmpty()) {
+                        val activeTrackIds = spotifyPlaybackTrackIds(state)
+                        val currentIndex = resolveSpotifyQueueIndex(state)
+                        val started = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
+                        if (started && state.position > 0L) {
+                            spotifyPlaybackController.seekTo(state.position)
+                        }
+                        started
+                    } else {
+                        spotifyPlaybackController.play()
+                    }
                     if (!ok && state.queue.isNotEmpty()) {
                         val activeTrackIds = spotifyPlaybackTrackIds(state)
                         val currentIndex = resolveSpotifyQueueIndex(state)
                         ok = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
                     }
                     ok
+                }
+                if (success && state.state != PlaybackStateType.PLAYING) {
+                    spotifyQueueRequiresReload = false
                 }
                 val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
                 mutableStatus.value = state.copy(
@@ -618,11 +642,24 @@ class PlaybackQueueManager @Inject constructor(
                 // Try to resume first (works if track is already loaded/paused).
                 // If that fails (e.g. player is in Stopped state after app restart),
                 // fall back to reloading the queue and playing from the current track.
-                var success = spotifyPlaybackController.play()
+                var success = if (spotifyQueueRequiresReload && state.queue.isNotEmpty()) {
+                    val activeTrackIds = spotifyPlaybackTrackIds(state)
+                    val currentIndex = resolveSpotifyQueueIndex(state)
+                    val started = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
+                    if (started && state.position > 0L) {
+                        spotifyPlaybackController.seekTo(state.position)
+                    }
+                    started
+                } else {
+                    spotifyPlaybackController.play()
+                }
                 if (!success && state.queue.isNotEmpty()) {
                     val activeTrackIds = spotifyPlaybackTrackIds(state)
                     val currentIndex = resolveSpotifyQueueIndex(state)
                     success = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
+                }
+                if (success) {
+                    spotifyQueueRequiresReload = false
                 }
                 mutableStatus.value = mutableStatus.value.copy(
                     state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
@@ -780,9 +817,11 @@ class PlaybackQueueManager @Inject constructor(
                 if (wasPlaying && activeTrackIds.isNotEmpty()) {
                     val started = spotifyPlaybackController.startQueue(activeTrackIds, activeIndex)
                     if (started) {
+                        spotifyQueueRequiresReload = false
                         spotifyCurrentQueueIndex = activeIndex
                         spotifyPlaybackController.setVolume(latestState.volume)
                     } else {
+                        spotifyQueueRequiresReload = true
                         mutableStatus.value = mutableStatus.value.copy(
                             state = PlaybackStateType.ERROR,
                             errorMessage = spotifyErrorOrDefault("Spotify failed to apply shuffled queue")
@@ -792,6 +831,9 @@ class PlaybackQueueManager @Inject constructor(
                     mutableStatus.value = mutableStatus.value.copy(
                         errorMessage = spotifyErrorOrDefault("Spotify failed to change shuffle mode")
                     )
+                }
+                if (!wasPlaying) {
+                    spotifyQueueRequiresReload = true
                 }
                 persistStateAsync()
             }
@@ -1293,6 +1335,7 @@ class PlaybackQueueManager @Inject constructor(
             val expectedTrackId = restoreTrackIds.getOrNull(restoreStartIndex)
             val started = spotifyPlaybackController.startQueue(restoreTrackIds, restoreStartIndex)
             if (started) {
+                spotifyQueueRequiresReload = false
                 spotifyPlaybackController.setVolume(mutableStatus.value.volume)
                 if (expectedTrackId != null && persisted.positionMs > 0) {
                     var readyForSeek = false
@@ -1562,6 +1605,7 @@ class PlaybackQueueManager @Inject constructor(
         val safeIndex = targetIndex.coerceIn(0, activeTrackIds.lastIndex)
         val started = spotifyPlaybackController.startQueue(activeTrackIds, safeIndex)
         if (started) {
+            spotifyQueueRequiresReload = false
             spotifyCurrentQueueIndex = safeIndex
             spotifyPlaybackController.setVolume(state.volume)
         }

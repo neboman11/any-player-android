@@ -61,8 +61,8 @@ interface ProviderAuthRepository {
  */
 suspend fun ProviderAuthRepository.isSourceConnected(source: SourceType?): Boolean {
     if (source == null || source == SourceType.CUSTOM || source == SourceType.ALL) return true
-    return runCatching { status(source).connected }.getOrElse { e ->
-        CompatLog.w("ProviderAuth", "Unable to verify provider state for $source; allowing playback")
+    return runCatching { status(source).connected }.getOrElse { error ->
+        CompatLog.e("ProviderAuth", "Unable to verify provider state for $source; allowing playback", error)
         true
     }
 }

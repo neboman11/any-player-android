@@ -17,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -254,6 +255,17 @@ class ProviderCatalogRepositoryTest {
 
         assertEquals(450, result.size)
         assertEquals(page1 + page2, result)
+
+        val sessionCaptor = argumentCaptor<Map<String, String>>()
+        verify(rustBridge, times(2)).providerGetPlaylistTracks(
+            source = eq(SourceType.JELLYFIN),
+            session = sessionCaptor.capture(),
+            playlistId = eq("jf-playlist"),
+            offset = any(),
+            limit = eq(PROVIDER_PAGE_SIZE)
+        )
+        assertEquals(PROVIDER_PAGE_SIZE.toString(), sessionCaptor.firstValue["page_size"])
+        assertEquals(PROVIDER_PAGE_SIZE.toString(), sessionCaptor.secondValue["page_size"])
     }
 
     @Test

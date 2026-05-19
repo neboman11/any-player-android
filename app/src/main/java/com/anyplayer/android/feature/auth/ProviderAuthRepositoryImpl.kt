@@ -251,8 +251,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     clientId = SpotifyClientIds.ACTIVE,
                     refreshToken = refreshToken
                 )
-            }.onFailure { e ->
-                CompatLog.w(TAG, "Spotify token refresh network call failed")
+            }.onFailure { error ->
+                CompatLog.e(TAG, "Spotify token refresh network call failed", error)
             }.getOrNull() ?: return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
 
             val refreshedToken = refreshed.accessToken.trim()
@@ -268,8 +268,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     tokenExpiresAt = refreshedTokenExpiresAt
                 )
             )
-            runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { e ->
-                CompatLog.w(TAG, "Failed to save refreshed Spotify token")
+            runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { error ->
+                CompatLog.e(TAG, "Failed to save refreshed Spotify token", error)
             }
             refreshedToken
         }
