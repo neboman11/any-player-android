@@ -1,6 +1,6 @@
 package com.anyplayer.android.core.rust
 
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 
 internal object RustBridgeNative {
     private const val TAG = "RustBridgeNative"
@@ -10,7 +10,7 @@ internal object RustBridgeNative {
             System.loadLibrary("any_player_ffi_android")
             true
         }.getOrElse { error ->
-            Log.w(TAG, "Rust JNI library unavailable; Kotlin fallback remains active", error)
+            CompatLog.w(TAG, "Rust JNI library unavailable; Kotlin fallback remains active")
             false
         }
     }

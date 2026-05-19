@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.network.SpotifyClient
+import com.anyplayer.android.core.network.SpotifyPlaylistTracksPage
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
@@ -80,13 +81,13 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracks(
+            spotifyClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 0,
                 limit = 100
             )
-        ).thenReturn(listOf(spotifyTrack))
+        ).thenReturn(SpotifyPlaylistTracksPage(tracks = listOf(spotifyTrack), total = 1))
 
         val result = repository.getPlaylistTracks(
             sourceType = SourceType.SPOTIFY,
@@ -94,7 +95,7 @@ class ProviderCatalogRepositoryTest {
         )
 
         assertEquals(listOf(spotifyTrack), result)
-        verify(spotifyClient).getPlaylistTracks("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
     }
 
     @Test
@@ -141,13 +142,13 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracks(
+            spotifyClient.getPlaylistTracksPage(
                 accessToken = eq("spotify-token"),
                 playlistId = eq("sp-playlist"),
                 offset = any(),
                 limit = any()
             )
-        ).thenReturn(emptyList())
+        ).thenReturn(SpotifyPlaylistTracksPage(tracks = emptyList(), total = 0))
 
         val result = repository.getPlaylistTracksWithCache(
             sourceType = SourceType.SPOTIFY,
