@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.mockito.kotlin.verify
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -162,6 +163,41 @@ class CustomPlaylistEngineTest {
         assertNull(result[0].album)
         assertEquals("sp-track-4", result[1].id)
         assertEquals(SourceType.SPOTIFY, result[1].source)
+    }
+
+    @Test
+    fun getCachedTracksForPlaylist_unionReturnsPersistedCachedTracks() = runTest {
+        val playlistId = "union-cached"
+        whenever(storageRepository.getCustomPlaylistById(playlistId)).thenReturn(unionPlaylist(playlistId))
+        whenever(storageRepository.getCachedUnionPlaylistTracks(playlistId)).thenReturn(
+            listOf(sampleTrack(id = "cached-track", source = SourceType.SPOTIFY))
+        )
+
+        val result = engine.getCachedTracksForPlaylist(playlistId)
+
+        assertEquals(1, result.size)
+        assertEquals("cached-track", result.first().id)
+    }
+
+    @Test
+    fun materializeUnionTracks_persistsCachedUnionTracks() = runTest {
+        whenever(storageRepository.getUnionSources("union-cache-write")).thenReturn(
+            listOf(unionSource(id = "src-1", sourceType = SourceType.SPOTIFY, sourcePlaylistId = "sp-cache", position = 0))
+        )
+        whenever(
+            providerCatalogRepository.getPlaylistTracksWithCache(
+                eq(SourceType.SPOTIFY),
+                eq("sp-cache"),
+                any(),
+                anyOrNull(),
+                anyOrNull(),
+                any()
+            )
+        ).thenReturn(listOf(sampleTrack(id = "cached-write-track", source = SourceType.SPOTIFY)))
+
+        val result = engine.materializeUnionTracks("union-cache-write")
+
+        verify(storageRepository).saveCachedUnionPlaylistTracks("union-cache-write", result)
     }
 
     // ── Distinct mode: playPlaylist ──────────────────────────────────────────

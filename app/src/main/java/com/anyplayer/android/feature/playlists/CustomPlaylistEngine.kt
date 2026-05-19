@@ -1,6 +1,6 @@
 package com.anyplayer.android.feature.playlists
 
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.CustomPlaylist
 import com.anyplayer.android.core.model.PlaylistType
 import com.anyplayer.android.core.model.PlaylistTrack
@@ -58,6 +58,7 @@ class CustomPlaylistEngine @Inject constructor(
     }
 
     suspend fun deletePlaylist(id: String) {
+        storageRepository.clearCachedUnionPlaylistTracks(id)
         storageRepository.deleteCustomPlaylistById(id)
     }
 
@@ -173,10 +174,28 @@ class CustomPlaylistEngine @Inject constructor(
         refreshUnionTrackCount(unionPlaylistId)
     }
 
+    /**
+     * Replace the entire list of union sources for a playlist.
+     * The supplied list's order determines the saved position.
+     */
+    suspend fun replaceUnionSources(unionPlaylistId: String, sources: List<UnionPlaylistSource>) {
+        storageRepository.replaceUnionSources(unionPlaylistId, sources.reindexedUnion())
+        refreshUnionTrackCount(unionPlaylistId)
+    }
+
+    suspend fun getCachedTracksForPlaylist(playlistId: String): List<Track> {
+        val playlist = storageRepository.getCustomPlaylistById(playlistId) ?: return emptyList()
+        return when (playlist.playlistType) {
+            PlaylistType.STANDARD -> storageRepository.getPlaylistTracks(playlistId).map { it.toTrack() }
+            PlaylistType.UNION -> storageRepository.getCachedUnionPlaylistTracks(playlistId) ?: emptyList()
+        }
+    }
+
     suspend fun materializeUnionTracks(
         unionPlaylistId: String,
         onProgressUpdate: (String) -> Unit = {},
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        updateMetadata: Boolean = false
     ): List<Track> {
         val unionSources = storageRepository.getUnionSources(unionPlaylistId).sortedBy { it.position }
         val materialized = mutableListOf<Track>()
@@ -218,7 +237,11 @@ class CustomPlaylistEngine @Inject constructor(
                     durationMs = track.durationMs ?: 0L
                 )
             }
-        Log.d(TAG, "materializeUnionTracks END: ${result.size} tracks after deduplication")
+        storageRepository.saveCachedUnionPlaylistTracks(unionPlaylistId, result)
+        if (updateMetadata) {
+            refreshPlaylistMetadata(unionPlaylistId, result.size)
+        }
+        CompatLog.d(TAG, "materializeUnionTracks END: ${result.size} tracks after deduplication")
         return result
     }
 
@@ -295,13 +318,16 @@ class CustomPlaylistEngine @Inject constructor(
     }
 
     private suspend fun refreshUnionTrackCount(unionPlaylistId: String) {
-        val playlist = storageRepository.getCustomPlaylistById(unionPlaylistId) ?: return
-        val tracks = materializeUnionTracks(unionPlaylistId)
+        materializeUnionTracks(unionPlaylistId, updateMetadata = true)
+    }
+
+    private suspend fun refreshPlaylistMetadata(playlistId: String, trackCount: Int) {
+        val playlist = storageRepository.getCustomPlaylistById(playlistId) ?: return
         storageRepository.upsertCustomPlaylists(
             listOf(
                 playlist.copy(
                     updatedAt = Instant.now().toString(),
-                    trackCount = tracks.size
+                    trackCount = trackCount
                 )
             )
         )
