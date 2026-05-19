@@ -10,7 +10,7 @@ internal object RustBridgeNative {
             System.loadLibrary("any_player_ffi_android")
             true
         }.getOrElse { error ->
-            CompatLog.w(TAG, "Rust JNI library unavailable; Kotlin fallback remains active")
+            CompatLog.e(TAG, "Rust JNI library unavailable; Kotlin fallback remains active", error)
             false
         }
     }
