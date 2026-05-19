@@ -1,7 +1,7 @@
 package com.anyplayer.android.feature.sync
 
 import android.content.Context
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
@@ -263,7 +263,7 @@ class SyncSnapshotClient @Inject constructor(
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d("SyncSnapshotClient", "WebSocket connected to $wsUrl")
+                CompatLog.d("SyncSnapshotClient", "WebSocket connected to $wsUrl")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {

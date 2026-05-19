@@ -1,7 +1,7 @@
 package com.anyplayer.android.feature.auth
 
 import android.net.Uri
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.network.ProviderConnectionCheck
@@ -251,8 +251,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     clientId = SpotifyClientIds.ACTIVE,
                     refreshToken = refreshToken
                 )
-            }.onFailure { e ->
-                Log.w(TAG, "Spotify token refresh network call failed", e)
+            }.onFailure { error ->
+                CompatLog.e(TAG, "Spotify token refresh network call failed", error)
             }.getOrNull() ?: return@withContext if (expiresAt != null && now < expiresAt) currentToken else null
 
             val refreshedToken = refreshed.accessToken.trim()
@@ -268,8 +268,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     tokenExpiresAt = refreshedTokenExpiresAt
                 )
             )
-            runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { e ->
-                Log.w(TAG, "Failed to save refreshed Spotify token", e)
+            runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { error ->
+                CompatLog.e(TAG, "Failed to save refreshed Spotify token", error)
             }
             refreshedToken
         }
@@ -402,8 +402,8 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                     secureConnectionStore.save(updated)
                     true
                 }
-                else -> {
-                    Log.d(TAG, "updatePlaylistPageSize not supported for source: $sourceType")
+                    else -> {
+                    CompatLog.d(TAG, "updatePlaylistPageSize not supported for source: $sourceType")
                     false
                 }
             }
@@ -506,7 +506,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         val rawResponse = rustBridge.spotifyBeginAuth(payload.toString()) ?: return null
         val response = runCatching { JSONObject(rawResponse) }
             .onFailure { error ->
-                Log.w(TAG, "Invalid JSON from rust spotifyBeginAuth: $rawResponse", error)
+                CompatLog.w(TAG, "Invalid JSON from rust spotifyBeginAuth: $rawResponse")
             }
             .getOrNull()
             ?: return null
@@ -527,7 +527,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         val rawResponse = rustBridge.spotifyExchangeCode(code, verifier, redirectUri) ?: return
         val response = runCatching { JSONObject(rawResponse) }
             .onFailure { error ->
-                Log.w(TAG, "Invalid JSON from rust spotifyExchangeCode: $rawResponse", error)
+                CompatLog.w(TAG, "Invalid JSON from rust spotifyExchangeCode: $rawResponse")
             }
             .getOrNull()
             ?: return
@@ -539,7 +539,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         val errorCode = error?.optString("code").orEmpty()
         if (errorCode.isNotBlank() && errorCode != "platform_auth_required") {
             val message = error?.optString("message").orEmpty()
-            Log.w(TAG, "Unexpected rust spotifyExchangeCode error: $errorCode $message")
+            CompatLog.w(TAG, "Unexpected rust spotifyExchangeCode error: $errorCode $message")
         }
     }
 }

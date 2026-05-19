@@ -10,7 +10,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.Process
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import androidx.core.app.NotificationCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.MediaItem
@@ -117,12 +117,12 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     controller: MediaSession.ControllerInfo
                 ): MediaSession.ConnectionResult {
                     if (!isTrustedController(controller)) {
-                        Log.w(
+                        CompatLog.w(
                             TAG,
                             "Allowing unrecognized media controller package=${controller.packageName} uid=${controller.uid}"
                         )
                     }
-                    Log.i(
+                    CompatLog.i(
                         TAG,
                         "Accepted media controller package=${controller.packageName} uid=${controller.uid}"
                     )
@@ -136,7 +136,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     session: MediaSession,
                     controller: MediaSession.ControllerInfo
                 ) {
-                    Log.i(
+                    CompatLog.i(
                         TAG,
                         "Controller disconnected package=${controller.packageName} uid=${controller.uid}"
                     )
@@ -216,7 +216,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                         try {
                             withTimeoutOrNull(RESTORE_TIMEOUT_MS) {
                                 startProviderRestore().await()
-                            } ?: Log.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
+                            } ?: CompatLog.w(TAG, "Provider session restore timed out in onSetMediaItems; proceeding")
 
                             playbackQueueManager.ensureWarmSessionState()
 
@@ -294,7 +294,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                             future.cancel(false)
                             throw e
                         } catch (t: Throwable) {
-                            Log.w(TAG, "Failed to process media items during queue restoration", t)
+                                    CompatLog.e(TAG, "Failed to process media items during queue restoration", t)
                             future.set(MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L))
                         }
                     }.also { job ->
@@ -336,7 +336,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        Log.i(TAG, "onStartCommand action=${intent?.action}")
+        CompatLog.i(TAG, "onStartCommand action=${intent?.action}")
         when (intent?.action) {
             ACTION_PLAY_PAUSE -> handlePlayPauseWithGuard()
             ACTION_NEXT -> playbackQueueManager.next()
@@ -347,12 +347,12 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         if (!isTrustedController(controllerInfo)) {
-            Log.w(
+            CompatLog.w(
                 TAG,
                 "Allowing unrecognized session request package=${controllerInfo.packageName} uid=${controllerInfo.uid}"
             )
         }
-        Log.i(
+        CompatLog.i(
             TAG,
             "onGetSession accepted package=${controllerInfo.packageName} uid=${controllerInfo.uid}"
         )
@@ -398,7 +398,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                Log.w(TAG, "Failed to restore provider state", t)
+                CompatLog.e(TAG, "Failed to restore provider state", t)
                 // Signal the gate even on failure so the queue manager doesn't hang
                 // waiting forever — it will simply restore without a Spotify session.
                 playbackQueueManager.signalProviderRestoreComplete()
@@ -430,11 +430,14 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     private fun onProjectionControllerConnected(controller: MediaSession.ControllerInfo) {
+        val wasInactive = activeProjectionControllers == 0
         activeProjectionControllers += 1
         projectionDisconnectPauseJob?.cancel()
         projectionDisconnectPauseJob = null
-        playbackQueueManager.resetSpotifyConnectionState()
-        Log.i(
+        if (wasInactive) {
+            playbackQueueManager.resetSpotifyConnectionState()
+        }
+        CompatLog.i(
             TAG,
             "Projection controller connected package=${controller.packageName} active=$activeProjectionControllers"
         )
@@ -442,7 +445,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     private fun onProjectionControllerDisconnected(controller: MediaSession.ControllerInfo) {
         activeProjectionControllers = (activeProjectionControllers - 1).coerceAtLeast(0)
-        Log.i(
+        CompatLog.i(
             TAG,
             "Projection controller disconnected package=${controller.packageName} active=$activeProjectionControllers"
         )
@@ -452,7 +455,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             delay(PROJECTION_DISCONNECT_GRACE_MS)
             val current = playbackQueueManager.status.value
             if (activeProjectionControllers == 0 && current.state == PlaybackStateType.PLAYING) {
-                Log.i(TAG, "Projection controllers inactive after grace period; pausing playback")
+                CompatLog.i(TAG, "Projection controllers inactive after grace period; pausing playback")
                 playbackQueueManager.pause()
             }
         }
@@ -565,7 +568,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                 if (freshStatus.currentTrack?.id == status.currentTrack?.id) {
                     playbackQueueManager.togglePlayPause()
                 } else {
-                    Log.d(TAG, "Skipping play/pause: track changed during provider auth check")
+            CompatLog.d(TAG, "Skipping play/pause: track changed during provider auth check")
                 }
                 return@launch
             }
@@ -573,7 +576,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             if (freshStatus.state == PlaybackStateType.PLAYING) {
                 playbackQueueManager.pause()
             }
-            Log.w(TAG, "Blocked play/pause from notification: current track provider is not configured/authenticated")
+            CompatLog.w(TAG, "Blocked play/pause from notification: current track provider is not configured/authenticated")
         }
     }
 

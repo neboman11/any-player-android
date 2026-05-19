@@ -19,6 +19,10 @@ import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.auth.StoredConnection
 import androidx.room.withTransaction
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -109,7 +113,7 @@ class StateTransferManager @Inject constructor(
 
     fun inspectFile(source: File): Pair<Int, Boolean> {
         val raw = source.readText()
-        return if (raw.contains("\"encrypted\":true")) {
+        return if (isEncryptedStateFile(raw)) {
             ANY_PLAYER_STATE_VERSION to true
         } else {
             val parsed = json.decodeFromString(AnyPlayerStateEnvelope.serializer(), raw)
@@ -292,8 +296,20 @@ class StateTransferManager @Inject constructor(
 
     private fun deterministicRemap(id: String): String = "${id}_import_${UUID.nameUUIDFromBytes(id.toByteArray())}"
 
+    private fun isEncryptedStateFile(raw: String): Boolean = runCatching {
+        val root = json.parseToJsonElement(raw).jsonObject
+        val encryptedFlag = root["encrypted"]?.jsonPrimitive?.booleanOrNull == true
+        val hasCryptoPayload =
+            root["saltBase64"]?.jsonPrimitive?.contentOrNull != null &&
+                root["nonceBase64"]?.jsonPrimitive?.contentOrNull != null &&
+                root["ciphertextBase64"]?.jsonPrimitive?.contentOrNull != null &&
+                root["kdfIterations"]?.jsonPrimitive != null
+
+        encryptedFlag || hasCryptoPayload
+    }.getOrDefault(false)
+
     private fun decodeEnvelope(raw: String, passphrase: String?): AnyPlayerStateEnvelope {
-        return if (raw.contains("\"encrypted\":true")) {
+        return if (isEncryptedStateFile(raw)) {
             val encrypted = json.decodeFromString(EncryptedStateFile.serializer(), raw)
             val value = crypto.decrypt(
                 file = encrypted,

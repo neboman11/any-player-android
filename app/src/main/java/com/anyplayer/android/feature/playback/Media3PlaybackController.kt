@@ -2,16 +2,26 @@ package com.anyplayer.android.feature.playback
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.anyplayer.android.BuildConfig
 import com.anyplayer.android.core.model.PlaybackStateType
+import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.auth.SecureConnectionStore
+import com.anyplayer.android.feature.auth.StoredConnection
 import com.anyplayer.android.playback.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -21,9 +31,14 @@ import javax.inject.Singleton
 @Singleton
 @UnstableApi
 class Media3PlaybackController @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext private val context: Context,
+    private val secureConnectionStore: SecureConnectionStore
 ) {
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
+        .setMediaSourceFactory(
+            DefaultMediaSourceFactory(context)
+                .setDataSourceFactory(createDataSourceFactory())
+        )
         .setLoadControl(
             DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
@@ -46,6 +61,31 @@ class Media3PlaybackController @Inject constructor(
 
     val player: Player
         get() = playerInstance
+
+    private fun createDataSourceFactory(): DefaultDataSource.Factory {
+        val httpFactory = DefaultHttpDataSource.Factory()
+        return DefaultDataSource.Factory(
+            context,
+            ResolvingDataSource.Factory(httpFactory) { dataSpec ->
+                val jellyfinHeaders = buildJellyfinRequestHeaders(
+                    requestUri = dataSpec.uri,
+                    connection = secureConnectionStore.read(SourceType.JELLYFIN),
+                    clientName = "Any Player",
+                    deviceName = Build.MODEL ?: "Android",
+                    deviceId = Settings.Secure.getString(
+                        context.contentResolver,
+                        Settings.Secure.ANDROID_ID
+                    )?.takeIf { it.isNotBlank() } ?: "any-player-android",
+                    version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                )
+                if (jellyfinHeaders.isEmpty()) {
+                    dataSpec
+                } else {
+                    dataSpec.withRequestHeaders(jellyfinHeaders)
+                }
+            }
+        )
+    }
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
         val playableTracks = tracks.filter(::isMedia3Playable)
@@ -201,3 +241,40 @@ data class PlaybackSnapshot(
     val repeatMode: RepeatMode,
     val shuffledMediaIndices: List<Int>
 )
+
+internal fun buildJellyfinRequestHeaders(
+    requestUri: Uri,
+    connection: StoredConnection?,
+    clientName: String,
+    deviceName: String,
+    deviceId: String,
+    version: String
+): Map<String, String> {
+    if (connection?.source != SourceType.JELLYFIN) return emptyMap()
+
+    val token = connection.token?.trim().orEmpty()
+    val parsedServerUri = connection.serverUrl
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let(Uri::parse)
+    val serverAuthority = parsedServerUri?.authority?.lowercase().orEmpty()
+    val serverScheme = parsedServerUri?.scheme?.lowercase().orEmpty()
+    val requestAuthority = requestUri.authority?.lowercase().orEmpty()
+    val requestScheme = requestUri.scheme?.lowercase().orEmpty()
+
+    if (
+        token.isBlank() ||
+        serverAuthority.isBlank() ||
+        serverScheme.isBlank() ||
+        requestScheme.isBlank() ||
+        serverAuthority != requestAuthority ||
+        serverScheme != requestScheme
+    ) {
+        return emptyMap()
+    }
+
+    return mapOf(
+        "X-Emby-Token" to token,
+        "Authorization" to "MediaBrowser Token=\"$token\", Client=\"$clientName\", Device=\"$deviceName\", DeviceId=\"$deviceId\", Version=\"$version\""
+    )
+}

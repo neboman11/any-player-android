@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.network.SpotifyClient
+import com.anyplayer.android.core.network.SpotifyPlaylistTracksPage
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
@@ -16,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -80,13 +82,13 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracks(
+            spotifyClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 0,
                 limit = 100
             )
-        ).thenReturn(listOf(spotifyTrack))
+        ).thenReturn(SpotifyPlaylistTracksPage(tracks = listOf(spotifyTrack), total = 1))
 
         val result = repository.getPlaylistTracks(
             sourceType = SourceType.SPOTIFY,
@@ -94,7 +96,67 @@ class ProviderCatalogRepositoryTest {
         )
 
         assertEquals(listOf(spotifyTrack), result)
-        verify(spotifyClient).getPlaylistTracks("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
+    }
+
+    @Test
+    fun getPlaylistTracks_spotifyFallbackAdvancesByRequestedPageSize() = runTest {
+        whenever(rustBridge.isAvailable()).thenReturn(false)
+        whenever(secureConnectionStore.read(SourceType.SPOTIFY)).thenReturn(
+            StoredConnection(
+                source = SourceType.SPOTIFY,
+                token = "spotify-token",
+                spotifyPremium = false,
+                playbackReady = false
+            )
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 0,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(
+                tracks = listOf(sampleTrack(id = "sp-track-1", source = SourceType.SPOTIFY)),
+                total = 250
+            )
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 100,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(tracks = emptyList(), total = 250)
+        )
+        whenever(
+            spotifyClient.getPlaylistTracksPage(
+                accessToken = "spotify-token",
+                playlistId = "sp-playlist",
+                offset = 200,
+                limit = 100
+            )
+        ).thenReturn(
+            SpotifyPlaylistTracksPage(
+                tracks = listOf(sampleTrack(id = "sp-track-2", source = SourceType.SPOTIFY)),
+                total = 250
+            )
+        )
+
+        val result = repository.getPlaylistTracks(
+            sourceType = SourceType.SPOTIFY,
+            playlistId = "sp-playlist"
+        )
+
+        assertEquals(listOf("sp-track-1", "sp-track-2"), result.map { it.id })
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 100, 100)
+        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 200, 100)
+        verify(spotifyClient, never()).getPlaylistTracksPage("spotify-token", "sp-playlist", 1, 100)
     }
 
     @Test
@@ -141,13 +203,13 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracks(
+            spotifyClient.getPlaylistTracksPage(
                 accessToken = eq("spotify-token"),
                 playlistId = eq("sp-playlist"),
                 offset = any(),
                 limit = any()
             )
-        ).thenReturn(emptyList())
+        ).thenReturn(SpotifyPlaylistTracksPage(tracks = emptyList(), total = 0))
 
         val result = repository.getPlaylistTracksWithCache(
             sourceType = SourceType.SPOTIFY,
@@ -193,6 +255,17 @@ class ProviderCatalogRepositoryTest {
 
         assertEquals(450, result.size)
         assertEquals(page1 + page2, result)
+
+        val sessionCaptor = argumentCaptor<Map<String, String>>()
+        verify(rustBridge, times(2)).providerGetPlaylistTracks(
+            source = eq(SourceType.JELLYFIN),
+            session = sessionCaptor.capture(),
+            playlistId = eq("jf-playlist"),
+            offset = any(),
+            limit = eq(PROVIDER_PAGE_SIZE)
+        )
+        assertEquals(PROVIDER_PAGE_SIZE.toString(), sessionCaptor.firstValue["page_size"])
+        assertEquals(PROVIDER_PAGE_SIZE.toString(), sessionCaptor.secondValue["page_size"])
     }
 
     @Test

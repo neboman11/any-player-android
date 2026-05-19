@@ -2,7 +2,7 @@ package com.anyplayer.android.app
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyplayer.android.core.model.PlaybackStateType
@@ -712,9 +712,9 @@ class MainViewModel @Inject constructor(
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to save Jellyfin page size", e)
-            }
+                } catch (e: Exception) {
+                CompatLog.e(TAG, "Failed to save Jellyfin page size", e)
+                }
         }
     }
 
@@ -750,9 +750,9 @@ class MainViewModel @Inject constructor(
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to save Plex page size", e)
-            }
+                } catch (e: Exception) {
+                CompatLog.e(TAG, "Failed to save Plex page size", e)
+                }
         }
     }
 
@@ -942,6 +942,7 @@ class MainViewModel @Inject constructor(
     }
     fun next() = playbackQueueManager.next()
     fun previous() = playbackQueueManager.previous()
+    fun addToQueue(track: Track) = playbackQueueManager.addNextInQueue(track)
     fun setShuffle(enabled: Boolean) = playbackQueueManager.setShuffle(enabled)
     fun setRepeatMode(mode: RepeatMode) = playbackQueueManager.setRepeatMode(mode)
     fun seekTo(positionMs: Long) = playbackQueueManager.seekTo(positionMs)
@@ -1183,12 +1184,16 @@ class MainViewModel @Inject constructor(
         selectedCustomPlaylistId.value = playlistId
         viewModelScope.launch {
             val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId }
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
             selectedCustomUnionSources.value = if (selectedPlaylist?.playlistType == PlaylistType.UNION) {
-                customPlaylistEngine.getUnionSources(playlistId)
+                activeCustomPlaylistTracks.value = customPlaylistEngine.getCachedTracksForPlaylist(playlistId)
+                customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
+                    ensureProviderPlaylistMetadataForUnionSources(unionSources)
+                }
             } else {
+                activeCustomPlaylistTracks.value = customPlaylistEngine.getCachedTracksForPlaylist(playlistId)
                 emptyList()
             }
+            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
         }
     }
 
@@ -1276,7 +1281,9 @@ class MainViewModel @Inject constructor(
                 sourceType = sourceType,
                 sourcePlaylistId = normalizedSourcePlaylistId
             )
-            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId)
+            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
+                ensureProviderPlaylistMetadataForUnionSources(unionSources)
+            }
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
         }
     }
@@ -1293,8 +1300,37 @@ class MainViewModel @Inject constructor(
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
             customPlaylistEngine.reorderUnionSources(playlistId, orderedSourceIds)
-            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId)
+            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
+                ensureProviderPlaylistMetadataForUnionSources(unionSources)
+            }
             activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+        }
+    }
+
+    fun replaceSelectedUnionSources(sources: List<com.anyplayer.android.core.model.UnionPlaylistSource>) {
+        val playlistId = selectedCustomPlaylistId.value ?: return
+        viewModelScope.launch {
+            try {
+                val normalizedSources = sources.mapIndexed { index, source ->
+                    source.copy(
+                        unionPlaylistId = playlistId,
+                        sourcePlaylistId = normalizeUnionSourcePlaylistId(source.sourceType, source.sourcePlaylistId),
+                        position = index
+                    )
+                }
+                customPlaylistEngine.replaceUnionSources(playlistId, normalizedSources)
+                selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
+                    ensureProviderPlaylistMetadataForUnionSources(unionSources)
+                }
+                activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+                customPlaylistRefreshStatus.value = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CompatLog.e("MainViewModel", "Failed to replace union sources: ${e.message}", e)
+                customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "Failed to update union sources."
+            }
         }
     }
 
@@ -1747,6 +1783,37 @@ class MainViewModel @Inject constructor(
         startupInProgress.value = false
     }
 
+    private suspend fun ensureProviderPlaylistMetadataForUnionSources(
+        unionSources: List<UnionPlaylistSource>
+    ) {
+        val providerSources = unionSources.filter { it.sourceType != SourceType.CUSTOM && it.sourceType != SourceType.ALL }
+        if (providerSources.isEmpty()) return
+
+        val existingPlaylists = providerPlaylists.value
+        val unresolvedSources = providerSources.distinctBy { source ->
+            source.sourceType.name + ":" + normalizeUnionSourcePlaylistId(source.sourceType, source.sourcePlaylistId)
+        }.filterNot { source ->
+            existingPlaylists.any { playlist -> matchesProviderPlaylistSource(playlist, source) }
+        }
+        if (unresolvedSources.isEmpty()) return
+
+        val cachedPlaylists = providerCatalogRepository.getCachedProviderPlaylists().orEmpty()
+        val cachedMatches = unresolvedSources.mapNotNull { source ->
+            cachedPlaylists.firstOrNull { playlist -> matchesProviderPlaylistSource(playlist, source) }
+        }
+        val stillUnresolvedSources = unresolvedSources.filterNot { source ->
+            cachedMatches.any { playlist -> matchesProviderPlaylistSource(playlist, source) }
+        }
+        val exactMatches = stillUnresolvedSources.mapNotNull { source ->
+            providerCatalogRepository.getProviderPlaylist(source.sourceType, source.sourcePlaylistId)
+        }
+        val loadedPlaylists = cachedMatches + exactMatches
+
+        if (loadedPlaylists.isEmpty()) return
+
+        providerPlaylists.value = mergeProviderPlaylists(existingPlaylists, loadedPlaylists)
+    }
+
     private fun formatProviderFailure(providerName: String, throwable: Throwable): String {
         val message = throwable.message?.trim().orEmpty()
         if (message.isBlank()) {
@@ -1806,6 +1873,22 @@ class MainViewModel @Inject constructor(
         val syncStatusValue: String
     )
 }
+
+private fun matchesProviderPlaylistSource(
+    playlist: com.anyplayer.android.core.model.Playlist,
+    source: UnionPlaylistSource
+): Boolean =
+    playlist.source == source.sourceType &&
+        normalizeUnionSourcePlaylistId(playlist.source, playlist.id) ==
+        normalizeUnionSourcePlaylistId(source.sourceType, source.sourcePlaylistId)
+
+private fun mergeProviderPlaylists(
+    existing: List<com.anyplayer.android.core.model.Playlist>,
+    loaded: List<com.anyplayer.android.core.model.Playlist>
+): List<com.anyplayer.android.core.model.Playlist> =
+    (existing + loaded).distinctBy { playlist ->
+        playlist.source.name + ":" + normalizeUnionSourcePlaylistId(playlist.source, playlist.id)
+    }
 
 private const val SPOTIFY_REDIRECT_URI = "anyplayer://spotify-callback"
 private const val TAG = "MainViewModel"

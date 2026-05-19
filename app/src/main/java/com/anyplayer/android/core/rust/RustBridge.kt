@@ -1,6 +1,6 @@
 package com.anyplayer.android.core.rust
 
-import android.util.Log
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.BuildConfig
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.Playlist
@@ -316,6 +316,28 @@ class RustBridge @Inject constructor() {
         return parseTracks(playlist.optJSONArray("tracks"), source)
     }
 
+    fun providerGetPlaylist(
+        source: SourceType,
+        session: Map<String, String>,
+        playlistId: String
+    ): Playlist? {
+        val response = providerCall(
+            source = source,
+            operation = "get_playlist",
+            session = session,
+            id = playlistId,
+            offset = 0,
+            limit = 1
+        ) ?: return null
+
+        val playlist = response
+            .optJSONObject("data")
+            ?.optJSONObject("playlist")
+            ?: return null
+
+        return parsePlaylists(org.json.JSONArray().put(playlist), source).firstOrNull()
+    }
+
     fun providerSearchTracks(
         source: SourceType,
         session: Map<String, String>,
@@ -380,11 +402,11 @@ class RustBridge @Inject constructor() {
         if (!isAvailable()) return null
 
         val sourceName = source.name.lowercase()
-        if (sourceName != "jellyfin" && sourceName != "plex") {
+        if (sourceName != "jellyfin" && sourceName != "plex" && sourceName != "spotify") {
             throw IllegalArgumentException("Unsupported source for providerCall: $source")
         }
 
-        Log.d(TAG, "providerCall: source=$source, operation=$operation, offset=$offset, limit=$limit")
+            CompatLog.d(TAG, "providerCall: source=$source, operation=$operation, offset=$offset, limit=$limit")
 
         val sessionJson = JSONObject().apply {
             session.forEach { (key, value) ->
@@ -408,7 +430,7 @@ class RustBridge @Inject constructor() {
             payload.put("query", query.trim())
         }
 
-        Log.d(TAG, "providerCall: sending to Rust FFI (payload redacted)")
+        CompatLog.d(TAG, "providerCall: sending to Rust FFI (payload redacted)")
 
         val response = callJson("providerApiCall") {
             RustBridgeNative.providerApiCall(payload.toString())
@@ -492,7 +514,7 @@ class RustBridge @Inject constructor() {
         return runCatching(block)
             .onFailure { error ->
                 lastError = "JNI call failed for $methodName: ${error.message ?: error::class.java.simpleName}"
-                Log.w(TAG, "Rust JNI call failed for $methodName", error)
+                CompatLog.w(TAG, "Rust JNI call failed for $methodName")
             }
             .getOrNull()
     }
@@ -502,7 +524,7 @@ class RustBridge @Inject constructor() {
         return runCatching { JSONObject(raw) }
             .onFailure { error ->
                 lastError = "Invalid JSON from Rust bridge method $methodName"
-                Log.w(TAG, "Invalid JSON from Rust bridge method $methodName: $raw", error)
+                CompatLog.w(TAG, "Invalid JSON from Rust bridge method $methodName: $raw")
             }
             .getOrNull()
     }
@@ -514,6 +536,6 @@ class RustBridge @Inject constructor() {
         lastError = listOf(code.takeIf { it.isNotBlank() }, message.takeIf { it.isNotBlank() })
             .joinToString(separator = ": ")
             .ifBlank { "Unknown Rust bridge error in $methodName" }
-        Log.w(TAG, "Rust bridge method $methodName returned error: $code $message")
+        CompatLog.w(TAG, "Rust bridge method $methodName returned error: $code $message")
     }
 }

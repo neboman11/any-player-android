@@ -42,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +55,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,6 +67,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.PlaylistType
@@ -82,6 +89,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.rememberTooltipState
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.DuplicateGroup
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Divider
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material3.AlertDialog
+import java.util.UUID
+import java.time.Instant
+import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 import coil.compose.AsyncImage
@@ -333,6 +348,8 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     var customTrackSortAscending by rememberSaveable("playlist_custom_track_sort_ascending") { mutableStateOf(true) }
     var pendingStandardDuplicateRemovalIndex by remember { mutableStateOf<Int?>(null) }
     var pendingStandardTrackRemovalIndex by remember { mutableStateOf<Int?>(null) }
+    var providerPlaylistSearchQuery by rememberSaveable("playlist_provider_search") { mutableStateOf("") }
+    var customPlaylistSearchQuery by rememberSaveable("playlist_custom_search") { mutableStateOf("") }
 
     val selectedProviderPlaylist = state.selectedProviderPlaylist
     val selectedCustomPlaylist = state.customPlaylists.firstOrNull { it.id == state.selectedCustomPlaylistId }
@@ -488,6 +505,26 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
 
+                val filteredProviderTracks = remember(sortedProviderTracks, providerPlaylistSearchQuery) {
+                    if (providerPlaylistSearchQuery.isBlank()) sortedProviderTracks
+                    else {
+                        val q = providerPlaylistSearchQuery.lowercase()
+                        sortedProviderTracks.filter { row ->
+                            row.track.title.lowercase().contains(q) ||
+                                row.track.artist.lowercase().contains(q) ||
+                                (row.track.album?.lowercase()?.contains(q) == true)
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = providerPlaylistSearchQuery,
+                    onValueChange = { providerPlaylistSearchQuery = it },
+                    label = { Text("Search tracks") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 TrackSortableHeaderRow(
                     sortColumn = providerTrackSortColumn,
                     sortAscending = providerTrackSortAscending,
@@ -505,8 +542,19 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
 
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(sortedProviderTracks, key = { _, row -> row.track.id }) { _, row ->
-                        TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.")
+                    itemsIndexed(filteredProviderTracks, key = { _, row -> row.track.id }) { _, row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.", modifier = Modifier.weight(1f))
+                            Box {
+                                var expanded by remember { mutableStateOf(false) }
+                                IconButton(onClick = { expanded = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "Track actions")
+                                }
+                                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                    DropdownMenuItem(text = { Text("Add to Queue") }, onClick = { viewModel.addToQueue(row.track); expanded = false })
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -551,9 +599,9 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = viewModel::closeCustomPlaylistDetails) { Text("Back") }
-                Button(onClick = { viewModel.playCustomPlaylist(selectedCustomPlaylist.id) }) { Text("Play") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = viewModel::closeCustomPlaylistDetails) { Text("Back") }
+                    Button(onClick = { viewModel.playCustomPlaylist(selectedCustomPlaylist.id) }) { Text("Play") }
                 if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
                     Button(
                         onClick = viewModel::materializeSelectedUnion,
@@ -568,6 +616,90 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                         } else {
                             Text("Refresh")
                         }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    var editSourcesDialogOpen by remember { mutableStateOf(false) }
+                    Button(onClick = { editSourcesDialogOpen = true }) { Text("Edit sources") }
+                    if (editSourcesDialogOpen) {
+                        // Minimal dialog: list non-union provider playlists and custom playlists, allow checking to include.
+                        val localSelections = remember(editSourcesDialogOpen, state.selectedCustomUnionSources) {
+                            mutableStateListOf<com.anyplayer.android.core.model.UnionPlaylistSource>().apply {
+                                addAll(state.selectedCustomUnionSources)
+                            }
+                        }
+                        AlertDialog(
+                            onDismissRequest = { editSourcesDialogOpen = false },
+                            title = { Text("Edit union sources") },
+                            text = {
+                                Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                                    // Candidate playlists: provider playlists + custom (non-union) playlists
+                                    val providerPlaylists = state.providerPlaylists
+                                    val customPlaylists = state.customPlaylists.filter { it.playlistType != PlaylistType.UNION }
+                                    val candidates = remember(providerPlaylists, customPlaylists) {
+                                        providerPlaylists.map { Triple(it.id, it.name, it.source) } +
+                                            customPlaylists.map { Triple(it.id, it.name, SourceType.CUSTOM) }
+                                    }
+
+                                    // Compact rows: smaller vertical padding and tighter layout
+                                    candidates.forEach { (id, name, sourceType) ->
+                                        val normalizedCandidateId = normalizeUnionSourcePlaylistId(sourceType, id)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                        ) {
+                                            val isSelected = localSelections.any {
+                                                it.sourceType == sourceType &&
+                                                    normalizeUnionSourcePlaylistId(it.sourceType, it.sourcePlaylistId) == normalizedCandidateId
+                                            }
+                                            Checkbox(
+                                                checked = isSelected,
+                                                onCheckedChange = { checked ->
+                                                    if (checked) {
+                                                        // add to end
+                                                        if (!isSelected) {
+                                                            localSelections.add(
+                                                                UnionPlaylistSource(
+                                                                    id = UUID.randomUUID().toString(),
+                                                                    unionPlaylistId = selectedCustomPlaylist.id,
+                                                                    sourceType = sourceType,
+                                                                    sourcePlaylistId = normalizedCandidateId,
+                                                                    position = localSelections.size,
+                                                                    addedAt = Instant.now().toString()
+                                                                )
+                                                            )
+                                                        }
+                                                    } else {
+                                                        val updatedSelections = localSelections
+                                                            .filterNot {
+                                                                it.sourceType == sourceType &&
+                                                                    normalizeUnionSourcePlaylistId(it.sourceType, it.sourcePlaylistId) == normalizedCandidateId
+                                                            }
+                                                            .mapIndexed { idx, s -> s.copy(position = idx) }
+                                                        localSelections.clear()
+                                                        localSelections.addAll(updatedSelections)
+                                                    }
+                                                },
+                                                modifier = Modifier.padding(end = 8.dp)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(name, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                                Text(sourceType.name.lowercase(), style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    // save selections (order not important; keep appended order)
+                                    viewModel.replaceSelectedUnionSources(localSelections.toList())
+                                    editSourcesDialogOpen = false
+                                }) { Text("Save") }
+                            },
+                            dismissButton = {
+                                OutlinedButton(onClick = { editSourcesDialogOpen = false }) { Text("Cancel") }
+                            }
+                        )
                     }
                 }
             }
@@ -701,6 +833,26 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
 
+                val filteredCustomTracks = remember(sortedCustomTracks, customPlaylistSearchQuery) {
+                    if (customPlaylistSearchQuery.isBlank()) sortedCustomTracks
+                    else {
+                        val q = customPlaylistSearchQuery.lowercase()
+                        sortedCustomTracks.filter { row ->
+                            row.track.title.lowercase().contains(q) ||
+                                row.track.artist.lowercase().contains(q) ||
+                                (row.track.album?.lowercase()?.contains(q) == true)
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = customPlaylistSearchQuery,
+                    onValueChange = { customPlaylistSearchQuery = it },
+                    label = { Text("Search tracks") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 TrackSortableHeaderRow(
                     sortColumn = customTrackSortColumn,
                     sortAscending = customTrackSortAscending,
@@ -718,25 +870,35 @@ private fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
                 )
 
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(sortedCustomTracks, key = { _, row -> row.track.id }) { _, row ->
+                    itemsIndexed(filteredCustomTracks, key = { _, row -> row.track.id }) { _, row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Button(onClick = {
-                                viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, row.originalIndex)
-                            }) {
-                                Text("Play")
-                            }
-                            if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
-                                OutlinedButton(onClick = {
-                                    pendingStandardTrackRemovalIndex = row.originalIndex
-                                }) {
-                                    Text("Remove")
-                                }
-                            }
                             TrackRow(
                                 track = row.track,
                                 indexLabel = "${row.originalIndex + 1}.",
                                 modifier = Modifier.weight(1f)
                             )
+                            Box {
+                                var expanded by remember { mutableStateOf(false) }
+                                IconButton(onClick = { expanded = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "Track actions")
+                                }
+                                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Play") },
+                                        onClick = { viewModel.playFromCustomPlaylistTrack(selectedCustomPlaylist.id, row.originalIndex); expanded = false }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Add to Queue") },
+                                        onClick = { viewModel.addToQueue(row.track); expanded = false }
+                                    )
+                                    if (selectedCustomPlaylist.playlistType == PlaylistType.STANDARD) {
+                                        DropdownMenuItem(
+                                            text = { Text("Remove") },
+                                            onClick = { pendingStandardTrackRemovalIndex = row.originalIndex; expanded = false }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -974,11 +1136,27 @@ private fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 itemsIndexed(sortedSearchTracks, key = { _, row -> row.track.id }) { _, row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Button(onClick = { viewModel.playFromSearch(row.originalIndex) }) { Text("Play") }
                         TrackRow(track = row.track, indexLabel = "${row.originalIndex + 1}.", modifier = Modifier.weight(1f))
-                        if (state.selectedCustomPlaylistId != null) {
-                            Button(onClick = { viewModel.addSearchTrackToSelectedCustom(row.originalIndex) }) {
-                                Text("Add")
+                        Box {
+                            var expanded by remember { mutableStateOf(false) }
+                            IconButton(onClick = { expanded = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "Track actions")
+                            }
+                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Play") },
+                                    onClick = { viewModel.playFromSearch(row.originalIndex); expanded = false }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Add to Queue") },
+                                    onClick = { viewModel.addToQueue(row.track); expanded = false }
+                                )
+                                if (state.selectedCustomPlaylistId != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Add to Playlist") },
+                                        onClick = { viewModel.addSearchTrackToSelectedCustom(row.originalIndex); expanded = false }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1207,8 +1385,17 @@ private fun QueueTrackRow(
         TrackSourceBadge(source = track.source, modifier = Modifier.weight(1f))
         TrackQualityBadge(track = track, modifier = Modifier.weight(1.3f))
         Text(formatTrackDuration(track.durationMs), modifier = Modifier.weight(0.8f), style = MaterialTheme.typography.bodySmall, color = textColor)
-        TextButton(onClick = onPlay, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-            Text("Play")
+        Box {
+            var expanded by remember { mutableStateOf(false) }
+            IconButton(onClick = { expanded = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "Track actions")
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("Play") },
+                    onClick = { onPlay(); expanded = false }
+                )
+            }
         }
     }
 }
