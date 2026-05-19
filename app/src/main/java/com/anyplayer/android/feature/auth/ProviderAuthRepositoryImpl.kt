@@ -537,7 +537,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
         val error = response.optJSONObject("error")
         val errorCode = error?.optString("code").orEmpty()
-            if (errorCode.isNotBlank() && errorCode != "platform_auth_required") {
+        if (errorCode.isNotBlank() && errorCode != "platform_auth_required") {
             val message = error?.optString("message").orEmpty()
             CompatLog.w(TAG, "Unexpected rust spotifyExchangeCode error: $errorCode $message")
         }
