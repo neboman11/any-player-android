@@ -361,6 +361,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
+        playerBridge.close()
         projectionDisconnectPauseJob?.cancel()
         projectionDisconnectPauseJob = null
         activeProjectionControllers = 0

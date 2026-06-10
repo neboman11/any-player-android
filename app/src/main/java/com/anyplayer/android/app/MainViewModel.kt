@@ -1508,11 +1508,14 @@ class MainViewModel @Inject constructor(
                                 return@collect
                             }
 
-                            val pushed = runCatching {
+                            val pushResult = runCatching {
                                 syncSnapshotClient.pushAppState(serverTarget, payload)
-                            }.getOrDefault(false)
+                            }
+                            if (pushResult.isFailure) {
+                                CompatLog.w(TAG, "sync push failed", pushResult.exceptionOrNull())
+                            }
 
-                            if (pushed) {
+                            if (pushResult.getOrDefault(false)) {
                                 lastPushedSignature = signature
                                 lastPushAtMs = now
                             }
@@ -1549,6 +1552,7 @@ class MainViewModel @Inject constructor(
                             if (result.isSuccess) {
                                 delay(1500L)
                             } else {
+                                CompatLog.w(TAG, "sync ws collect error", result.exceptionOrNull())
                                 delay(2500L)
                             }
                         }
