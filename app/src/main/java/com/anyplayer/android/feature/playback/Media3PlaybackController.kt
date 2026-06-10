@@ -113,6 +113,9 @@ class Media3PlaybackController @Inject constructor(
         val startTrackId = tracks.getOrNull(startIndex)?.id
         val mappedIndex = playableTracks.indexOfFirst { it.id == startTrackId }.takeIf { it >= 0 } ?: 0
 
+        // Clear first so the controller's cached currentMediaItemIndex resets to INDEX_UNSET
+        // before the new timeline arrives, preventing PlayerInfo.Builder.build() checkState failures.
+        playerInstance.clearMediaItems()
         playerInstance.setMediaItems(mediaItems, mappedIndex.coerceIn(0, mediaItems.lastIndex), 0L)
         playerInstance.prepare()
         playerInstance.playWhenReady = autoPlay

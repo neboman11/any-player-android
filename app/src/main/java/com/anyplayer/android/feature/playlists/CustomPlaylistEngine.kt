@@ -212,18 +212,23 @@ class CustomPlaylistEngine @Inject constructor(
             }
             onProgressUpdate("Processing source ${index + 1}/$totalSources from $sourceLabel...")
             
-            val tracks = when (source.sourceType) {
-                SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
-                SourceType.JELLYFIN,
-                SourceType.PLEX,
-                SourceType.SPOTIFY -> {
-                    providerCatalogRepository.getPlaylistTracksWithCache(
-                        sourceType = source.sourceType,
-                        playlistId = source.sourcePlaylistId,
-                        forceRefresh = forceRefresh
-                    )
+            val tracks = try {
+                when (source.sourceType) {
+                    SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
+                    SourceType.JELLYFIN,
+                    SourceType.PLEX,
+                    SourceType.SPOTIFY -> {
+                        providerCatalogRepository.getPlaylistTracksWithCache(
+                            sourceType = source.sourceType,
+                            playlistId = source.sourcePlaylistId,
+                            forceRefresh = forceRefresh
+                        )
+                    }
+                    SourceType.ALL -> emptyList()
                 }
-                SourceType.ALL -> emptyList()
+            } catch (e: Exception) {
+                CompatLog.e(TAG, "Failed to load tracks for union source $sourceLabel (${source.sourcePlaylistId}): ${e.message}", e)
+                emptyList()
             }
             materialized += tracks
         }

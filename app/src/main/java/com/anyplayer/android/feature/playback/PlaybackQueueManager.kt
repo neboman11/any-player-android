@@ -1135,16 +1135,40 @@ class PlaybackQueueManager @Inject constructor(
                 toleranceMs = 1500L
             )
             if (spotifySnapshot.endOfTrackCount > lastAcknowledgedEndOfTrackCount && !manualSkipInFlight) {
-                val nowMs = System.currentTimeMillis()
                 val previousTrackId = state.currentTrack?.id
                 Log.d(
                     TAG,
-                    "Spotify endOfTrack detected; waiting for Rust auto-advance trackId=$previousTrackId count=${spotifySnapshot.endOfTrackCount}"
+                    "Spotify endOfTrack detected; advancing queue immediately trackId=$previousTrackId count=${spotifySnapshot.endOfTrackCount}"
                 )
                 lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
-                if (spotifyEndOfTrackWaitingForTrackId != previousTrackId) {
-                    spotifyEndOfTrackDetectedMs = nowMs
-                    spotifyEndOfTrackWaitingForTrackId = previousTrackId
+                spotifyEndOfTrackWaitingForTrackId = null
+                spotifyEndOfTrackDetectedMs = 0L
+                if (!spotifyAutoAdvanceInFlight) {
+                    spotifyAutoAdvanceInFlight = true
+                    scope.launch {
+                        val success = spotifyPlaybackController.next()
+                        spotifyAutoAdvanceInFlight = false
+                        if (success) {
+                            val advancedTrackIndex = awaitSpotifyAdvance(
+                                previousTrackId = previousTrackId,
+                                state = mutableStatus.value,
+                                timeoutMs = 1200L
+                            )
+                            if (advancedTrackIndex != null) {
+                                spotifyCurrentQueueIndex = advancedTrackIndex
+                                addToQueueInsertionOffset = 0
+                            } else {
+                                Log.w(TAG, "Immediate spotifyNext() returned success without advancing; falling back to startQueue")
+                                fallbackAdvanceSpotifyQueue(previousTrackId, mutableStatus.value)
+                                addToQueueInsertionOffset = 0
+                            }
+                        } else {
+                            Log.w(TAG, "Immediate spotifyNext() failed; falling back to startQueue")
+                            fallbackAdvanceSpotifyQueue(previousTrackId, state)
+                            addToQueueInsertionOffset = 0
+                        }
+                    }
+                    return
                 }
             }
             if (spotifyEndOfTrackWaitingForTrackId != null) {
