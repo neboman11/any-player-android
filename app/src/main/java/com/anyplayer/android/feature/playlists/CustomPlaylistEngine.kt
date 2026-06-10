@@ -10,6 +10,7 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 import java.util.UUID
@@ -212,18 +213,24 @@ class CustomPlaylistEngine @Inject constructor(
             }
             onProgressUpdate("Processing source ${index + 1}/$totalSources from $sourceLabel...")
             
-            val tracks = when (source.sourceType) {
-                SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
-                SourceType.JELLYFIN,
-                SourceType.PLEX,
-                SourceType.SPOTIFY -> {
-                    providerCatalogRepository.getPlaylistTracksWithCache(
-                        sourceType = source.sourceType,
-                        playlistId = source.sourcePlaylistId,
-                        forceRefresh = forceRefresh
-                    )
+            val tracks = try {
+                when (source.sourceType) {
+                    SourceType.CUSTOM -> storageRepository.getPlaylistTracks(source.sourcePlaylistId).map { it.toTrack() }
+                    SourceType.JELLYFIN,
+                    SourceType.PLEX,
+                    SourceType.SPOTIFY -> {
+                        providerCatalogRepository.getPlaylistTracksWithCache(
+                            sourceType = source.sourceType,
+                            playlistId = source.sourcePlaylistId,
+                            forceRefresh = forceRefresh
+                        )
+                    }
+                    SourceType.ALL -> emptyList()
                 }
-                SourceType.ALL -> emptyList()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                CompatLog.e(TAG, "Failed to load tracks for union source $sourceLabel (${source.sourcePlaylistId}): ${e.message}", e)
+                emptyList()
             }
             materialized += tracks
         }

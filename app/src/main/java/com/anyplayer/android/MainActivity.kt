@@ -5,7 +5,7 @@ import android.os.Bundle
 import com.anyplayer.android.app.SpotifyAuthRedirectBus
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import com.anyplayer.android.ui.AnyPlayerTheme
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.app.AnyPlayerApp
 import com.anyplayer.android.playback.AnyPlayerMediaLibraryService
@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
         startService(Intent(this, AnyPlayerMediaLibraryService::class.java))
         handleIncomingIntent(intent)
         setContent {
-            MaterialTheme {
+            AnyPlayerTheme {
                 AnyPlayerApp()
             }
         }

@@ -19,7 +19,9 @@ import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
@@ -51,11 +53,19 @@ class MediaSessionPlayerBridge @Inject constructor(
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var collectJob: Job? = null
     @Volatile
     private var currentStatusSnapshot: PlaybackStatus = playbackQueueManager.status.value
 
-    init {
-        scope.launch {
+    fun open() {
+        startCollecting()
+    }
+
+    private fun startCollecting() {
+        if (collectJob?.isActive == true) {
+            return
+        }
+        collectJob = scope.launch {
             var prev = currentStatusSnapshot
             CompatLog.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
             playbackQueueManager.status.collect { status ->
@@ -121,6 +131,9 @@ class MediaSessionPlayerBridge @Inject constructor(
             val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
             val state    = mapState(status.state)
             val playing  = status.state == PlaybackStateType.PLAYING
+            if (!listeners.contains(listener)) {
+                return@launch
+            }
             CompatLog.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
             listener.onPlaybackStateChanged(state)
             listener.onIsPlayingChanged(playing)
@@ -243,6 +256,12 @@ class MediaSessionPlayerBridge @Inject constructor(
         } else {
             playbackQueueManager.seekTo(positionMs)
         }
+    }
+
+    fun close() {
+        collectJob?.cancel()
+        collectJob = null
+        listeners.clear()
     }
 
     companion object { private const val TAG = "PlayerBridge" }

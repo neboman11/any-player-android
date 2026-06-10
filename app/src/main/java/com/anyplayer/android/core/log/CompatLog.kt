@@ -38,6 +38,15 @@ object CompatLog {
         }
     }
 
+    fun w(tag: String, msg: String, t: Throwable?) {
+        if (!tryAndroidLog {
+            if (t != null) android.util.Log.w(tag, msg, t) else android.util.Log.w(tag, msg)
+        }) {
+            println("W/$tag: $msg")
+            t?.printStackTrace()
+        }
+    }
+
     fun e(tag: String, msg: String, t: Throwable? = null) {
         if (!tryAndroidLog {
             if (t != null) android.util.Log.e(tag, msg, t) else android.util.Log.e(tag, msg)

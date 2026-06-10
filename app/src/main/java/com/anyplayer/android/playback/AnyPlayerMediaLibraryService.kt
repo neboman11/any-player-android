@@ -47,6 +47,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeoutOrNull
@@ -106,6 +107,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        playerBridge.open()
         startProviderRestore()
 
         mediaLibrarySession = MediaLibrarySession.Builder(
@@ -361,6 +363,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
+        playerBridge.close()
         projectionDisconnectPauseJob?.cancel()
         projectionDisconnectPauseJob = null
         activeProjectionControllers = 0
@@ -491,14 +494,19 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             .build()
 
     private fun startForegroundCompat(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            CompatLog.e(TAG, "startForeground failed: ${e.message}", e)
+            stopSelf()
         }
     }
 
