@@ -5,13 +5,13 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -202,33 +202,50 @@ private fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
-            item {
-                ElevatedCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        // Compact header: thumbnail + track info side by side so controls are never pushed off screen
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
+                    ElevatedCard(
+                        modifier = Modifier.size(72.dp),
+                        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        AsyncImage(
+                            model = artworkUrl,
+                            contentDescription = "Album artwork",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    AsyncImage(
-                        model = artworkUrl,
-                        contentDescription = "Album artwork",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                    Text(
+                        text = status.currentTrack?.title ?: "-",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = status.currentTrack?.artist ?: "-",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = status.state.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
 
-        item {
-            Text("Track: ${status.currentTrack?.title ?: "-"}")
-        }
-        item {
-            Text("Artist: ${status.currentTrack?.artist ?: "-"}")
-        }
-        item {
-            Text("State: ${status.state}")
-        }
         if (playbackDisabledMessage != null) {
             item {
                 Surface(
