@@ -47,6 +47,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeoutOrNull
@@ -505,6 +506,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             }
         } catch (e: Exception) {
             CompatLog.e(TAG, "startForeground failed: ${e.message}", e)
+            stopSelf()
         }
     }
 
