@@ -430,7 +430,7 @@ class ProviderCatalogRepository @Inject constructor(
         )
     }
 
-    private suspend fun getCachedPlaylistTracks(sourceType: SourceType, playlistId: String): List<Track> = withContext(Dispatchers.IO) {
+    internal suspend fun getCachedPlaylistTracks(sourceType: SourceType, playlistId: String): List<Track> = withContext(Dispatchers.IO) {
         val key = playlistTrackCacheKey(sourceType, playlistId)
         val entry = safeGetCacheEntry(key) ?: return@withContext emptyList()
         runCatching {

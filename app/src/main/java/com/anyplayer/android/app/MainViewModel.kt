@@ -44,6 +44,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,6 +105,7 @@ class MainViewModel @Inject constructor(
     private val selectedProviderPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
     private val selectedProviderPlaylistIsDistinct = MutableStateFlow(false)
     private var providerPlaylistDistinctLoadJob: Job? = null
+    private var trackPrefetchJob: Job? = null
     private val selectedProviderPlaylistLoading = MutableStateFlow(false)
     private val selectedProviderPlaylistError = MutableStateFlow<String?>(null)
     private val providerPlaylistRefreshInProgress = MutableStateFlow(false)
@@ -1034,9 +1037,7 @@ class MainViewModel @Inject constructor(
 
     fun openProviderPlaylistSummary(playlist: com.anyplayer.android.core.model.Playlist) {
         selectedProviderPlaylist.value = playlist
-        selectedProviderPlaylistTracks.value = playlist.tracks.orEmpty()
         selectedProviderPlaylistIsDistinct.value = false
-        selectedProviderPlaylistLoading.value = true
         selectedProviderPlaylistError.value = null
 
         providerPlaylistDistinctLoadJob?.cancel()
@@ -1057,19 +1058,34 @@ class MainViewModel @Inject constructor(
             profile.source == playlist.source && profile.connected
         }
         if (!isSourceConnected) {
+            selectedProviderPlaylistTracks.value = playlist.tracks.orEmpty()
             selectedProviderPlaylistLoading.value = false
             selectedProviderPlaylistError.value = "${playlist.source.name.lowercase()} is not connected. Reconnect in Settings, then retry."
             return
         }
 
         viewModelScope.launch {
+            // Read from the Room DB cache immediately so tracks appear without a loading
+            // spinner when the data is already available (e.g. from a prior session or the
+            // background prefetch).
+            val cached = providerCatalogRepository.getCachedPlaylistTracks(playlist.source, playlist.id)
+            if (selectedProviderPlaylist.value?.id != playlist.id) return@launch
+
+            if (cached.isNotEmpty()) {
+                selectedProviderPlaylistTracks.value = cached
+                selectedProviderPlaylistLoading.value = false
+                return@launch
+            }
+
+            // No cache yet — show initial tracks from the playlist object (may be empty)
+            // and the loading indicator while we fetch from the network.
+            selectedProviderPlaylistTracks.value = playlist.tracks.orEmpty()
+            selectedProviderPlaylistLoading.value = true
+
             val result = runCatching {
                 providerCatalogRepository.getPlaylistTracksWithCache(playlist.source, playlist.id)
             }
-            val selectedId = selectedProviderPlaylist.value?.id
-            if (selectedId != playlist.id) {
-                return@launch
-            }
+            if (selectedProviderPlaylist.value?.id != playlist.id) return@launch
             result.onSuccess { tracks ->
                 selectedProviderPlaylistTracks.value = tracks.ifEmpty { playlist.tracks.orEmpty() }
                 if (selectedProviderPlaylistTracks.value.isEmpty() && playlist.trackCount > 0) {
@@ -1756,6 +1772,25 @@ class MainViewModel @Inject constructor(
     private fun JsonObject.string(key: String): String? =
         (this[key] as? JsonPrimitive)?.contentOrNull
 
+    private fun prefetchPlaylistTracksInBackground(playlists: List<com.anyplayer.android.core.model.Playlist>) {
+        if (playlists.isEmpty()) return
+        trackPrefetchJob?.cancel()
+        trackPrefetchJob = viewModelScope.launch {
+            val semaphore = Semaphore(3)
+            playlists
+                .filter { it.source != SourceType.CUSTOM && it.source != SourceType.ALL }
+                .forEach { playlist ->
+                    launch {
+                        semaphore.withPermit {
+                            runCatching {
+                                providerCatalogRepository.getPlaylistTracksWithCache(playlist.source, playlist.id)
+                            }
+                        }
+                    }
+                }
+        }
+    }
+
     private suspend fun runStartup(continueWithoutProviders: Boolean) {
         startupInProgress.value = true
         startupCanRetry.value = false
@@ -1781,6 +1816,7 @@ class MainViewModel @Inject constructor(
         startupCanContinueWithoutProvider.value = snapshot.warnings.isNotEmpty() && !continueWithoutProviders
         loadSavedProviderInputsInternal()
         startupInProgress.value = false
+        prefetchPlaylistTracksInBackground(snapshot.providerPlaylists)
     }
 
     private suspend fun ensureProviderPlaylistMetadataForUnionSources(
