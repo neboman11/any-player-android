@@ -56,16 +56,14 @@ class MediaSessionPlayerBridge @Inject constructor(
     @Volatile
     private var currentStatusSnapshot: PlaybackStatus = playbackQueueManager.status.value
 
-    init {
-        startCollecting()
-    }
-
     fun open() {
         startCollecting()
     }
 
     private fun startCollecting() {
-        collectJob?.cancel()
+        if (collectJob?.isActive == true) {
+            return
+        }
         collectJob = scope.launch {
             var prev = currentStatusSnapshot
             CompatLog.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
@@ -132,6 +130,9 @@ class MediaSessionPlayerBridge @Inject constructor(
             val hasTrack = status.currentTrack != null || status.queue.isNotEmpty()
             val state    = mapState(status.state)
             val playing  = status.state == PlaybackStateType.PLAYING
+            if (!listeners.contains(listener)) {
+                return@launch
+            }
             CompatLog.d(TAG, "bootstrap -> state=$state playing=$playing track=${status.currentTrack?.id} hasTrack=$hasTrack")
             listener.onPlaybackStateChanged(state)
             listener.onIsPlayingChanged(playing)
