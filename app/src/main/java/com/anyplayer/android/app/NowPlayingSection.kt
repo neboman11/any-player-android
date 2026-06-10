@@ -9,13 +9,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -25,8 +33,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 
 @Composable
@@ -41,18 +51,20 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val upcomingTracks = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
     val pastTracks    = if (currentIdx >  0) displayQueue.take(currentIdx)     else emptyList()
 
+    val isPlaying = status.state == PlaybackStateType.PLAYING
+
     LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
                     ElevatedCard(
-                        modifier = Modifier.size(72.dp),
+                        modifier = Modifier.size(120.dp),
                         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         AsyncImage(
@@ -65,24 +77,40 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                 }
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = status.currentTrack?.title ?: "-",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
+                        text = status.currentTrack?.title ?: "—",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = status.currentTrack?.artist ?: "-",
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1
+                        text = status.currentTrack?.artist ?: "—",
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = status.state.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = if (isPlaying) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = if (isPlaying) MaterialTheme.colorScheme.onPrimaryContainer
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                    ) {
+                        Text(
+                            text = when (status.state) {
+                                PlaybackStateType.IDLE      -> "Idle"
+                                PlaybackStateType.PLAYING   -> "Playing"
+                                PlaybackStateType.PAUSED    -> "Paused"
+                                PlaybackStateType.BUFFERING -> "Buffering"
+                                PlaybackStateType.ERROR     -> "Error"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
                 }
             }
         }
@@ -115,29 +143,85 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = viewModel::previous) { Text("Previous") }
-                Button(
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = viewModel::previous) {
+                    Icon(
+                        imageVector = Icons.Filled.SkipPrevious,
+                        contentDescription = "Previous",
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                FilledIconButton(
                     onClick = viewModel::togglePlayPause,
-                    enabled = playbackDisabledMessage == null
-                ) { Text("Play/Pause") }
-                Button(onClick = viewModel::next) { Text("Next") }
+                    enabled = playbackDisabledMessage == null,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                IconButton(onClick = viewModel::next) {
+                    Icon(
+                        imageVector = Icons.Filled.SkipNext,
+                        contentDescription = "Next",
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
         }
 
         item {
-            Slider(
-                value = status.position.toFloat(),
-                valueRange = 0f..(status.duration.takeIf { it > 0 } ?: 1L).toFloat(),
-                onValueChange = { viewModel.seekTo(it.toLong()) }
-            )
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = formatTrackDuration(status.position),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = formatTrackDuration(status.duration),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Slider(
+                    value = status.position.toFloat(),
+                    valueRange = 0f..(status.duration.takeIf { it > 0 } ?: 1L).toFloat(),
+                    onValueChange = { viewModel.seekTo(it.toLong()) }
+                )
+            }
         }
+
         item {
-            Slider(
-                value = status.volume.toFloat(),
-                valueRange = 0f..100f,
-                onValueChange = { viewModel.setVolume(it.toInt()) }
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.VolumeDown,
+                    contentDescription = "Volume down",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Slider(
+                    value = status.volume.toFloat(),
+                    valueRange = 0f..100f,
+                    onValueChange = { viewModel.setVolume(it.toInt()) },
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = "Volume up",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         item {
@@ -151,14 +235,14 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                     FilterChip(
                         selected = status.repeatMode == mode,
                         onClick = { viewModel.setRepeatMode(mode) },
-                        label = { Text(mode.name) }
+                        label = { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }) }
                     )
                 }
             }
         }
 
         if (upcomingTracks.isNotEmpty() || pastTracks.isNotEmpty()) {
-            item { Text("Up Next") }
+            item { Text("Up Next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
             item { QueueTableHeader() }
             items(upcomingTracks, key = { it.id }) { track ->
                 QueueTrackRow(
@@ -191,7 +275,13 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                 }
             }
         } else if (displayQueue.isEmpty()) {
-            item { Text("No queue loaded", style = MaterialTheme.typography.bodySmall) }
+            item {
+                Text(
+                    "No queue loaded",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

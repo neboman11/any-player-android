@@ -6,8 +6,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.feature.search.SearchType
@@ -37,7 +44,11 @@ internal fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Search tracks or playlists") }
+            label = { Text("Search tracks or playlists") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { viewModel.search(query, source, searchType) }),
+            singleLine = true
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -67,7 +78,7 @@ internal fun SearchSection(viewModel: MainViewModel, state: MainUiState) {
             }
         }
 
-        Button(onClick = { viewModel.search(query, source, searchType) }) {
+        OutlinedButton(onClick = { viewModel.search(query, source, searchType) }) {
             Text("Search")
         }
 

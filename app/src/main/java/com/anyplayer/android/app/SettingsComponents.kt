@@ -1,12 +1,16 @@
 package com.anyplayer.android.app
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -157,17 +161,22 @@ internal fun WorkflowCard(title: String, description: String, onClick: () -> Uni
 @Composable
 internal fun WorkflowStep(number: Int, label: String, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                "$number",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimary,
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
                 modifier = Modifier
-                    .padding(0.dp)
-                    .then(
-                        Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    ),
-            )
+                    .size(24.dp)
+                    .background(color = MaterialTheme.colorScheme.primary, shape = CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "$number",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
             Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
         }
         content()

@@ -9,18 +9,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -517,47 +525,113 @@ internal fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
         }
 
         if (state.providerPlaylists.isEmpty()) {
-            Text("No provider playlists loaded")
+            Text(
+                "No provider playlists loaded",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             state.providerPlaylists.forEach { playlist ->
-                Button(onClick = { viewModel.openProviderPlaylistSummary(playlist) }) {
-                    Text("${playlist.name} (${playlist.source.name.lowercase()}) • ${playlist.trackCount}")
+                ElevatedCard(
+                    onClick = { viewModel.openProviderPlaylistSummary(playlist) },
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
+                ) {
+                    ListItem(
+                        headlineContent = { Text(playlist.name) },
+                        supportingContent = { TrackSourceBadge(source = playlist.source) },
+                        trailingContent = {
+                            Text(
+                                text = "${playlist.trackCount} tracks",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
                 }
             }
         }
 
-        Text("Local custom playlists")
-        OutlinedTextField(
-            value = newStandardName,
-            onValueChange = { newStandardName = it },
-            label = { Text("New standard playlist") },
-            modifier = Modifier.fillMaxWidth()
+        Text(
+            "Local custom playlists",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
         )
-        Button(onClick = {
-            viewModel.createStandardPlaylist(newStandardName)
-            newStandardName = ""
-        }) { Text("Create Standard") }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = newStandardName,
+                onValueChange = { newStandardName = it },
+                label = { Text("New standard playlist") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            Button(onClick = {
+                viewModel.createStandardPlaylist(newStandardName)
+                newStandardName = ""
+            }) { Text("Create") }
+        }
 
-        OutlinedTextField(
-            value = newUnionName,
-            onValueChange = { newUnionName = it },
-            label = { Text("New union playlist") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Button(onClick = {
-            viewModel.createUnionPlaylist(newUnionName)
-            newUnionName = ""
-        }) { Text("Create Union") }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = newUnionName,
+                onValueChange = { newUnionName = it },
+                label = { Text("New union playlist") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            Button(onClick = {
+                viewModel.createUnionPlaylist(newUnionName)
+                newUnionName = ""
+            }) { Text("Create") }
+        }
 
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             state.customPlaylists.forEach { playlist ->
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Button(onClick = { viewModel.selectCustomPlaylist(playlist.id) }) {
-                        Text("${playlist.name} (${playlist.playlistType.name.lowercase()})")
-                    }
-                    Button(onClick = { viewModel.playCustomPlaylist(playlist.id) }) { Text("Play") }
-                    Button(onClick = { viewModel.deleteCustomPlaylist(playlist.id) }) { Text("Delete") }
+                ElevatedCard(
+                    onClick = { viewModel.selectCustomPlaylist(playlist.id) },
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
+                ) {
+                    ListItem(
+                        headlineContent = { Text(playlist.name) },
+                        supportingContent = {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = playlist.playlistType.name.lowercase(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        },
+                        trailingContent = {
+                            Row {
+                                IconButton(onClick = { viewModel.playCustomPlaylist(playlist.id) }) {
+                                    Icon(
+                                        imageVector = Icons.Filled.PlayArrow,
+                                        contentDescription = "Play ${playlist.name}"
+                                    )
+                                }
+                                IconButton(onClick = { viewModel.deleteCustomPlaylist(playlist.id) }) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = "Delete ${playlist.name}",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
