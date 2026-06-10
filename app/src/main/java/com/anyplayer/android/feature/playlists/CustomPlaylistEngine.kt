@@ -10,6 +10,7 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 import java.util.UUID
@@ -227,6 +228,7 @@ class CustomPlaylistEngine @Inject constructor(
                     SourceType.ALL -> emptyList()
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 CompatLog.e(TAG, "Failed to load tracks for union source $sourceLabel (${source.sourcePlaylistId}): ${e.message}", e)
                 emptyList()
             }

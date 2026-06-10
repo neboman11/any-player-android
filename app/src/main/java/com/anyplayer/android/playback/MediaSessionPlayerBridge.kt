@@ -19,8 +19,8 @@ import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
@@ -52,11 +52,21 @@ class MediaSessionPlayerBridge @Inject constructor(
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var collectJob: Job? = null
     @Volatile
     private var currentStatusSnapshot: PlaybackStatus = playbackQueueManager.status.value
 
     init {
-        scope.launch {
+        startCollecting()
+    }
+
+    fun open() {
+        startCollecting()
+    }
+
+    private fun startCollecting() {
+        collectJob?.cancel()
+        collectJob = scope.launch {
             var prev = currentStatusSnapshot
             CompatLog.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
             playbackQueueManager.status.collect { status ->
@@ -247,7 +257,9 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     fun close() {
-        scope.cancel()
+        collectJob?.cancel()
+        collectJob = null
+        listeners.clear()
     }
 
     companion object { private const val TAG = "PlayerBridge" }

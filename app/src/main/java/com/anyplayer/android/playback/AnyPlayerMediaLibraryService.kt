@@ -106,6 +106,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        playerBridge.open()
         startProviderRestore()
 
         mediaLibrarySession = MediaLibrarySession.Builder(
