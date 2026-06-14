@@ -2,25 +2,18 @@ package com.anyplayer.android.feature.playback
 
 import android.content.Context
 import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.anyplayer.android.BuildConfig
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
-import com.anyplayer.android.feature.auth.SecureConnectionStore
 import com.anyplayer.android.feature.auth.StoredConnection
 import com.anyplayer.android.playback.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,12 +25,12 @@ import javax.inject.Singleton
 @UnstableApi
 class Media3PlaybackController @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val secureConnectionStore: SecureConnectionStore
+    private val audioCacheManager: AudioCacheManager
 ) {
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(context)
-                .setDataSourceFactory(createDataSourceFactory())
+                .setDataSourceFactory(audioCacheManager.buildPlayerDataSourceFactory())
         )
         .setLoadControl(
             DefaultLoadControl.Builder()
@@ -61,31 +54,6 @@ class Media3PlaybackController @Inject constructor(
 
     val player: Player
         get() = playerInstance
-
-    private fun createDataSourceFactory(): DefaultDataSource.Factory {
-        val httpFactory = DefaultHttpDataSource.Factory()
-        return DefaultDataSource.Factory(
-            context,
-            ResolvingDataSource.Factory(httpFactory) { dataSpec ->
-                val jellyfinHeaders = buildJellyfinRequestHeaders(
-                    requestUri = dataSpec.uri,
-                    connection = secureConnectionStore.read(SourceType.JELLYFIN),
-                    clientName = "Any Player",
-                    deviceName = Build.MODEL ?: "Android",
-                    deviceId = Settings.Secure.getString(
-                        context.contentResolver,
-                        Settings.Secure.ANDROID_ID
-                    )?.takeIf { it.isNotBlank() } ?: "any-player-android",
-                    version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
-                )
-                if (jellyfinHeaders.isEmpty()) {
-                    dataSpec
-                } else {
-                    dataSpec.withRequestHeaders(jellyfinHeaders)
-                }
-            }
-        )
-    }
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
         val playableTracks = tracks.filter(::isMedia3Playable)

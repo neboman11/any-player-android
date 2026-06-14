@@ -30,6 +30,7 @@ class PlaybackQueueManager @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
     private val spotifyPlaybackController: SpotifyPlaybackController,
     private val playbackStateStore: PlaybackStateStore,
+    private val audioCacheManager: AudioCacheManager,
     private val json: Json
 ) {
     companion object {
@@ -70,6 +71,7 @@ class PlaybackQueueManager @Inject constructor(
     /** Cached list of track IDs matching [mutableStatus].queue order; rebuilt by [rebuildQueueCaches]. */
     private var cachedQueueTrackIds: List<String> = emptyList()
     private var addToQueueInsertionOffset: Int = 0
+    private var lastPrefetchedForTrackId: String? = null
 
     /**
      * Gate that blocks [restorePersistedState] until the provider auth layer
@@ -226,6 +228,8 @@ class PlaybackQueueManager @Inject constructor(
         mixedMode = hasSpotify && hasNonSpotify
 
         if (tracks.isEmpty()) {
+            audioCacheManager.cancelPrefetch()
+            lastPrefetchedForTrackId = null
             resetSpotifyAutoAdvanceState()
             resetSpotifyRecoveryState()
             resetMixedMediaEndStallState()
@@ -363,6 +367,8 @@ class PlaybackQueueManager @Inject constructor(
             position = 0,
             duration = selectedTrack.durationMs ?: 0
         )
+        lastPrefetchedForTrackId = selectedTrack.id
+        triggerPrefetch()
         persistStateAsync()
     }
 
@@ -510,6 +516,8 @@ class PlaybackQueueManager @Inject constructor(
             position = 0,
             duration = state.queue[target].durationMs ?: 0
         )
+        lastPrefetchedForTrackId = state.queue[target].id
+        triggerPrefetch()
         persistStateAsync()
     }
 
@@ -1298,6 +1306,11 @@ class PlaybackQueueManager @Inject constructor(
             repeatMode = snapshot.repeatMode,
             orderedQueue = orderedQueue
         )
+        val syncedTrackId = mutableStatus.value.currentTrack?.id
+        if (syncedTrackId != null && syncedTrackId != lastPrefetchedForTrackId) {
+            lastPrefetchedForTrackId = syncedTrackId
+            triggerPrefetch()
+        }
     }
 
     private suspend fun restorePersistedState() {
@@ -1703,6 +1716,18 @@ class PlaybackQueueManager @Inject constructor(
         if (ids.isEmpty()) return null
         val index = ids.indexOfFirst { trackIdsMatch(it, currentTrackId) }.takeIf { it >= 0 } ?: 0
         return ids to index
+    }
+
+    private fun triggerPrefetch() {
+        val state = mutableStatus.value
+        if (spotifyMode || state.queue.isEmpty()) return
+        val currentId = state.currentTrack?.id ?: return
+        val queue = if (mixedMode) mixedPlaybackSequence(state) else state.queue
+        val currentIdx = queue.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: return
+        val upcoming = queue
+            .drop(currentIdx + 1)
+            .filter { !it.url.isNullOrBlank() && it.source != SourceType.SPOTIFY }
+        audioCacheManager.prefetchTracks(upcoming)
     }
 
     private fun buildOrderedQueue(
