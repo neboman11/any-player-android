@@ -248,7 +248,7 @@ class SyncSnapshotClient @Inject constructor(
         val wsUrl = when {
             base.startsWith("https://") -> "wss://${base.removePrefix("https://")}/v1/ws"
             base.startsWith("http://") -> "ws://${base.removePrefix("http://")}/v1/ws"
-            else -> "ws://$base/v1/ws"
+            else -> "wss://$base/v1/ws"
         }
 
         val token = withContext(Dispatchers.IO) {
