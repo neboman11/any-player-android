@@ -256,6 +256,8 @@ class PlaybackQueueManager @Inject constructor(
         )
 
         if (spotifyMode) {
+            audioCacheManager.cancelPrefetch()
+            lastPrefetchedForTrackId = null
             resetSpotifyAutoAdvanceState()
             resetSpotifyRecoveryState()
             resetMixedMediaEndStallState()
@@ -1119,6 +1121,10 @@ class PlaybackQueueManager @Inject constructor(
                     repeatMode = snapshot.repeatMode,
                     orderedQueue = mixedPlaybackSequence(state)
                 )
+                if (currentTrack.id != lastPrefetchedForTrackId) {
+                    lastPrefetchedForTrackId = currentTrack.id
+                    triggerPrefetch()
+                }
             }
             return
         }

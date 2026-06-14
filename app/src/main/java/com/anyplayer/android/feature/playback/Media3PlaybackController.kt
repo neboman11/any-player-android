@@ -67,6 +67,7 @@ class Media3PlaybackController @Inject constructor(
             MediaItem.Builder()
                 .setMediaId(track.id)
                 .setUri(track.url)
+                .setCustomCacheKey("${track.source}:${track.id}")
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(track.title)

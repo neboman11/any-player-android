@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -89,7 +90,11 @@ class AudioCacheManager @Inject constructor(
                         resolvingFactory.createDataSource(),
                         CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
                     )
-                    CacheWriter(cacheDataSource, DataSpec(uri), null, null).cache()
+                    val dataSpec = DataSpec.Builder()
+                        .setUri(uri)
+                        .setCustomCacheKey("${track.source}:${track.id}")
+                        .build()
+                    runInterruptible { CacheWriter(cacheDataSource, dataSpec, null, null).cache() }
                     CompatLog.d(TAG, "Prefetched audio: ${track.title}")
                 } catch (e: Exception) {
                     ensureActive()
