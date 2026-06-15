@@ -369,8 +369,10 @@ class PlaybackQueueManager @Inject constructor(
             position = 0,
             duration = selectedTrack.durationMs ?: 0
         )
-        lastPrefetchedForTrackId = selectedTrack.id
-        if (autoPlay) triggerPrefetch()
+        if (autoPlay) {
+            lastPrefetchedForTrackId = selectedTrack.id
+            triggerPrefetch()
+        }
         persistStateAsync()
     }
 
@@ -1728,7 +1730,7 @@ class PlaybackQueueManager @Inject constructor(
         val state = mutableStatus.value
         if (spotifyMode || state.queue.isEmpty()) return
         val currentId = state.currentTrack?.id ?: return
-        val queue = if (mixedMode) mixedPlaybackSequence(state) else state.queue
+        val queue = if (mixedMode) mixedPlaybackSequence(state) else state.orderedQueue
         val currentIdx = queue.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: return
         val upcoming = queue
             .drop(currentIdx + 1)
