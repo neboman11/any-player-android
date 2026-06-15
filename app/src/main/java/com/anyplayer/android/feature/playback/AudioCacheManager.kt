@@ -74,8 +74,8 @@ class AudioCacheManager @Inject constructor(
      * into the cache in the background. Skips non-HTTP tracks and anything already cached.
      */
     fun prefetchTracks(tracks: List<Track>) {
-        if (tracks.isEmpty()) return
         prefetchJob?.cancel()
+        if (tracks.isEmpty()) return
         prefetchJob = scope.launch {
             val resolvingFactory = buildResolvingFactory()
             for (track in tracks.take(PREFETCH_AHEAD_COUNT)) {

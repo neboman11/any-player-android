@@ -369,7 +369,7 @@ class PlaybackQueueManager @Inject constructor(
             position = 0,
             duration = selectedTrack.durationMs ?: 0
         )
-        if (autoPlay) {
+        if (autoPlay && !mutableStatus.value.shuffle) {
             lastPrefetchedForTrackId = selectedTrack.id
             triggerPrefetch()
         }
