@@ -370,7 +370,7 @@ class PlaybackQueueManager @Inject constructor(
             duration = selectedTrack.durationMs ?: 0
         )
         lastPrefetchedForTrackId = selectedTrack.id
-        triggerPrefetch()
+        if (autoPlay) triggerPrefetch()
         persistStateAsync()
     }
 
