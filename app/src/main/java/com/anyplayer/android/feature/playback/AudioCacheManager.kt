@@ -92,7 +92,7 @@ class AudioCacheManager @Inject constructor(
                     )
                     val dataSpec = DataSpec.Builder()
                         .setUri(uri)
-                        .setCustomCacheKey("${track.source}:${track.id}")
+                        .setKey("${track.source}:${track.id}")
                         .build()
                     runInterruptible { CacheWriter(cacheDataSource, dataSpec, null, null).cache() }
                     CompatLog.d(TAG, "Prefetched audio: ${track.title}")
