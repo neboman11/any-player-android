@@ -75,7 +75,10 @@ class AudioCacheManager @Inject constructor(
      */
     fun prefetchTracks(tracks: List<Track>) {
         prefetchJob?.cancel()
-        if (tracks.isEmpty()) return
+        if (tracks.isEmpty()) {
+            prefetchJob = null
+            return
+        }
         prefetchJob = scope.launch {
             val resolvingFactory = buildResolvingFactory()
             for (track in tracks.take(PREFETCH_AHEAD_COUNT)) {
