@@ -442,7 +442,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
         return if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
             trimmed
         } else {
-            "http://$trimmed"
+            "https://$trimmed"
         }
     }
 

@@ -142,13 +142,22 @@ class SyncSnapshotClient @Inject constructor(
 
     private val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
 
+    private fun normalizeBaseUrl(serverTarget: String): String {
+        val trimmed = serverTarget.trim().trimEnd('/')
+        return when {
+            trimmed.isBlank() -> trimmed
+            trimmed.startsWith("https://") || trimmed.startsWith("http://") -> trimmed
+            else -> "https://$trimmed"
+        }
+    }
+
     private fun normalizeToken(raw: String): String {
         val trimmed = raw.trim()
         return bearerRegex.replace(trimmed, "")
     }
 
     suspend fun fetchSnapshot(serverTarget: String): JsonObject? = withContext(Dispatchers.IO) {
-        val base = serverTarget.trim().trimEnd('/')
+        val base = normalizeBaseUrl(serverTarget)
         if (base.isBlank()) {
             return@withContext null
         }
@@ -178,7 +187,7 @@ class SyncSnapshotClient @Inject constructor(
     }
 
     suspend fun fetchSnapshotSince(serverTarget: String, sinceVersion: Long): JsonObject? = withContext(Dispatchers.IO) {
-        val base = serverTarget.trim().trimEnd('/')
+        val base = normalizeBaseUrl(serverTarget)
         if (base.isBlank()) {
             return@withContext null
         }
@@ -211,7 +220,7 @@ class SyncSnapshotClient @Inject constructor(
     }
 
     suspend fun pushAppState(serverTarget: String, payload: AppStateSyncPayload): Boolean = withContext(Dispatchers.IO) {
-        val base = serverTarget.trim().trimEnd('/')
+        val base = normalizeBaseUrl(serverTarget)
         if (base.isBlank()) {
             return@withContext false
         }
@@ -239,7 +248,7 @@ class SyncSnapshotClient @Inject constructor(
     }
 
     fun observeStateUpdates(serverTarget: String): Flow<SyncUpdateEvent> = callbackFlow {
-        val base = serverTarget.trim().trimEnd('/')
+        val base = normalizeBaseUrl(serverTarget)
         if (base.isBlank()) {
             close()
             return@callbackFlow
@@ -248,7 +257,7 @@ class SyncSnapshotClient @Inject constructor(
         val wsUrl = when {
             base.startsWith("https://") -> "wss://${base.removePrefix("https://")}/v1/ws"
             base.startsWith("http://") -> "ws://${base.removePrefix("http://")}/v1/ws"
-            else -> "ws://$base/v1/ws"
+            else -> "wss://$base/v1/ws"
         }
 
         val token = withContext(Dispatchers.IO) {
