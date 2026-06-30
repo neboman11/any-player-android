@@ -318,14 +318,14 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         }
 
         serviceScope.launch {
-            data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val isPlaying: Boolean)
+            data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val state: PlaybackStateType)
             playbackQueueManager.status
                 .map { status ->
                     NotificationKey(
                         trackId = status.currentTrack?.id,
                         title = status.currentTrack?.title,
                         artist = status.currentTrack?.artist,
-                        isPlaying = status.state == PlaybackStateType.PLAYING
+                        state = status.state
                     ) to status
                 }
                 .distinctUntilChanged { old, new -> old.first == new.first }
@@ -345,6 +345,19 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             ACTION_PREVIOUS -> playbackQueueManager.previous()
         }
         return START_STICKY
+    }
+
+    // Prevent Media3's DefaultMediaNotificationProvider from calling stopForeground()
+    // during BUFFERING or track transitions — our status coroutine owns the lifecycle.
+    override fun onUpdateNotification(session: MediaSession, startInForeground: Boolean) = Unit
+
+    // Keep the service alive when the user removes the app from recents during playback.
+    // MediaSessionService's default impl calls stopSelf() if getPlayWhenReady() is false,
+    // which hits mid-buffer transitions even while the user intends audio to continue.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (playbackQueueManager.status.value.state == PlaybackStateType.IDLE) {
+            stopSelf()
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
@@ -516,6 +529,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         val isPlaying = status.state == PlaybackStateType.PLAYING
         val mediaStyle = MediaStyle()
             .setShowActionsInCompactView(0, 1, 2)
+        @Suppress("DEPRECATION")
         mediaLibrarySession?.sessionCompatToken?.let { mediaStyle.setMediaSession(it) }
         return NotificationCompat.Builder(this, AnyPlayerApplication.PLAYBACK_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
@@ -537,7 +551,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
             .setShowWhen(false)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setOngoing(hasTrack && isPlaying)
+            .setOngoing(hasTrack && status.state != PlaybackStateType.IDLE && status.state != PlaybackStateType.ERROR)
             .addAction(
                 android.R.drawable.ic_media_previous,
                 "Previous",
