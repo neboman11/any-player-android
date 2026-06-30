@@ -1,14 +1,14 @@
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
+id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
@@ -74,6 +74,7 @@ fun resolveNdkDir(): java.io.File {
     return ndkDir
 }
 
+@Suppress("DEPRECATION")
 android {
     namespace = "com.anyplayer.android"
     compileSdk = 35
@@ -97,7 +98,7 @@ android {
     }
 
     sourceSets {
-        getByName("main").jniLibs.srcDir(rustFfiJniRootDir)
+        getByName("main").jniLibs.directories.add(rustFfiJniRootDir.path)
     }
 
     buildTypes {
@@ -116,13 +117,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-opt-in=kotlin.ExperimentalStdlibApi"
-        )
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -139,8 +133,14 @@ android {
     }
 }
 
+tasks.withType<KotlinCompilationTask<*>>().configureEach {
+    compilerOptions {
+        freeCompilerArgs.add("-opt-in=kotlin.ExperimentalStdlibApi")
+    }
+}
+
 dependencies {
-    val hiltVersion = "2.57.2"
+    val hiltVersion = "2.60"
     val roomVersion = "2.7.2"
     val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(composeBom)

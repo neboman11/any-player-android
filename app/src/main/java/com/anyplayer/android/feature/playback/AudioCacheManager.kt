@@ -34,7 +34,7 @@ import javax.inject.Singleton
 @Singleton
 @UnstableApi
 class AudioCacheManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val secureConnectionStore: SecureConnectionStore
 ) {
     companion object {
@@ -96,7 +96,6 @@ class AudioCacheManager @Inject constructor(
                     )
                     val dataSpec = DataSpec.Builder()
                         .setUri(uri)
-                        .setKey("${track.source}:${track.id}")
                         .setLength(PREFETCH_MAX_BYTES)
                         .build()
                     runInterruptible { CacheWriter(cacheDataSource, dataSpec, null, null).cache() }

@@ -24,7 +24,7 @@ import javax.inject.Singleton
 @Singleton
 @UnstableApi
 class Media3PlaybackController @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val audioCacheManager: AudioCacheManager
 ) {
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
