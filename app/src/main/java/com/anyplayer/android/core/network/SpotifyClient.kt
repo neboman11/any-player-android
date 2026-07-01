@@ -199,7 +199,7 @@ class SpotifyClient @Inject constructor(
             Track(
                 id = id,
                 title = trackObj["name"].jsonPrimitiveStringOrEmpty,
-                artist = artists?.firstOrNull()?.jsonObject?.get("name").jsonPrimitiveStringOrNull ?: "Unknown Artist",
+                artist = joinArtistNames(artists),
                 album = album["name"].jsonPrimitiveStringOrNull,
                 durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.SPOTIFY,
@@ -236,7 +236,7 @@ class SpotifyClient @Inject constructor(
             Track(
                 id = id,
                 title = trackObj["name"].jsonPrimitiveStringOrEmpty,
-                artist = artists?.firstOrNull()?.jsonObject?.get("name").jsonPrimitiveStringOrNull ?: "Unknown Artist",
+                artist = joinArtistNames(artists),
                 album = album["name"].jsonPrimitiveStringOrNull,
                 durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
                 source = SourceType.SPOTIFY,
@@ -466,6 +466,13 @@ private val JsonElement?.jsonPrimitiveBooleanOrFalse: Boolean
     get() = this?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
 
 private const val PREFERRED_IMAGE_WIDTH = 300
+
+private fun joinArtistNames(artists: JsonArray?): String {
+    val names = artists.orEmpty()
+        .mapNotNull { it.jsonObject["name"].jsonPrimitiveStringOrNull }
+        .filter { it.isNotBlank() }
+    return if (names.isEmpty()) "Unknown Artist" else names.joinToString(", ")
+}
 
 private fun bestImageUrl(images: JsonArray?): String? {
     if (images == null || images.isEmpty()) return null
