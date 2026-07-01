@@ -467,7 +467,7 @@ private val JsonElement?.jsonPrimitiveBooleanOrFalse: Boolean
 
 private const val PREFERRED_IMAGE_WIDTH = 300
 
-private fun joinArtistNames(artists: JsonArray?): String {
+internal fun joinArtistNames(artists: JsonArray?): String {
     val names = artists.orEmpty()
         .mapNotNull { it.jsonObject["name"].jsonPrimitiveStringOrNull }
         .filter { it.isNotBlank() }

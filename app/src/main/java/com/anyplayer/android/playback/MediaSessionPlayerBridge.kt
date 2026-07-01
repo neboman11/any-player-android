@@ -168,9 +168,10 @@ class MediaSessionPlayerBridge @Inject constructor(
     override fun isPlaying(): Boolean = currentStatus().state == PlaybackStateType.PLAYING
     // Return true during BUFFERING so Media3 keeps the foreground service alive while we're
     // between tracks or refilling the buffer — not just when audio frames are flowing.
-    override fun getPlayWhenReady(): Boolean =
-        currentStatus().state == PlaybackStateType.PLAYING ||
-        currentStatus().state == PlaybackStateType.BUFFERING
+    override fun getPlayWhenReady(): Boolean {
+        val state = currentStatus().state
+        return state == PlaybackStateType.PLAYING || state == PlaybackStateType.BUFFERING
+    }
 
     override fun getCurrentMediaItem(): MediaItem? =
         currentTrackOrFallback()?.toMediaItem()
