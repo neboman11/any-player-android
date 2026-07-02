@@ -74,7 +74,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val authRepository: ProviderAuthRepository,
     private val playbackQueueManager: PlaybackQueueManager,
     private val stateTransferManager: StateTransferManager,

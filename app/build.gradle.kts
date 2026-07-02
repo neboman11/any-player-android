@@ -1,14 +1,14 @@
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
+id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
@@ -43,6 +43,18 @@ val rustFfiX86JniDir = rustFfiJniRootDir.resolve("x86")
 val skipRustFfiBuild =
     ((project.findProperty("skipRustFfiBuild") as String?)?.toBooleanStrictOrNull()) ?: false
 
+// Dedicated configuration for Robolectric SDK JARs — kept separate from testImplementation so
+// Gradle resolves and caches the file, which we then copy to a known directory for offline use.
+val robolectricSdk: Configuration by configurations.creating {
+    isTransitive = false
+}
+val robolectricSdkDir = layout.buildDirectory.dir("robolectric-sdk").get().asFile
+val copyRobolectricSdk = tasks.register<Copy>("copyRobolectricSdk") {
+    from(robolectricSdk)
+    into(robolectricSdkDir)
+    doFirst { robolectricSdkDir.mkdirs() }
+}
+
 fun resolveNdkDir(): java.io.File {
     val explicitNdkDir = (project.findProperty("androidNdkDir") as String?)
         ?.trim()
@@ -74,6 +86,7 @@ fun resolveNdkDir(): java.io.File {
     return ndkDir
 }
 
+@Suppress("DEPRECATION")
 android {
     namespace = "com.anyplayer.android"
     compileSdk = 35
@@ -97,7 +110,7 @@ android {
     }
 
     sourceSets {
-        getByName("main").jniLibs.srcDir(rustFfiJniRootDir)
+        getByName("main").jniLibs.directories.add(rustFfiJniRootDir.path)
     }
 
     buildTypes {
@@ -116,13 +129,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-opt-in=kotlin.ExperimentalStdlibApi"
-        )
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -137,10 +143,24 @@ android {
             pickFirsts += "**/*.proto"
         }
     }
+
+    testOptions {
+        unitTests.all { test ->
+            test.dependsOn(copyRobolectricSdk)
+            test.systemProperty("robolectric.offline", "true")
+            test.systemProperty("robolectric.dependency.dir", robolectricSdkDir.absolutePath)
+        }
+    }
+}
+
+tasks.withType<KotlinCompilationTask<*>>().configureEach {
+    compilerOptions {
+        freeCompilerArgs.add("-opt-in=kotlin.ExperimentalStdlibApi")
+    }
 }
 
 dependencies {
-    val hiltVersion = "2.57.2"
+    val hiltVersion = "2.60"
     val roomVersion = "2.7.2"
     val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(composeBom)
@@ -198,6 +218,10 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
     testImplementation("org.robolectric:robolectric:4.12.1")
+    // Robolectric 4.12.1 pre-instrumented SDK JAR (API 34, PREINSTRUMENTED_VERSION=6).
+    // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
+    // robolectric.dependency.dir can point to it for fully offline test execution.
+    robolectricSdk("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

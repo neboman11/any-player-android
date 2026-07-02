@@ -166,7 +166,12 @@ class MediaSessionPlayerBridge @Inject constructor(
     // State — always from PlaybackQueueManager
     override fun getPlaybackState(): Int = mapState(currentStatus().state)
     override fun isPlaying(): Boolean = currentStatus().state == PlaybackStateType.PLAYING
-    override fun getPlayWhenReady(): Boolean = isPlaying()
+    // Return true during BUFFERING so Media3 keeps the foreground service alive while we're
+    // between tracks or refilling the buffer — not just when audio frames are flowing.
+    override fun getPlayWhenReady(): Boolean {
+        val state = currentStatus().state
+        return state == PlaybackStateType.PLAYING || state == PlaybackStateType.BUFFERING
+    }
 
     override fun getCurrentMediaItem(): MediaItem? =
         currentTrackOrFallback()?.toMediaItem()
@@ -277,7 +282,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     private fun buildCommands(hasTrack: Boolean): Player.Commands {
         val b = Player.Commands.Builder().addAll(
             Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
-            Player.COMMAND_GET_MEDIA_ITEMS_METADATA,
+            Player.COMMAND_GET_METADATA,
             Player.COMMAND_GET_TIMELINE,
             Player.COMMAND_GET_AUDIO_ATTRIBUTES,
             Player.COMMAND_GET_VOLUME,
@@ -337,7 +342,7 @@ private class QueueTimeline(
         val track = tracks[windowIndex]
         val durationUs = track.durationMs
             ?.takeIf { it > 0 }
-            ?.let(C::msToUs)
+            ?.let { it * 1_000L }
             ?: C.TIME_UNSET
         return window.set(
             Window.SINGLE_WINDOW_UID,

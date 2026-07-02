@@ -24,7 +24,7 @@ This app targets phone/tablet and Android Auto-style media browsing, and include
 - Linux/macOS/Windows with:
   - Android Studio (or command-line Android SDK tools)
   - Android SDK (API 35)
-  - JDK 17
+  - JDK 21
 - For Rust FFI builds (optional but enabled by default):
   - Rust toolchain + Cargo
   - Android NDK installed via SDK Manager
