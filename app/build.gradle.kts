@@ -43,6 +43,18 @@ val rustFfiX86JniDir = rustFfiJniRootDir.resolve("x86")
 val skipRustFfiBuild =
     ((project.findProperty("skipRustFfiBuild") as String?)?.toBooleanStrictOrNull()) ?: false
 
+// Dedicated configuration for Robolectric SDK JARs — kept separate from testImplementation so
+// Gradle resolves and caches the file, which we then copy to a known directory for offline use.
+val robolectricSdk: Configuration by configurations.creating {
+    isTransitive = false
+}
+val robolectricSdkDir = layout.buildDirectory.dir("robolectric-sdk").get().asFile
+val copyRobolectricSdk = tasks.register<Copy>("copyRobolectricSdk") {
+    from(robolectricSdk)
+    into(robolectricSdkDir)
+    doFirst { robolectricSdkDir.mkdirs() }
+}
+
 fun resolveNdkDir(): java.io.File {
     val explicitNdkDir = (project.findProperty("androidNdkDir") as String?)
         ?.trim()
@@ -134,7 +146,9 @@ android {
 
     testOptions {
         unitTests.all { test ->
+            test.dependsOn(copyRobolectricSdk)
             test.systemProperty("robolectric.offline", "true")
+            test.systemProperty("robolectric.dependency.dir", robolectricSdkDir.absolutePath)
         }
     }
 }
@@ -204,9 +218,10 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
     testImplementation("org.robolectric:robolectric:4.12.1")
-    // Pre-download the Robolectric instrumented SDK JAR so CI doesn't need to fetch it
-    // at test runtime (Robolectric 4.12.1 uses PREINSTRUMENTED_VERSION=6, max SDK=34)
-    testImplementation("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
+    // Robolectric 4.12.1 pre-instrumented SDK JAR (API 34, PREINSTRUMENTED_VERSION=6).
+    // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
+    // robolectric.dependency.dir can point to it for fully offline test execution.
+    robolectricSdk("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
