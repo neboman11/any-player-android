@@ -277,100 +277,102 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
     override suspend fun restoreAll(): List<ProviderConnectionProfile> {
         return withContext(Dispatchers.IO) {
-            secureConnectionStore.readAll().map { stored ->
-                when (stored.source) {
-                    SourceType.JELLYFIN -> {
-                        val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
-                        if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
-                            val check = rustBridge.providerValidateConnection(
-                                source = SourceType.JELLYFIN,
-                                session = buildJellyfinSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
-                            ) ?: ProviderConnectionCheck.Failed(
-                                rustBridge.lastError ?: "Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
-                            )
+            secureConnectionStore.readAll().map { stored -> restoreConnection(stored) }
+        }
+    }
 
-                            when (check) {
-                                is ProviderConnectionCheck.Connected -> stored.toStatus()
-                                is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
-                            }
-                        } else {
-                            stored.toStatus()
-                        }
+    private suspend fun restoreConnection(stored: StoredConnection): ProviderConnectionProfile {
+        return when (stored.source) {
+            SourceType.JELLYFIN -> {
+                val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
+                if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
+                    val check = rustBridge.providerValidateConnection(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
+                    ) ?: ProviderConnectionCheck.Failed(
+                        rustBridge.lastError ?: "Jellyfin $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                    )
+
+                    when (check) {
+                        is ProviderConnectionCheck.Connected -> stored.toStatus()
+                        is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
                     }
-
-                    SourceType.PLEX -> {
-                        val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
-                        if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
-                            val check = rustBridge.providerValidateConnection(
-                                source = SourceType.PLEX,
-                                session = buildPlexSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
-                            ) ?: ProviderConnectionCheck.Failed(
-                                rustBridge.lastError ?: "Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
-                            )
-
-                            when (check) {
-                                is ProviderConnectionCheck.Connected -> stored.toStatus()
-                                is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
-                            }
-                        } else {
-                            stored.toStatus()
-                        }
-                    }
-
-                    SourceType.SPOTIFY -> {
-                        if (!stored.token.isNullOrBlank()) {
-                            when (val validation = spotifyClient.validate(stored.token)) {
-                                is ProviderConnectionCheck.Connected -> stored.copy(
-                                    username = validation.username ?: stored.username,
-                                    spotifyPremium = validation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                    playbackReady = resolveSpotifyPlaybackReady(
-                                        accessToken = stored.token,
-                                        tokenExpiresAt = stored.tokenExpiresAt
-                                    )
-                                ).also { secureConnectionStore.save(it) }.toStatus()
-
-                                is ProviderConnectionCheck.Failed -> {
-                                    val refreshed = stored.refreshToken?.let {
-                                        spotifyClient.refreshAccessToken(
-                                            clientId = SpotifyClientIds.ACTIVE,
-                                            refreshToken = it
-                                        )
-                                    }
-
-                                    if (refreshed != null) {
-                                        when (val refreshedValidation = spotifyClient.validate(refreshed.accessToken)) {
-                                            is ProviderConnectionCheck.Connected -> {
-                                                val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
-                                                val updated = stored.copy(
-                                                    username = refreshedValidation.username ?: stored.username,
-                                                    token = refreshed.accessToken,
-                                                    refreshToken = refreshed.refreshToken ?: stored.refreshToken,
-                                                    tokenExpiresAt = refreshedTokenExpiresAt,
-                                                    spotifyPremium = refreshedValidation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                                    playbackReady = resolveSpotifyPlaybackReady(
-                                                        accessToken = refreshed.accessToken,
-                                                        tokenExpiresAt = refreshedTokenExpiresAt
-                                                    )
-                                                )
-                                                secureConnectionStore.save(updated)
-                                                updated.toStatus()
-                                            }
-
-                                            is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
-                                        }
-                                    } else {
-                                        stored.copy(playbackReady = false).toStatus()
-                                    }
-                                }
-                            }
-                        } else {
-                            stored.toStatus()
-                        }
-                    }
-
-                    else -> stored.toStatus()
+                } else {
+                    stored.toStatus()
                 }
             }
+
+            SourceType.PLEX -> {
+                val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
+                if (normalizedServerUrl != null && !stored.token.isNullOrBlank()) {
+                    val check = rustBridge.providerValidateConnection(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(normalizedServerUrl, stored.token, stored.playlistPageSize)
+                    ) ?: ProviderConnectionCheck.Failed(
+                        rustBridge.lastError ?: "Plex $RUST_PROVIDER_BRIDGE_UNAVAILABLE"
+                    )
+
+                    when (check) {
+                        is ProviderConnectionCheck.Connected -> stored.toStatus()
+                        is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
+                    }
+                } else {
+                    stored.toStatus()
+                }
+            }
+
+            SourceType.SPOTIFY -> {
+                if (!stored.token.isNullOrBlank()) {
+                    when (val validation = spotifyClient.validate(stored.token)) {
+                        is ProviderConnectionCheck.Connected -> stored.copy(
+                            username = validation.username ?: stored.username,
+                            spotifyPremium = validation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
+                            playbackReady = resolveSpotifyPlaybackReady(
+                                accessToken = stored.token,
+                                tokenExpiresAt = stored.tokenExpiresAt
+                            )
+                        ).also { secureConnectionStore.save(it) }.toStatus()
+
+                        is ProviderConnectionCheck.Failed -> {
+                            val refreshed = stored.refreshToken?.let {
+                                spotifyClient.refreshAccessToken(
+                                    clientId = SpotifyClientIds.ACTIVE,
+                                    refreshToken = it
+                                )
+                            }
+
+                            if (refreshed != null) {
+                                when (val refreshedValidation = spotifyClient.validate(refreshed.accessToken)) {
+                                    is ProviderConnectionCheck.Connected -> {
+                                        val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
+                                        val updated = stored.copy(
+                                            username = refreshedValidation.username ?: stored.username,
+                                            token = refreshed.accessToken,
+                                            refreshToken = refreshed.refreshToken ?: stored.refreshToken,
+                                            tokenExpiresAt = refreshedTokenExpiresAt,
+                                            spotifyPremium = refreshedValidation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
+                                            playbackReady = resolveSpotifyPlaybackReady(
+                                                accessToken = refreshed.accessToken,
+                                                tokenExpiresAt = refreshedTokenExpiresAt
+                                            )
+                                        )
+                                        secureConnectionStore.save(updated)
+                                        updated.toStatus()
+                                    }
+
+                                    is ProviderConnectionCheck.Failed -> stored.copy(playbackReady = false).toStatus()
+                                }
+                            } else {
+                                stored.copy(playbackReady = false).toStatus()
+                            }
+                        }
+                    }
+                } else {
+                    stored.toStatus()
+                }
+            }
+
+            else -> stored.toStatus()
         }
     }
 

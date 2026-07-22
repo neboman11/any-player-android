@@ -433,6 +433,12 @@ class ProviderCatalogRepository @Inject constructor(
     internal suspend fun getCachedPlaylistTracks(sourceType: SourceType, playlistId: String): List<Track> = withContext(Dispatchers.IO) {
         val key = playlistTrackCacheKey(sourceType, playlistId)
         val entry = safeGetCacheEntry(key) ?: return@withContext emptyList()
+        if (entry.version != PROVIDER_PLAYLIST_TRACK_CACHE_VERSION) {
+            // Stale cache format (e.g. pre-dates the multi-artist join fix) — drop it
+            // so callers fall through to a live refetch instead of serving old data forever.
+            runCatching { appCacheEntryDao.delete(key) }
+            return@withContext emptyList()
+        }
         runCatching {
             json.decodeFromString<ProviderPlaylistTrackCacheEntry>(entry.valueJson).tracks
         }.getOrElse {
@@ -631,7 +637,7 @@ class ProviderCatalogRepository @Inject constructor(
 
 private const val PROVIDER_PLAYLIST_CACHE_KEY = "provider_playlists"
 private const val PROVIDER_PLAYLIST_CACHE_VERSION = 1
-private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 1
+private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 2
 private const val PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX = "provider_playlist_tracks_"
 private const val MAX_CACHE_JSON_CHARS = 500_000
 
