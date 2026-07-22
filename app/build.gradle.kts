@@ -159,12 +159,6 @@ tasks.withType<KotlinCompilationTask<*>>().configureEach {
     }
 }
 
-tasks.withType<KotlinCompilationTask<*>>().configureEach {
-    compilerOptions {
-        freeCompilerArgs.add("-opt-in=kotlin.ExperimentalStdlibApi")
-    }
-}
-
 dependencies {
     val hiltVersion = "2.60"
     val roomVersion = "2.7.2"
