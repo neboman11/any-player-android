@@ -228,8 +228,8 @@ dependencies {
     // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
     // robolectric.dependency.dir can point to it for fully offline test execution.
     robolectricSdk("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
-    androidTestImplementation("androidx.test.ext:junit:1.3.0")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
 
