@@ -234,16 +234,16 @@ class ProviderAuthRepositoryImpl @Inject constructor(
             val currentToken = stored.token?.trim().orEmpty()
             if (currentToken.isBlank()) return@withContext null
 
-            val expiresAt = stored.tokenExpiresAt
+            val expiresAt = stored.tokenExpiresAt ?: return@withContext currentToken
             val now = System.currentTimeMillis()
-            val shouldRefresh = expiresAt != null && now >= (expiresAt - SPOTIFY_REFRESH_WINDOW_MILLIS)
+            val shouldRefresh = now >= (expiresAt - SPOTIFY_REFRESH_WINDOW_MILLIS)
             if (!shouldRefresh) {
                 return@withContext currentToken
             }
 
             val refreshToken = stored.refreshToken?.trim().orEmpty()
             if (refreshToken.isBlank()) {
-                return@withContext if (now < expiresAt!!) currentToken else null
+                return@withContext if (now < expiresAt) currentToken else null
             }
 
             val refreshed = runCatching {
@@ -253,10 +253,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                 )
             }.onFailure { error ->
                 CompatLog.e(TAG, "Spotify token refresh network call failed", error)
-            }.getOrNull() ?: return@withContext if (now < expiresAt!!) currentToken else null
+            }.getOrNull() ?: return@withContext if (now < expiresAt) currentToken else null
 
             val refreshedToken = refreshed.accessToken.trim()
-            if (refreshedToken.isBlank()) return@withContext if (now < expiresAt!!) currentToken else null
+            if (refreshedToken.isBlank()) return@withContext if (now < expiresAt) currentToken else null
             val refreshedTokenExpiresAt = computeTokenExpiresAt(refreshed.expiresIn)
 
             val updatedConnection = stored.copy(
