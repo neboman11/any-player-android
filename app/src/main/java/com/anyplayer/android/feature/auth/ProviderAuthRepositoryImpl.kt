@@ -9,6 +9,9 @@ import com.anyplayer.android.core.network.SpotifyClient
 import com.anyplayer.android.core.network.SpotifyClientIds
 import com.anyplayer.android.core.rust.RustBridge
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -277,7 +280,16 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
     override suspend fun restoreAll(): List<ProviderConnectionProfile> {
         return withContext(Dispatchers.IO) {
-            secureConnectionStore.readAll().map { stored ->
+            coroutineScope {
+                secureConnectionStore.readAll().map { stored ->
+                    async { restoreConnection(stored) }
+                }.awaitAll()
+            }
+        }
+    }
+
+    private suspend fun restoreConnection(stored: StoredConnection): ProviderConnectionProfile {
+        return run {
                 when (stored.source) {
                     SourceType.JELLYFIN -> {
                         val normalizedServerUrl = stored.serverUrl?.let(::normalizeServerUrl)
@@ -370,7 +382,6 @@ class ProviderAuthRepositoryImpl @Inject constructor(
 
                     else -> stored.toStatus()
                 }
-            }
         }
     }
 
