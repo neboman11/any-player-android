@@ -15,6 +15,7 @@ import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import com.anyplayer.android.BuildConfig
+import com.anyplayer.android.core.di.AudioCacheDirectory
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
@@ -35,7 +36,8 @@ import javax.inject.Singleton
 @UnstableApi
 class AudioCacheManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val secureConnectionStore: SecureConnectionStore
+    private val secureConnectionStore: SecureConnectionStore,
+    @AudioCacheDirectory cacheDirectory: File
 ) {
     companion object {
         private const val TAG = "AudioCacheManager"
@@ -46,7 +48,7 @@ class AudioCacheManager @Inject constructor(
 
     private val databaseProvider = StandaloneDatabaseProvider(context)
     val simpleCache: SimpleCache = SimpleCache(
-        File(context.cacheDir, "audio_cache"),
+        cacheDirectory,
         LeastRecentlyUsedCacheEvictor(CACHE_MAX_BYTES),
         databaseProvider
     )

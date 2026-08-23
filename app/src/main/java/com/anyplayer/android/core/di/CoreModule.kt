@@ -1,6 +1,7 @@
 package com.anyplayer.android.core.di
 
 import com.anyplayer.android.BuildConfig
+import com.anyplayer.android.core.network.RateLimitRetryInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -9,8 +10,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.moshi.MoshiConverterFactory
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -29,6 +28,7 @@ object CoreModule {
     @Singleton
     fun provideOkHttpClient(): OkHttpClient {
         return OkHttpClient.Builder()
+            .addInterceptor(RateLimitRetryInterceptor())
             .apply {
                 if (BuildConfig.DEBUG) {
                     val logging = HttpLoggingInterceptor().apply {
@@ -43,13 +43,4 @@ object CoreModule {
             .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
             .build()
     }
-
-    @Provides
-    @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://localhost/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create())
-            .build()
 }

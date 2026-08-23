@@ -10,14 +10,16 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.StoredConnection
-import com.anyplayer.android.playback.resolvePlaybackArtworkUri
+import com.anyplayer.android.feature.playback.service.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import javax.inject.Singleton
 
@@ -27,6 +29,10 @@ class Media3PlaybackController @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val audioCacheManager: AudioCacheManager
 ) {
+    companion object {
+        private const val TAG = "Media3PlaybackCtrl"
+    }
+
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(context)
@@ -50,6 +56,30 @@ class Media3PlaybackController @Inject constructor(
                 .build(),
             true
         )
+        addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val name = when (playbackState) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> "UNKNOWN($playbackState)"
+                }
+                CompatLog.d(TAG, "playbackState=$name mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition bufferedPositionMs=$bufferedPosition")
+            }
+
+            override fun onIsLoadingChanged(isLoading: Boolean) {
+                CompatLog.d(TAG, "isLoading=$isLoading mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition bufferedPositionMs=$bufferedPosition")
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                CompatLog.e(TAG, "playerError code=${error.errorCodeName} mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition", error)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                CompatLog.d(TAG, "playWhenReady=$playWhenReady reason=$reason")
+            }
+        })
     }
 
     val player: Player
@@ -129,6 +159,13 @@ class Media3PlaybackController @Inject constructor(
         if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToNextMediaItem()
         playerInstance.playWhenReady = true
+    }
+
+    /** Clears a fatal playback error and re-prepares. ExoPlayer stops responding to
+     *  play()/pause()/seek once [Player.getPlayerError] is set - prepare() is the documented
+     *  way to retry, and is required before play/pause/skip will have any effect again. */
+    fun retryAfterError() {
+        playerInstance.prepare()
     }
 
     fun previous(): Boolean {
