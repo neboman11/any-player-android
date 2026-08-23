@@ -1,13 +1,9 @@
 package com.anyplayer.android.feature.playback.service
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import com.anyplayer.android.AnyPlayerApplication
-import com.anyplayer.android.core.log.CompatLog
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.LibraryResult
@@ -17,6 +13,7 @@ import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionError
 import androidx.media3.common.util.UnstableApi
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
@@ -63,7 +60,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        ensurePlaybackNotificationChannel()
         notificationBuilder = PlaybackNotificationBuilder(this)
         projectionControllerGuard = ProjectionControllerGuard(this, serviceScope, playbackQueueManager)
         playerBridge.open()
@@ -384,20 +380,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                     .build()
             )
             .build()
-
-    private fun ensurePlaybackNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                AnyPlayerApplication.PLAYBACK_CHANNEL_ID,
-                "Any Player Playback",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Music playback controls"
-                setShowBadge(false)
-            }
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-    }
 
     private fun startForegroundCompat(notification: Notification) {
         try {

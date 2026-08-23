@@ -152,17 +152,7 @@ internal class CustomPlaylistStateHolder(
     fun addProviderPlaylistSourceToSelectedUnion(sourcePlaylistId: String, sourceType: SourceType) {
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
-            val normalizedSourcePlaylistId = if (sourceType == SourceType.SPOTIFY) {
-                sourcePlaylistId
-                    .substringAfter("spotify:playlist:", sourcePlaylistId)
-                    .let { value ->
-                        value.substringAfter("/playlist/", value)
-                            .substringBefore('?')
-                            .substringBefore('/')
-                    }
-            } else {
-                sourcePlaylistId
-            }
+            val normalizedSourcePlaylistId = normalizePlaylistId(sourceType, sourcePlaylistId)
             customPlaylistEngine.addUnionSource(
                 unionPlaylistId = playlistId,
                 sourceType = sourceType,
