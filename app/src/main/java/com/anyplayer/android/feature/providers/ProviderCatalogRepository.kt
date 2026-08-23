@@ -358,10 +358,10 @@ class ProviderCatalogRepository @Inject constructor(
 
             SourceType.SPOTIFY -> {
                 val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
-                if (spotify?.serverUrl != null && !spotify.token.isNullOrBlank() || !spotify?.token.isNullOrBlank()) {
+                if (!spotify?.token.isNullOrBlank()) {
                     rustBridge.providerGetPlaylist(
                         source = SourceType.SPOTIFY,
-                        session = buildSpotifySession(spotify!!.token, spotify.refreshToken, spotify.playlistPageSize),
+                        session = buildSpotifySession(spotify.token, spotify.refreshToken, spotify.playlistPageSize),
                         playlistId = resolvedPlaylistId
                     )
                 } else {
