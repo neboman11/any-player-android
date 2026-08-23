@@ -30,8 +30,6 @@ class SpotifyPlayerClient @Inject constructor(
 
     fun next(accessToken: String): Boolean = spotifyApiExecutor.executePlayerWrite("me/player/next", accessToken, "POST", null)
 
-    fun previous(accessToken: String): Boolean = spotifyApiExecutor.executePlayerWrite("me/player/previous", accessToken, "POST", null)
-
     fun seek(accessToken: String, positionMs: Long): Boolean {
         val url = spotifyApiExecutor.buildUrl("me/player/seek", mapOf("position_ms" to positionMs.coerceAtLeast(0).toString()))
         return spotifyApiExecutor.executePlayerWriteAbsolute(url, accessToken, "PUT", null)
@@ -59,7 +57,8 @@ class SpotifyPlayerClient @Inject constructor(
 
     fun getAvailableDeviceId(accessToken: String): String? {
         val devices = getAvailableDevices(accessToken)
-        return devices.firstOrNull { it.isActive }?.id ?: devices.firstOrNull()?.id
+        val controllableDevices = devices.filterNot { it.isRestricted }
+        return controllableDevices.firstOrNull { it.isActive }?.id ?: controllableDevices.firstOrNull()?.id
     }
 
     fun getAvailableDevices(accessToken: String): List<SpotifyDevice> {
@@ -102,14 +101,6 @@ class SpotifyPlayerClient @Inject constructor(
         else -> RepeatMode.OFF
     }
 
-    fun transferPlayback(accessToken: String, deviceId: String, play: Boolean = false): Boolean {
-        if (deviceId.isBlank()) return false
-        val payload = "{" +
-            "\"device_ids\":[\"$deviceId\"]," +
-            "\"play\":${play}" +
-            "}"
-        return spotifyApiExecutor.executePlayerWrite("me/player", accessToken, "PUT", payload)
-    }
 }
 
 internal fun spotifyPlaybackUris(trackIds: List<String>, startIndex: Int): List<String> =

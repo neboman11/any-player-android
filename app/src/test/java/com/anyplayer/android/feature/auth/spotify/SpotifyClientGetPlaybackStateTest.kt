@@ -68,6 +68,23 @@ class SpotifyClientGetPlaybackStateTest {
         assertNull(state?.currentTrackId)
     }
 
+    @Test
+    fun getAvailableDeviceId_skipsRestrictedDevices() {
+        val client = clientReturning(
+            code = 200,
+            body = """
+                {
+                  "devices": [
+                    {"id": "restricted-active", "is_active": true, "is_restricted": true},
+                    {"id": "available", "is_active": false, "is_restricted": false}
+                  ]
+                }
+            """.trimIndent()
+        )
+
+        assertEquals("available", client.getAvailableDeviceId("token"))
+    }
+
     private fun clientReturning(code: Int, body: String): SpotifyPlayerClient {
         val okHttpClient = OkHttpClient.Builder()
             .addInterceptor(

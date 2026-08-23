@@ -44,6 +44,7 @@ class SpotifyConnectBridge @Inject constructor(
         // pushed event) - a poll only samples every POLL_INTERVAL_MS, so a natural
         // track end could land anywhere within that window before we observe it.
         private const val END_OF_TRACK_POSITION_TOLERANCE_MS = 2_000L
+        private const val MANUAL_PAUSE_GRACE_MS = 5_000L
 
         private const val SPOTIFY_PACKAGE_NAME = "com.spotify.music"
 
@@ -59,8 +60,7 @@ class SpotifyConnectBridge @Inject constructor(
 
     var errorListener: ErrorListener? = null
 
-    @Volatile private var lastKnownState: SpotifyPlaybackState? = null
-    @Volatile private var lastPolledAtElapsedRealtime: Long = 0L
+    private val playbackStateCache = SpotifyPlaybackStateCache(END_OF_TRACK_POSITION_TOLERANCE_MS)
     private var bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
 
@@ -81,13 +81,15 @@ class SpotifyConnectBridge @Inject constructor(
     fun release() {
         bridgeScope.cancel()
         pollJob = null
-        lastKnownState = null
-        lastPolledAtElapsedRealtime = 0L
+        playbackStateCache.clear()
     }
 
     private suspend fun pollOnce() {
         val token = runCatching { providerAuthRepository.refreshSpotifyTokenIfNeeded() }.getOrNull()
-            ?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            ?.trim()?.takeIf { it.isNotEmpty() } ?: run {
+            playbackStateCache.update(polled = null, nowMs = SystemClock.elapsedRealtime())
+            return
+        }
 
         val polled = runCatching {
             spotifyPlayerClient.getPlaybackState(token)
@@ -95,19 +97,14 @@ class SpotifyConnectBridge @Inject constructor(
             CompatLog.w(TAG, "Spotify Connect poll failed: ${error.message}")
         }.getOrNull()
 
-        val previous = lastKnownState
-        lastKnownState = polled?.let { mergeEndOfTrackCount(previous, it, END_OF_TRACK_POSITION_TOLERANCE_MS) }
-        lastPolledAtElapsedRealtime = SystemClock.elapsedRealtime()
+        playbackStateCache.update(polled, SystemClock.elapsedRealtime())
     }
 
     /** Returns the last-polled playback state, with position extrapolated forward
      *  from the last poll while playing (polls land every [POLL_INTERVAL_MS], not
      *  continuously). */
     fun snapshot(): SpotifyPlaybackState? {
-        val cached = lastKnownState ?: return null
-        if (!cached.isPlaying) return cached
-        val elapsedSincePoll = SystemClock.elapsedRealtime() - lastPolledAtElapsedRealtime
-        return extrapolatePosition(cached, elapsedSincePoll)
+        return playbackStateCache.snapshot(SystemClock.elapsedRealtime())
     }
 
     suspend fun playUri(accessToken: String, trackIds: List<String>, startIndex: Int): Boolean {
@@ -120,12 +117,21 @@ class SpotifyConnectBridge @Inject constructor(
 
     suspend fun resume(accessToken: String): Boolean = withContext(Dispatchers.IO) { spotifyPlayerClient.play(accessToken) }
 
-    suspend fun pause(accessToken: String): Boolean = withContext(Dispatchers.IO) { spotifyPlayerClient.pause(accessToken) }
+    suspend fun pause(accessToken: String): Boolean = withContext(Dispatchers.IO) {
+        playbackStateCache.markManualPause(SystemClock.elapsedRealtime(), MANUAL_PAUSE_GRACE_MS)
+        spotifyPlayerClient.pause(accessToken).also { paused ->
+            if (paused) {
+                playbackStateCache.extendManualPauseAfterSuccessfulCommand(
+                    SystemClock.elapsedRealtime(),
+                    MANUAL_PAUSE_GRACE_MS
+                )
+            } else {
+                playbackStateCache.clearManualPause()
+            }
+        }
+    }
 
     suspend fun next(accessToken: String): Boolean = withContext(Dispatchers.IO) { spotifyPlayerClient.next(accessToken) }
-
-    suspend fun previous(accessToken: String): Boolean =
-        withContext(Dispatchers.IO) { spotifyPlayerClient.previous(accessToken) }
 
     suspend fun seek(accessToken: String, positionMs: Long): Boolean =
         withContext(Dispatchers.IO) { spotifyPlayerClient.seek(accessToken, positionMs) }
@@ -206,10 +212,11 @@ class SpotifyConnectBridge @Inject constructor(
 internal fun mergeEndOfTrackCount(
     previous: SpotifyPlaybackState?,
     polled: SpotifyPlaybackState,
-    toleranceMs: Long
+    toleranceMs: Long,
+    manualPauseExpected: Boolean = false
 ): SpotifyPlaybackState {
     val wasPlaying = previous?.isPlaying == true
-    val finishedNaturally = wasPlaying && !polled.isPlaying &&
+    val finishedNaturally = !manualPauseExpected && wasPlaying && !polled.isPlaying &&
         (polled.progressMs <= toleranceMs ||
             (polled.durationMs > 0 && polled.progressMs >= polled.durationMs - toleranceMs))
     return polled.copy(

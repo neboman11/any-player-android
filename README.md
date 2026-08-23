@@ -10,7 +10,7 @@ This app targets phone/tablet and Android Auto-style media browsing, and include
 - Media3 (`ExoPlayer`, `MediaSession`, `MediaLibraryService`)
 - Hilt (DI)
 - Room (local storage)
-- Retrofit/OkHttp
+- OkHttp
 - Coroutines + Flow
 - Optional Rust FFI shared library (`any_player_ffi_android`)
 
