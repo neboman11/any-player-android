@@ -1,7 +1,6 @@
 package com.anyplayer.android.core.rust
 
 import com.anyplayer.android.core.log.CompatLog
-import com.anyplayer.android.BuildConfig
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
@@ -29,70 +28,6 @@ class RustBridge @Inject constructor() {
 
     fun spotifyExchangeCode(code: String, verifier: String, redirect: String): String? =
         callRaw("spotifyExchangeCode") { RustBridgeNative.spotifyExchangeCode(code, verifier, redirect) }
-
-    /**
-     * Returns:
-     * - true/false when Rust bridge handled the request
-     * - null when JNI is unavailable or bridge call failed, so callers can use Kotlin fallback
-     */
-    fun validateAndInitSpotifySession(
-        accessToken: String,
-        clientId: String = BuildConfig.SPOTIFY_CLIENT_ID,
-        tokenExpiresAt: Long? = null
-    ): Boolean? {
-        val normalizedToken = accessToken.trim()
-        if (normalizedToken.isBlank()) return false
-
-        val normalizedClientId = clientId.trim()
-        if (normalizedClientId.isBlank()) return null
-
-        val tokenPayload = JSONObject()
-            .put("access_token", normalizedToken)
-            .apply {
-                tokenExpiresAt
-                    ?.takeIf { it > 0L }
-                    ?.let { put("expires_at_epoch_seconds", it / 1000L) }
-            }
-            .toString()
-
-        val initPayload = JSONObject()
-            .put("client_id", normalizedClientId)
-            .toString()
-        val initResponse = callJson("init") { RustBridgeNative.init(initPayload) } ?: return null
-        if (!initResponse.optBoolean("ok", false)) {
-            logBridgeError("init", initResponse)
-            return null
-        }
-
-        val validateResponse = callJson("spotifyValidateToken") {
-            RustBridgeNative.spotifyValidateToken(tokenPayload)
-        } ?: return null
-        if (!validateResponse.optBoolean("ok", false)) {
-            logBridgeError("spotifyValidateToken", validateResponse)
-            return null
-        }
-        val valid = validateResponse.optJSONObject("data")?.optBoolean("valid", false) ?: false
-        if (!valid) return false
-
-        val initSessionResponse = callJson("spotifyInitSession") {
-            RustBridgeNative.spotifyInitSession(tokenPayload)
-        } ?: return null
-        if (!initSessionResponse.optBoolean("ok", false)) {
-            logBridgeError("spotifyInitSession", initSessionResponse)
-            return null
-        }
-        val initReady = initSessionResponse.optJSONObject("data")?.optBoolean("ready", false) ?: false
-        if (initReady) return true
-
-        val readyResponse = callJson("spotifySessionReady") {
-            RustBridgeNative.spotifySessionReady()
-        } ?: return null
-        if (!readyResponse.optBoolean("ok", false)) {
-            logBridgeError("spotifySessionReady", readyResponse)
-            return null
-        }
-        return readyResponse.optJSONObject("data")?.optBoolean("ready", false) ?: false
-    }
 
     fun getAudioNormalizationSettings(): AudioNormalizationSettings? {
         val response = callJson("getAudioNormalizationSettings") {

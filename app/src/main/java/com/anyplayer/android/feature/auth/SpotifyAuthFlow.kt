@@ -103,10 +103,7 @@ class SpotifyAuthFlow @Inject constructor(
             }
             val validated = validation as ProviderConnectionCheck.Connected
             val tokenExpiresAt = computeTokenExpiresAt(tokenResult.expiresIn)
-            val playbackReady = resolveSpotifyPlaybackReady(
-                accessToken = tokenResult.accessToken,
-                tokenExpiresAt = tokenExpiresAt
-            )
+            val playbackReady = resolveSpotifyPlaybackReady(tokenResult.accessToken)
 
             val connection = StoredConnection(
                 source = SourceType.SPOTIFY,
@@ -159,10 +156,7 @@ class SpotifyAuthFlow @Inject constructor(
                 token = refreshedToken,
                 refreshToken = refreshed.refreshToken ?: stored.refreshToken,
                 tokenExpiresAt = refreshedTokenExpiresAt,
-                playbackReady = resolveSpotifyPlaybackReady(
-                    accessToken = refreshedToken,
-                    tokenExpiresAt = refreshedTokenExpiresAt
-                )
+                playbackReady = resolveSpotifyPlaybackReady(refreshedToken)
             )
             runCatching { secureConnectionStore.save(updatedConnection) }.onFailure { error ->
                 CompatLog.e(TAG, "Failed to save refreshed Spotify token", error)
@@ -171,18 +165,12 @@ class SpotifyAuthFlow @Inject constructor(
         }
     }
 
+    /**
+     * A nonblank token is ready after the caller has validated it with Spotify's Web API.
+     * Native playback initialization is optional and must not change provider connection status.
+     */
     fun resolveSpotifyPlaybackReady(accessToken: String?): Boolean {
-        return resolveSpotifyPlaybackReady(accessToken = accessToken, tokenExpiresAt = null)
-    }
-
-    fun resolveSpotifyPlaybackReady(accessToken: String?, tokenExpiresAt: Long?): Boolean {
-        val token = accessToken?.trim().orEmpty()
-        if (token.isBlank()) return false
-        return rustBridge.validateAndInitSpotifySession(
-            accessToken = token,
-            clientId = SpotifyClientIds.ACTIVE,
-            tokenExpiresAt = tokenExpiresAt
-        ) ?: false
+        return accessToken?.trim()?.isNotBlank() == true
     }
 
     fun computeTokenExpiresAt(expiresIn: Int?): Long? {

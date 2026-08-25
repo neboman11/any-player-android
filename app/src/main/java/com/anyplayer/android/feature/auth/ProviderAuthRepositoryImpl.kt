@@ -188,10 +188,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         is ProviderConnectionCheck.Connected -> stored.copy(
                             username = validation.username ?: stored.username,
                             spotifyPremium = validation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(
-                                accessToken = stored.token,
-                                tokenExpiresAt = stored.tokenExpiresAt
-                            )
+                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(stored.token)
                         ).also { secureConnectionStore.save(it) }.toStatus()
 
                         is ProviderConnectionCheck.Failed -> {
@@ -212,10 +209,7 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                                             refreshToken = refreshed.refreshToken ?: stored.refreshToken,
                                             tokenExpiresAt = refreshedTokenExpiresAt,
                                             spotifyPremium = refreshedValidation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(
-                                                accessToken = refreshed.accessToken,
-                                                tokenExpiresAt = refreshedTokenExpiresAt
-                                            )
+                                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(refreshed.accessToken)
                                         )
                                         secureConnectionStore.save(updated)
                                         updated.toStatus()

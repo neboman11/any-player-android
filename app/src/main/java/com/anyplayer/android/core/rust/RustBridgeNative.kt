@@ -16,22 +16,10 @@ internal object RustBridgeNative {
     }
 
     @JvmStatic
-    external fun init(configJson: String): String
-
-    @JvmStatic
     external fun spotifyBeginAuth(configJson: String): String
 
     @JvmStatic
     external fun spotifyExchangeCode(code: String, verifier: String, redirect: String): String
-
-    @JvmStatic
-    external fun spotifyValidateToken(tokenInput: String): String
-
-    @JvmStatic
-    external fun spotifyInitSession(tokenInput: String): String
-
-    @JvmStatic
-    external fun spotifySessionReady(): String
 
     @JvmStatic
     external fun getAudioNormalizationSettings(): String
