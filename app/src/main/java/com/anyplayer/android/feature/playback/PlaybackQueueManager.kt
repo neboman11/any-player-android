@@ -73,7 +73,7 @@ class PlaybackQueueManager @Inject constructor(
 
     /**
      * Gate that blocks [restorePersistedState] until the provider auth layer
-     * (and therefore the Rust/librespot session) has been initialised. The
+     * is initialised. The
      * service layer completes this after [ProviderAuthRepository.restoreAll].
      */
     private val providerRestoreGate = CompletableDeferred<Unit>()
@@ -135,9 +135,8 @@ class PlaybackQueueManager @Inject constructor(
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     spotifyPlaybackController.getAudioNormalizationSettings()
                 }
-            // Wait for the service layer to complete provider/session restore
-            // so the Rust/librespot session is initialised before we restore
-            // any Spotify-backed persisted queue.
+            // Wait for the service layer to finish restoring provider state
+            // before restoring any Spotify-backed persisted queue.
             providerRestoreGate.await()
             restorePersistedState()
             while (true) {
