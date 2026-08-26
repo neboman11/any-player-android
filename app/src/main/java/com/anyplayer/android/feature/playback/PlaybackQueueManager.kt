@@ -153,26 +153,29 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setAudioNormalization(enabled: Boolean, strictMode: Boolean) {
-        val next = AudioNormalizationSettings(enabled = enabled, strictMode = strictMode)
+        val next = AudioNormalizationSettings(enabled = enabled, strictMode = false)
         mutableAudioNormalizationSettings.value = next
+        if (strictMode) {
+            CompatLog.w(TAG, "Strict audio normalization is unavailable without loudness measurements")
+        }
 
         scope.launch {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
-                spotifyPlaybackController.setAudioNormalizationSettings(enabled, strictMode)
+                spotifyPlaybackController.setAudioNormalizationSettings(enabled)
             }
 
             val requestedVolume = mutableStatus.value.volume.coerceIn(0, 100)
             val currentTrackSource = mutableStatus.value.currentTrack?.source
-            val outputVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                spotifyPlaybackController.normalizeVolumeForSource(
-                    requestedVolume,
-                    currentTrackSource ?: SourceType.ALL
-                )
-            }
 
             if (spotifyMode || currentTrackSource == SourceType.SPOTIFY) {
                 spotifyPlaybackController.setVolume(requestedVolume)
             } else {
+                val outputVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    spotifyPlaybackController.normalizeVolumeForSource(
+                        requestedVolume,
+                        currentTrackSource ?: SourceType.ALL
+                    )
+                }
                 media3PlaybackController.setVolume(outputVolume)
             }
             persistStateAsync()

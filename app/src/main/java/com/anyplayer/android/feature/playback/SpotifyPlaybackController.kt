@@ -74,8 +74,10 @@ class SpotifyPlaybackController @Inject constructor(
     suspend fun seekTo(positionMs: Long): Boolean =
         runCommand("seek") { connectBridge.seek(it, positionMs) }
 
-    suspend fun setVolume(volume: Int): Boolean =
-        runCommand("setVolume") { connectBridge.setVolume(it, volume) }
+    suspend fun setVolume(volume: Int): Boolean {
+        val normalizedVolume = normalizeVolumeForSource(volume, SourceType.SPOTIFY)
+        return runCommand("setVolume") { connectBridge.setVolume(it, normalizedVolume) }
+    }
 
     fun normalizeVolumeForSource(volume: Int, source: SourceType): Int {
         val normalized = rustBridge.applyAudioNormalizationVolume(volume, source)
@@ -87,8 +89,8 @@ class SpotifyPlaybackController @Inject constructor(
     fun getAudioNormalizationSettings(): AudioNormalizationSettings =
         rustBridge.getAudioNormalizationSettings() ?: AudioNormalizationSettings()
 
-    fun setAudioNormalizationSettings(enabled: Boolean, strictMode: Boolean): Boolean {
-        val result = rustBridge.setAudioNormalizationSettings(enabled, strictMode)
+    fun setAudioNormalizationSettings(enabled: Boolean): Boolean {
+        val result = rustBridge.setAudioNormalizationSettings(enabled)
         if (result != null) return result
         val errorMessage =
             "Failed to set audio normalization settings. ${rustBridge.lastError ?: ""}".trim()

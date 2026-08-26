@@ -178,10 +178,11 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = state.audioNormalizationStrictMode,
+            FilterChip(
+                enabled = false,
+                selected = state.audioNormalizationStrictMode,
                         onClick = { viewModel.setAudioNormalizationStrictMode(!state.audioNormalizationStrictMode) },
-                        label = { Text("Strict Normalization") }
+                label = { Text("Strict Normalization (Unavailable)") }
                     )
                 }
 

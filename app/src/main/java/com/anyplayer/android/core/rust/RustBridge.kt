@@ -45,10 +45,10 @@ class RustBridge @Inject constructor() {
         )
     }
 
-    fun setAudioNormalizationSettings(enabled: Boolean, strictMode: Boolean): Boolean? {
+    fun setAudioNormalizationSettings(enabled: Boolean): Boolean? {
         val payload = JSONObject()
             .put("enabled", enabled)
-            .put("strict_mode", strictMode)
+            .put("strict_mode", false)
             .toString()
         return callBoolean("setAudioNormalizationSettings") {
             RustBridgeNative.setAudioNormalizationSettings(payload)
