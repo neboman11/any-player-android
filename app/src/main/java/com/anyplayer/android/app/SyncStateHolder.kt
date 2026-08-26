@@ -136,6 +136,10 @@ internal class SyncStateHolder(
 
             if (preferences.syncAppState) {
                 applyAppStateMutex.withLock { applyAppStateDomain(snapshot) }
+                val snapshotVersion = snapshot["version"]?.jsonPrimitive?.longOrNull
+                if (snapshotVersion != null) {
+                    lastSyncVersion = max(lastSyncVersion, snapshotVersion)
+                }
                 applied += 1
             }
 
@@ -173,7 +177,7 @@ internal class SyncStateHolder(
                 val clientId = syncSnapshotClient.getClientId()
 
                 coroutineScope {
-                    val pushJob = launch {
+                    launch {
                         playbackQueueManager.status.collect { status ->
                             if (System.currentTimeMillis() < suppressSyncPushUntilMs) {
                                 return@collect
@@ -216,7 +220,7 @@ internal class SyncStateHolder(
                         }
                     }
 
-                    val wsJob = launch {
+                    launch {
                         while (true) {
                             val result = runCatching {
                                 syncSnapshotClient.observeStateUpdates(serverTarget).collect { event ->
@@ -285,8 +289,6 @@ internal class SyncStateHolder(
         includeProviderConfiguration: Boolean,
         confirmPlaylistOverwrite: Boolean
     ): Boolean {
-        val remotePlaylists = (snapshot["playlists"] as? JsonArray)
-        val remotePlaylistCount = remotePlaylists?.size ?: 0
         val localPlaylistCount = customPlaylistCount()
 
         if (includePlaylists && localPlaylistCount > 0 && !confirmPlaylistOverwrite) {

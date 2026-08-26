@@ -24,10 +24,13 @@ internal class ProjectionControllerGuard(
     companion object {
         private const val TAG = "ProjectionControllerGuard"
         private const val PROJECTION_DISCONNECT_GRACE_MS = 1500L
-        private val TRUSTED_CONTROLLER_PACKAGES = setOf(
+        // Single source of truth for known Android Auto / car projection packages, matched by
+        // prefix so trust-checking and projection-counting can't drift into disagreeing about
+        // whether a given controller package counts as "projection".
+        private val PROJECTION_CONTROLLER_PACKAGE_PREFIXES = listOf(
             "com.google.android.projection.gearhead",
-            "com.android.car.media",
-            "com.google.android.apps.automotive.media"
+            "com.google.android.apps.auto",
+            "com.android.car"
         )
     }
 
@@ -38,7 +41,7 @@ internal class ProjectionControllerGuard(
         val controllerPackage = controllerInfo.packageName
         if (controllerPackage == context.packageName) return true
         if (controllerInfo.uid == Process.SYSTEM_UID) return true
-        if (controllerPackage in TRUSTED_CONTROLLER_PACKAGES) return true
+        if (isProjectionController(controllerPackage)) return true
         return isSystemApp(controllerPackage)
     }
 
@@ -50,12 +53,8 @@ internal class ProjectionControllerGuard(
         return (appInfo.flags and systemFlags) != 0
     }
 
-    fun isProjectionController(controllerPackage: String): Boolean {
-        if (controllerPackage == "com.google.android.projection.gearhead") return true
-        if (controllerPackage.startsWith("com.google.android.apps.auto")) return true
-        if (controllerPackage.startsWith("com.android.car")) return true
-        return false
-    }
+    fun isProjectionController(controllerPackage: String): Boolean =
+        PROJECTION_CONTROLLER_PACKAGE_PREFIXES.any { controllerPackage.startsWith(it) }
 
     fun onProjectionControllerConnected(controller: MediaSession.ControllerInfo) {
         val wasInactive = activeProjectionControllers == 0

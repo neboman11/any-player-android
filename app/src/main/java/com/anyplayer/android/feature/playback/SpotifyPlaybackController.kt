@@ -8,6 +8,8 @@ import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +34,8 @@ class SpotifyPlaybackController @Inject constructor(
     companion object {
         private const val TAG = "SpotifyPlaybackCtrl"
     }
+
+    private val rustCommandMutex = Mutex()
 
     /** Human-readable reason for the most recent operation failure. Null when healthy. */
     @Volatile var lastError: String? = null
@@ -110,18 +114,18 @@ class SpotifyPlaybackController @Inject constructor(
     private suspend fun runCommand(
         action: String,
         block: suspend (accessToken: String) -> Boolean
-    ): Boolean {
-        val accessToken = resolveAccessToken() ?: return false
+    ): Boolean = rustCommandMutex.withLock {
+        val accessToken = resolveAccessToken() ?: return@withLock false
 
         val success = block(accessToken)
         if (!success) {
             lastError = "Spotify command failed: $action."
             CompatLog.w(TAG, "Spotify command '$action' failed")
-            return false
+            return@withLock false
         }
 
         lastError = null
-        return true
+        true
     }
 
     private suspend fun resolveAccessToken(): String? {

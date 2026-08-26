@@ -119,16 +119,19 @@ class SpotifyConnectBridge @Inject constructor(
 
     suspend fun pause(accessToken: String): Boolean = withContext(Dispatchers.IO) {
         playbackStateCache.markManualPause(SystemClock.elapsedRealtime(), MANUAL_PAUSE_GRACE_MS)
-        spotifyPlayerClient.pause(accessToken).also { paused ->
-            if (paused) {
-                playbackStateCache.extendManualPauseAfterSuccessfulCommand(
-                    SystemClock.elapsedRealtime(),
-                    MANUAL_PAUSE_GRACE_MS
-                )
-            } else {
-                playbackStateCache.clearManualPause()
+        runCatching { spotifyPlayerClient.pause(accessToken) }
+            .onSuccess { paused ->
+                if (paused) {
+                    playbackStateCache.extendManualPauseAfterSuccessfulCommand(
+                        SystemClock.elapsedRealtime(),
+                        MANUAL_PAUSE_GRACE_MS
+                    )
+                } else {
+                    playbackStateCache.clearManualPause()
+                }
             }
-        }
+            .onFailure { playbackStateCache.clearManualPause() }
+            .getOrThrow()
     }
 
     suspend fun next(accessToken: String): Boolean = withContext(Dispatchers.IO) { spotifyPlayerClient.next(accessToken) }
