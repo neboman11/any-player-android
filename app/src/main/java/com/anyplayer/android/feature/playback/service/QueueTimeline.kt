@@ -20,7 +20,7 @@ internal class QueueTimeline(
             ?.let { it * 1_000L }
             ?: C.TIME_UNSET
         return window.set(
-            Window.SINGLE_WINDOW_UID,
+            track.id,
             track.toMediaItem(),
             null,
             C.TIME_UNSET,
