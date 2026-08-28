@@ -12,6 +12,9 @@ import com.anyplayer.android.feature.playlists.DistinctPlaylistUtils
 import com.anyplayer.android.feature.providers.ProviderCatalogRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -239,8 +242,11 @@ internal class ProviderPlaylistBrowsingStateHolder(
         val stillUnresolvedSources = unresolvedSources.filterNot { source ->
             cachedMatches.any { playlist -> matchesProviderPlaylistSource(playlist, source) }
         }
-        val exactMatches = stillUnresolvedSources.mapNotNull { source ->
-            providerCatalogRepository.getProviderPlaylist(source.sourceType, source.sourcePlaylistId)
+        val exactMatches = coroutineScope {
+            stillUnresolvedSources
+                .map { source -> async { providerCatalogRepository.getProviderPlaylist(source.sourceType, source.sourcePlaylistId) } }
+                .awaitAll()
+                .filterNotNull()
         }
         val loadedPlaylists = cachedMatches + exactMatches
 

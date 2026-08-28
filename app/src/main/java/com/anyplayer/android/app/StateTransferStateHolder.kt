@@ -9,6 +9,8 @@ import com.anyplayer.android.feature.state.transfer.ImportOptions
 import com.anyplayer.android.feature.state.transfer.ImportSummary
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 import com.anyplayer.android.feature.state.transfer.StateTransferManager
+import java.io.InputStream
+import java.io.OutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,22 +32,31 @@ internal class StateTransferStateHolder(
 ) {
     val stateTransferStatus = MutableStateFlow("State transfer idle")
 
+    private suspend fun <T> withOutputStream(uri: Uri, errorMessage: String, block: suspend (OutputStream) -> T): T =
+        withContext(Dispatchers.IO) {
+            val stream = context.contentResolver.openOutputStream(uri) ?: error(errorMessage)
+            stream.use { block(it) }
+        }
+
+    private suspend fun <T> withInputStream(uri: Uri, errorMessage: String, block: suspend (InputStream) -> T): T =
+        withContext(Dispatchers.IO) {
+            val stream = context.contentResolver.openInputStream(uri) ?: error(errorMessage)
+            stream.use { block(it) }
+        }
+
     fun exportStateToUri(uri: Uri, mode: ExportMode, includePlayback: Boolean, passphrase: String?) {
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)
-                        ?.use { stream ->
-                            stateTransferManager.exportToStream(
-                                stream = stream,
-                                options = ExportOptions(
-                                    mode = mode,
-                                    includePlaybackState = includePlayback,
-                                    passphrase = passphrase
-                                ),
-                                playbackStatus = currentPlaybackStatus()
-                            )
-                        } ?: error("Could not open output stream for export")
+                withOutputStream(uri, "Could not open output stream for export") { stream ->
+                    stateTransferManager.exportToStream(
+                        stream = stream,
+                        options = ExportOptions(
+                            mode = mode,
+                            includePlaybackState = includePlayback,
+                            passphrase = passphrase
+                        ),
+                        playbackStatus = currentPlaybackStatus()
+                    )
                 }
                 "Export complete"
             }.onSuccess { stateTransferStatus.value = it }
@@ -56,18 +67,15 @@ internal class StateTransferStateHolder(
     fun importStateFromUri(uri: Uri, policy: MergePolicy, passphrase: String?, dryRun: Boolean) {
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)
-                        ?.use { stream ->
-                            stateTransferManager.importFromStream(
-                                stream = stream,
-                                options = ImportOptions(
-                                    mergePolicy = policy,
-                                    passphrase = passphrase,
-                                    dryRun = dryRun
-                                )
-                            )
-                        } ?: error("Could not open input stream for import")
+                withInputStream(uri, "Could not open input stream for import") { stream ->
+                    stateTransferManager.importFromStream(
+                        stream = stream,
+                        options = ImportOptions(
+                            mergePolicy = policy,
+                            passphrase = passphrase,
+                            dryRun = dryRun
+                        )
+                    )
                 }
             }.onSuccess { summary ->
                 stateTransferStatus.value = formatSummary(if (dryRun) "Dry run" else "Import", summary)
@@ -80,15 +88,12 @@ internal class StateTransferStateHolder(
     fun importConfigFromUri(uri: Uri, policy: MergePolicy, dryRun: Boolean, onImported: () -> Unit) {
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)
-                        ?.use { stream ->
-                            configFileImporter.importFromStream(
-                                stream = stream,
-                                mergePolicy = policy,
-                                dryRun = dryRun
-                            )
-                        } ?: error("Could not open input stream for config import")
+                withInputStream(uri, "Could not open input stream for config import") { stream ->
+                    configFileImporter.importFromStream(
+                        stream = stream,
+                        mergePolicy = policy,
+                        dryRun = dryRun
+                    )
                 }
             }.onSuccess { summary ->
                 val prefix = if (dryRun) "Config dry run" else "Config import"

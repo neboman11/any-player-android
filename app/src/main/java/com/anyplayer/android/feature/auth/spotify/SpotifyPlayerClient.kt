@@ -109,11 +109,9 @@ internal fun spotifyPlaybackUris(trackIds: List<String>, startIndex: Int): List<
         .asSequence()
         .map { it.trim().removePrefix("spotify:track:") }
         .filter(SPOTIFY_TRACK_ID_PATTERN::matches)
-        .take(MAX_SPOTIFY_PLAYBACK_URIS)
         .map { "spotify:track:$it" }
         .toList()
 
-private const val MAX_SPOTIFY_PLAYBACK_URIS = 100
 private val SPOTIFY_TRACK_ID_PATTERN = Regex("[A-Za-z0-9]{22}")
 
 data class SpotifyPlaybackState(

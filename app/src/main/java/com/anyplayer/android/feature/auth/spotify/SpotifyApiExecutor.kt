@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.auth.spotify
 
+import com.anyplayer.android.core.di.SpotifyHttpClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -13,7 +14,7 @@ import javax.inject.Singleton
 /** Shared low-level HTTP plumbing for the Spotify Web API (`api.spotify.com/v1`) clients. */
 @Singleton
 class SpotifyApiExecutor @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    @SpotifyHttpClient private val okHttpClient: OkHttpClient,
     private val json: Json
 ) {
     fun execute(path: String, token: String, query: Map<String, String>): JsonObject? {

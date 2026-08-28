@@ -114,7 +114,6 @@ class MainViewModel @Inject constructor(
             stateTransferStateHolder.stateTransferStatus.value = stateTransferStateHolder.formatSummary(prefix, summary)
         },
         onSyncApplied = {
-            providerConnectionStateHolder.refreshSavedProviderInputs()
             runStartup(continueWithoutProviders = false)
         }
     )

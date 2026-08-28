@@ -11,7 +11,13 @@ import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+/** OkHttpClient wired with [RateLimitRetryInterceptor] for Spotify Web API calls only. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SpotifyHttpClient
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -28,7 +34,6 @@ object CoreModule {
     @Singleton
     fun provideOkHttpClient(): OkHttpClient {
         return OkHttpClient.Builder()
-            .addInterceptor(RateLimitRetryInterceptor())
             .apply {
                 if (BuildConfig.DEBUG) {
                     val logging = HttpLoggingInterceptor().apply {
@@ -41,6 +46,15 @@ object CoreModule {
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    @SpotifyHttpClient
+    fun provideSpotifyOkHttpClient(okHttpClient: OkHttpClient): OkHttpClient {
+        return okHttpClient.newBuilder()
+            .addInterceptor(RateLimitRetryInterceptor())
             .build()
     }
 }

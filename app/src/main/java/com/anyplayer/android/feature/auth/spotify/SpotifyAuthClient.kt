@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.auth.spotify
 
+import com.anyplayer.android.core.di.SpotifyHttpClient
 import com.anyplayer.android.core.network.ProviderConnectionCheck
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -18,7 +19,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 /** Handles Spotify's PKCE session creation, authorization-code exchange, token refresh, and token validation. */
 @Singleton
 class SpotifyAuthClient @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    @SpotifyHttpClient private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val spotifyApiExecutor: SpotifyApiExecutor
 ) {
