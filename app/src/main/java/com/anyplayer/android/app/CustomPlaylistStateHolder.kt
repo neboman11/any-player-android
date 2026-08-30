@@ -25,12 +25,21 @@ internal class CustomPlaylistStateHolder(
     private val searchResults: StateFlow<List<Track>>,
     private val ensureProviderPlaylistMetadataForUnionSources: suspend (List<UnionPlaylistSource>) -> Unit
 ) {
+    companion object {
+        private const val TAG = "CustomPlaylistStateHolder"
+    }
+
     val customPlaylists = MutableStateFlow<List<CustomPlaylist>>(emptyList())
     val activeCustomPlaylistTracks = MutableStateFlow<List<Track>>(emptyList())
     val selectedCustomPlaylistId = MutableStateFlow<String?>(null)
     val selectedCustomUnionSources = MutableStateFlow<List<UnionPlaylistSource>>(emptyList())
     val customPlaylistRefreshInProgress = MutableStateFlow(false)
     val customPlaylistRefreshStatus = MutableStateFlow<String?>(null)
+
+    private suspend fun refreshedUnionSources(playlistId: String): List<UnionPlaylistSource> =
+        customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
+            ensureProviderPlaylistMetadataForUnionSources(unionSources)
+        }
 
     // customPlaylists starts empty and is only populated once the Room-backed flow below
     // emits, so callers that need an accurate count (e.g. the sync overwrite-confirmation
@@ -88,9 +97,7 @@ internal class CustomPlaylistStateHolder(
             val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId }
             activeCustomPlaylistTracks.value = customPlaylistEngine.getCachedTracksForPlaylist(playlistId)
             selectedCustomUnionSources.value = if (selectedPlaylist?.playlistType == PlaylistType.UNION) {
-                customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
-                    ensureProviderPlaylistMetadataForUnionSources(unionSources)
-                }
+                refreshedUnionSources(playlistId)
             } else {
                 emptyList()
             }
@@ -172,9 +179,7 @@ internal class CustomPlaylistStateHolder(
                 sourceType = sourceType,
                 sourcePlaylistId = normalizedSourcePlaylistId
             )
-            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
-                ensureProviderPlaylistMetadataForUnionSources(unionSources)
-            }
+            selectedCustomUnionSources.value = refreshedUnionSources(playlistId)
             refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
@@ -191,9 +196,7 @@ internal class CustomPlaylistStateHolder(
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
             customPlaylistEngine.reorderUnionSources(playlistId, orderedSourceIds)
-            selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
-                ensureProviderPlaylistMetadataForUnionSources(unionSources)
-            }
+            selectedCustomUnionSources.value = refreshedUnionSources(playlistId)
             refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
@@ -210,15 +213,13 @@ internal class CustomPlaylistStateHolder(
                     )
                 }
                 customPlaylistEngine.replaceUnionSources(playlistId, normalizedSources)
-                selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
-                    ensureProviderPlaylistMetadataForUnionSources(unionSources)
-                }
+                selectedCustomUnionSources.value = refreshedUnionSources(playlistId)
                 refreshActiveCustomPlaylistTracks(playlistId)
                 customPlaylistRefreshStatus.value = null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                CompatLog.e("MainViewModel", "Failed to replace union sources: ${e.message}", e)
+                CompatLog.e(TAG, "Failed to replace union sources: ${e.message}", e)
                 customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
                     ?: "Failed to update union sources."
             }

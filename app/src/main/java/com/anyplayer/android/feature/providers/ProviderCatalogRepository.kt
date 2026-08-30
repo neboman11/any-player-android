@@ -191,7 +191,7 @@ class ProviderCatalogRepository @Inject constructor(
         maxTracks: Int? = null
     ): List<Track> = withContext(Dispatchers.IO) {
         // Provider track fetching prefers the Rust provider bridge.
-        // Spotify falls back to SpotifyClient pagination when the Rust bridge is unavailable.
+        // Spotify falls back to SpotifyCatalogClient pagination when the Rust bridge is unavailable.
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
 
         // Get the configured page size for this provider, or use default.
@@ -272,7 +272,7 @@ class ProviderCatalogRepository @Inject constructor(
                     try {
                         // If the Rust provider bridge is available, prefer it (handled earlier by caller).
                         // However tests and some environments may not have Rust available; in that case
-                        // fall back to the Kotlin SpotifyClient and paginate using the 'total' field so
+                        // fall back to the Kotlin SpotifyCatalogClient and paginate using the 'total' field so
                         // mapNotNull filtering doesn't prematurely stop pagination.
                         if (rustBridge.isAvailable()) {
                             val spotifyPageSize = effectivePageSize.coerceAtMost(100)
@@ -286,7 +286,7 @@ class ProviderCatalogRepository @Inject constructor(
                                 ) ?: emptyList()
                             }
                         } else {
-                            // Kotlin fallback using SpotifyClient.getPlaylistTracksPage
+                            // Kotlin fallback using SpotifyCatalogClient.getPlaylistTracksPage
                             val pageSize = effectivePageSize.coerceAtMost(100)
                             val allTracks = mutableListOf<Track>()
                             var currentOffset = offset.coerceAtLeast(0)
