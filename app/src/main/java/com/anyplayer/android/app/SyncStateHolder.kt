@@ -52,7 +52,7 @@ internal class SyncStateHolder(
     private val syncSnapshotClient: SyncSnapshotClient,
     private val playbackQueueManager: PlaybackQueueManager,
     private val configFileImporter: ConfigFileImporter,
-    private val customPlaylistCount: () -> Int,
+    private val customPlaylistCount: suspend () -> Int,
     private val applyImportSummary: (prefix: String, summary: ImportSummary) -> Unit,
     private val onSyncApplied: suspend () -> Unit
 ) {

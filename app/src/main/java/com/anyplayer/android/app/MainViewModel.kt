@@ -109,7 +109,10 @@ class MainViewModel @Inject constructor(
         syncSnapshotClient = syncSnapshotClient,
         playbackQueueManager = playbackQueueManager,
         configFileImporter = configFileImporter,
-        customPlaylistCount = { customPlaylistStateHolder.customPlaylists.value.size },
+        customPlaylistCount = {
+            customPlaylistStateHolder.awaitCustomPlaylistsLoaded()
+            customPlaylistStateHolder.customPlaylists.value.size
+        },
         applyImportSummary = { prefix, summary ->
             stateTransferStateHolder.stateTransferStatus.value = stateTransferStateHolder.formatSummary(prefix, summary)
         },

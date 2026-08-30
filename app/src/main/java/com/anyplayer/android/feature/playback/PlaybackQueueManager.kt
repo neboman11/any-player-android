@@ -152,16 +152,22 @@ class PlaybackQueueManager @Inject constructor(
         }
     }
 
-    fun setAudioNormalization(enabled: Boolean, strictMode: Boolean) {
-        val next = AudioNormalizationSettings(enabled = enabled, strictMode = false)
-        mutableAudioNormalizationSettings.value = next
-        if (strictMode) {
-            CompatLog.w(TAG, "Strict audio normalization is unavailable without loudness measurements")
+    // Normalization must happen off the calling coroutine's dispatcher (it can hit disk/CPU
+    // work), so every media3 volume-set call site normalizes on IO before applying it.
+    private suspend fun applyNormalizedMedia3Volume(volume: Int, source: SourceType) {
+        val outputVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            spotifyPlaybackController.normalizeVolumeForSource(volume, source)
         }
+        media3PlaybackController.setVolume(outputVolume)
+    }
+
+    fun setAudioNormalization(enabled: Boolean, strictMode: Boolean) {
+        val next = AudioNormalizationSettings(enabled = enabled, strictMode = strictMode)
+        mutableAudioNormalizationSettings.value = next
 
         scope.launch {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
-                spotifyPlaybackController.setAudioNormalizationSettings(enabled)
+                spotifyPlaybackController.setAudioNormalizationSettings(enabled, strictMode)
             }
 
             val requestedVolume = mutableStatus.value.volume.coerceIn(0, 100)
@@ -170,13 +176,7 @@ class PlaybackQueueManager @Inject constructor(
             if (spotifyMode || currentTrackSource == SourceType.SPOTIFY) {
                 spotifyPlaybackController.setVolume(requestedVolume)
             } else {
-                val outputVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    spotifyPlaybackController.normalizeVolumeForSource(
-                        requestedVolume,
-                        currentTrackSource ?: SourceType.ALL
-                    )
-                }
-                media3PlaybackController.setVolume(outputVolume)
+                applyNormalizedMedia3Volume(requestedVolume, currentTrackSource ?: SourceType.ALL)
             }
             persistStateAsync()
         }
@@ -307,13 +307,7 @@ class PlaybackQueueManager @Inject constructor(
         resetMixedMediaEndStallState()
         val mappedIndex = media3PlaybackController.setQueue(tracks, index, autoPlay)
         scope.launch {
-            val media3Volume = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                spotifyPlaybackController.normalizeVolumeForSource(
-                    mutableStatus.value.volume,
-                    SourceType.ALL
-                )
-            }
-            media3PlaybackController.setVolume(media3Volume)
+            applyNormalizedMedia3Volume(mutableStatus.value.volume, SourceType.ALL)
         }
         if (mappedIndex < 0) {
             mutableStatus.value = mutableStatus.value.copy(
@@ -747,13 +741,7 @@ class PlaybackQueueManager @Inject constructor(
 
         scope.launch {
             val currentTrackSource = mutableStatus.value.currentTrack?.source
-            val outputVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                spotifyPlaybackController.normalizeVolumeForSource(
-                    requestedVolume,
-                    currentTrackSource ?: SourceType.ALL
-                )
-            }
-            media3PlaybackController.setVolume(outputVolume)
+            applyNormalizedMedia3Volume(requestedVolume, currentTrackSource ?: SourceType.ALL)
             mutableStatus.value = mutableStatus.value.copy(volume = requestedVolume)
             persistStateAsync()
         }
@@ -1297,8 +1285,8 @@ class PlaybackQueueManager @Inject constructor(
                     CompatLog.w(TAG, "Media3 playback error persisted after $media3ErrorRecoveryAttempts attempts; skipping track trackId=$errorTrackId")
                     media3ErrorRecoveryTrackId = null
                     media3ErrorRecoveryAttempts = 0
-                    media3PlaybackController.next()
                     media3PlaybackController.retryAfterError()
+                    media3PlaybackController.next()
                 }
             }
         } else if (media3ErrorRecoveryTrackId != null) {
@@ -1689,13 +1677,7 @@ class PlaybackQueueManager @Inject constructor(
                 started
             } else {
                 val mappedIndex = media3PlaybackController.setQueue(listOf(track), 0, true)
-                val normalizedVolume = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    spotifyPlaybackController.normalizeVolumeForSource(
-                        mutableStatus.value.volume,
-                        track.source
-                    )
-                }
-                media3PlaybackController.setVolume(normalizedVolume)
+                applyNormalizedMedia3Volume(mutableStatus.value.volume, track.source)
                 mappedIndex >= 0
             }
 

@@ -108,7 +108,7 @@ class SpotifyConnectBridge @Inject constructor(
     }
 
     suspend fun playUri(accessToken: String, trackIds: List<String>, startIndex: Int): Boolean {
-        if (spotifyPlaybackUris(trackIds, startIndex).isEmpty()) return false
+        if (spotifyPlaybackUris(trackIds).isEmpty()) return false
         val deviceId = resolveDeviceId(accessToken) ?: return false
         return withContext(Dispatchers.IO) {
             spotifyPlayerClient.startPlayback(accessToken, trackIds, startIndex, deviceId)

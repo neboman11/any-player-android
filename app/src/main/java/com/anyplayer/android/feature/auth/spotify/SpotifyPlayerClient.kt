@@ -14,10 +14,11 @@ class SpotifyPlayerClient @Inject constructor(
     private val spotifyApiExecutor: SpotifyApiExecutor
 ) {
     fun startPlayback(accessToken: String, trackIds: List<String>, startIndex: Int, deviceId: String? = null): Boolean {
-        val uris = spotifyPlaybackUris(trackIds, startIndex)
+        val uris = spotifyPlaybackUris(trackIds)
         if (uris.isEmpty()) return false
+        val offset = spotifyPlaybackOffset(trackIds, startIndex).coerceIn(0, uris.size - 1)
         val urisJson = uris.joinToString(prefix = "[", postfix = "]") { uri -> "\"$uri\"" }
-        val payload = "{\"uris\":$urisJson}"
+        val payload = "{\"uris\":$urisJson,\"offset\":{\"position\":$offset}}"
         val query = buildMap {
             deviceId?.takeIf { it.isNotBlank() }?.let { put("device_id", it) }
         }
@@ -103,14 +104,21 @@ class SpotifyPlayerClient @Inject constructor(
 
 }
 
-internal fun spotifyPlaybackUris(trackIds: List<String>, startIndex: Int): List<String> =
+// Keeps the full queue (not just the tail from startIndex) so a Spotify Connect
+// device's own "Previous" control still has the earlier tracks to step back into.
+internal fun spotifyPlaybackUris(trackIds: List<String>): List<String> =
     trackIds
-        .drop(startIndex.coerceIn(0, trackIds.size))
         .asSequence()
         .map { it.trim().removePrefix("spotify:track:") }
         .filter(SPOTIFY_TRACK_ID_PATTERN::matches)
         .map { "spotify:track:$it" }
         .toList()
+
+// Position of startIndex within the filtered/canonicalized uri list returned by
+// [spotifyPlaybackUris], so playback still starts at the requested track even
+// though some ids ahead of it may have been dropped as invalid.
+internal fun spotifyPlaybackOffset(trackIds: List<String>, startIndex: Int): Int =
+    spotifyPlaybackUris(trackIds.take(startIndex.coerceIn(0, trackIds.size))).size
 
 private val SPOTIFY_TRACK_ID_PATTERN = Regex("[A-Za-z0-9]{22}")
 

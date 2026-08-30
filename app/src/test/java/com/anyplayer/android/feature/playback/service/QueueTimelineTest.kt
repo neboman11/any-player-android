@@ -35,9 +35,23 @@ class QueueTimelineTest {
     }
 
     @Test
-    fun getIndexOfPeriod_resolvesToMatchingTrack() {
+    fun getIndexOfPeriod_resolvesViaUidRoundTrip() {
         val timeline = QueueTimeline(listOf(track("a"), track("b"), track("c")))
 
-        assertEquals(1, timeline.getIndexOfPeriod("b"))
+        val uid = timeline.getUidOfPeriod(1)
+
+        assertEquals(1, timeline.getIndexOfPeriod(uid))
+    }
+
+    @Test
+    fun getIndexOfPeriod_duplicateTrackIds_resolveToDistinctIndices() {
+        val timeline = QueueTimeline(listOf(track("a"), track("b"), track("a")))
+
+        val uidFirst = timeline.getUidOfPeriod(0)
+        val uidSecond = timeline.getUidOfPeriod(2)
+
+        assertNotEquals(uidFirst, uidSecond)
+        assertEquals(0, timeline.getIndexOfPeriod(uidFirst))
+        assertEquals(2, timeline.getIndexOfPeriod(uidSecond))
     }
 }

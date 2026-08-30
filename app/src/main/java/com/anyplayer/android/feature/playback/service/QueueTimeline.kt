@@ -39,20 +39,23 @@ internal class QueueTimeline(
 
     override fun getPeriod(periodIndex: Int, period: Period, setIds: Boolean): Period {
         val id = tracks[periodIndex].id
+        val uid: Any = periodIndex
         return period.set(
             if (setIds) id else null,
-            if (setIds) id else null,
+            if (setIds) uid else null,
             periodIndex,
             C.TIME_UNSET,
             0
         )
     }
 
+    // Uids are the period index rather than the track id: the queue can contain
+    // duplicate track ids (a track added to the queue more than once), and two
+    // periods sharing an id would collapse to the same index here.
     override fun getIndexOfPeriod(uid: Any): Int {
-        val stringUid = uid as? String ?: return C.INDEX_UNSET
-        val index = tracks.indexOfFirst { it.id == stringUid }
-        return if (index >= 0) index else C.INDEX_UNSET
+        val index = uid as? Int ?: return C.INDEX_UNSET
+        return if (index in tracks.indices) index else C.INDEX_UNSET
     }
 
-    override fun getUidOfPeriod(periodIndex: Int): Any = tracks[periodIndex].id
+    override fun getUidOfPeriod(periodIndex: Int): Any = periodIndex
 }

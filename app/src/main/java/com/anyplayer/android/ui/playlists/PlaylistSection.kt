@@ -205,17 +205,7 @@ internal fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
     if (selectedCustomPlaylist != null) {
         val unionSourceLabels = if (selectedCustomPlaylist.playlistType == PlaylistType.UNION) {
             state.selectedCustomUnionSources.map { source ->
-                val normalizedSpotifySourceId = if (source.sourceType == SourceType.SPOTIFY) {
-                    source.sourcePlaylistId
-                        .substringAfter("spotify:playlist:", source.sourcePlaylistId)
-                        .let { value ->
-                            value.substringAfter("/playlist/", value)
-                                .substringBefore('?')
-                                .substringBefore('/')
-                        }
-                } else {
-                    source.sourcePlaylistId
-                }
+                val normalizedSpotifySourceId = normalizePlaylistId(source.sourceType, source.sourcePlaylistId)
                 val playlistName = when (source.sourceType) {
                     SourceType.CUSTOM -> {
                         state.customPlaylists.firstOrNull { it.id == source.sourcePlaylistId }?.name

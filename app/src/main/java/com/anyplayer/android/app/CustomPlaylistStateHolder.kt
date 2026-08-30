@@ -11,6 +11,7 @@ import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,12 +32,25 @@ internal class CustomPlaylistStateHolder(
     val customPlaylistRefreshInProgress = MutableStateFlow(false)
     val customPlaylistRefreshStatus = MutableStateFlow<String?>(null)
 
+    // customPlaylists starts empty and is only populated once the Room-backed flow below
+    // emits, so callers that need an accurate count (e.g. the sync overwrite-confirmation
+    // guard) must await this rather than reading customPlaylists.value directly - otherwise
+    // a fast-path caller can race the first emission and see a false "zero playlists".
+    private val customPlaylistsLoaded = CompletableDeferred<Unit>()
+
     fun observeCustomPlaylists() {
         viewModelScope.launch {
             customPlaylistEngine.observeCustomPlaylists().collect { playlists ->
                 customPlaylists.value = playlists.sortedByDescending { it.updatedAt }
+                customPlaylistsLoaded.complete(Unit)
             }
         }
+    }
+
+    suspend fun awaitCustomPlaylistsLoaded() = customPlaylistsLoaded.await()
+
+    private suspend fun refreshActiveCustomPlaylistTracks(playlistId: String) {
+        activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
     }
 
     fun createStandardPlaylist(name: String) {
@@ -80,7 +94,7 @@ internal class CustomPlaylistStateHolder(
             } else {
                 emptyList()
             }
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -94,7 +108,7 @@ internal class CustomPlaylistStateHolder(
         viewModelScope.launch {
             val selectedPlaylist = customPlaylists.value.firstOrNull { it.id == playlistId }
             customPlaylistEngine.playPlaylist(playlistId)
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
             selectedCustomPlaylistId.value = playlistId
             selectedCustomUnionSources.value = if (selectedPlaylist?.playlistType == PlaylistType.UNION) {
                 customPlaylistEngine.getUnionSources(playlistId)
@@ -115,7 +129,7 @@ internal class CustomPlaylistStateHolder(
         val track = searchResults.value.getOrNull(trackIndex) ?: return
         viewModelScope.launch {
             customPlaylistEngine.addTrack(playlistId, track)
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -123,7 +137,7 @@ internal class CustomPlaylistStateHolder(
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
             customPlaylistEngine.removeTrackAt(playlistId, playlistTrackIndex)
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -161,7 +175,7 @@ internal class CustomPlaylistStateHolder(
             selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
                 ensureProviderPlaylistMetadataForUnionSources(unionSources)
             }
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -169,7 +183,7 @@ internal class CustomPlaylistStateHolder(
         val playlistId = selectedCustomPlaylistId.value ?: return
         viewModelScope.launch {
             customPlaylistEngine.reorderTracks(playlistId, orderedTrackIds)
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -180,7 +194,7 @@ internal class CustomPlaylistStateHolder(
             selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
                 ensureProviderPlaylistMetadataForUnionSources(unionSources)
             }
-            activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+            refreshActiveCustomPlaylistTracks(playlistId)
         }
     }
 
@@ -199,7 +213,7 @@ internal class CustomPlaylistStateHolder(
                 selectedCustomUnionSources.value = customPlaylistEngine.getUnionSources(playlistId).also { unionSources ->
                     ensureProviderPlaylistMetadataForUnionSources(unionSources)
                 }
-                activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
+                refreshActiveCustomPlaylistTracks(playlistId)
                 customPlaylistRefreshStatus.value = null
             } catch (e: CancellationException) {
                 throw e

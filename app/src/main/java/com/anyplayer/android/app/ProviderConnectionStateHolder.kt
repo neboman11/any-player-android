@@ -186,55 +186,40 @@ internal class ProviderConnectionStateHolder(
         validationErrorMessage: String,
         buildRequest: () -> AuthRequest
     ) {
-        viewModelScope.launch {
-            if (!isValid) {
-                providerConnectionFeedback.value = validationErrorMessage
-                return@launch
-            }
-
-            providerConnectionInProgress.value = true
-            providerConnectionFeedback.value = "Connecting to $providerLabel..."
-
-            val result = runCatching { authRepository.connect(buildRequest()) }
-
-            result.onFailure {
-                providerConnectionFeedback.value = formatProviderFailure(providerLabel, it)
-                providerConnectionInProgress.value = false
-            }.onSuccess {
+        if (!isValid) {
+            providerConnectionFeedback.value = validationErrorMessage
+            return
+        }
+        runProviderAction(
+            startingFeedback = "Connecting to $providerLabel...",
+            action = { authRepository.connect(buildRequest()) },
+            onFailureFeedback = { formatProviderFailure(providerLabel, it) },
+            onSuccess = {
                 applyProviderChangeSideEffects()
                 providerConnectionFeedback.value = if (currentProviderPlaylistCount() == 0) {
                     "$providerLabel connected, but no provider playlists were returned."
                 } else {
                     "$providerLabel connected. Loaded ${currentProviderPlaylistCount()} provider playlist(s)."
                 }
-                providerConnectionInProgress.value = false
             }
-        }
+        )
     }
 
     fun beginSpotifyLink() {
-        viewModelScope.launch {
-            val clientId = SpotifyClientIds.ACTIVE.trim()
-            if (clientId.isBlank()) {
-                providerConnectionFeedback.value = "Spotify client ID is not configured. Set 'spotifyClientId' in local.properties (or gradle.properties) and register redirect URI anyplayer://spotify-callback in Spotify Developer Dashboard."
-                return@launch
-            }
-
-            providerConnectionInProgress.value = true
-            providerConnectionFeedback.value = "Opening Spotify login..."
-            runCatching {
-                authRepository.beginSpotifyAuth(
-                    clientId = clientId,
-                    redirectUri = SpotifyClientIds.REDIRECT_URI
-                )
-            }.onFailure {
-                providerConnectionFeedback.value = "Spotify connection failed: ${it.message ?: "Unknown error"}"
-            }.onSuccess {
-                spotifyAuthLaunchUrl.value = it
+        val clientId = SpotifyClientIds.ACTIVE.trim()
+        if (clientId.isBlank()) {
+            providerConnectionFeedback.value = "Spotify client ID is not configured. Set 'spotifyClientId' in local.properties (or gradle.properties) and register redirect URI anyplayer://spotify-callback in Spotify Developer Dashboard."
+            return
+        }
+        runProviderAction(
+            startingFeedback = "Opening Spotify login...",
+            action = { authRepository.beginSpotifyAuth(clientId = clientId, redirectUri = SpotifyClientIds.REDIRECT_URI) },
+            onFailureFeedback = { "Spotify connection failed: ${it.message ?: "Unknown error"}" },
+            onSuccess = { url ->
+                spotifyAuthLaunchUrl.value = url
                 providerConnectionFeedback.value = "Continue in browser to link Spotify."
             }
-            providerConnectionInProgress.value = false
-        }
+        )
     }
 
     fun markSpotifyAuthLaunchHandled() {
@@ -242,17 +227,38 @@ internal class ProviderConnectionStateHolder(
     }
 
     fun completeSpotifyLink(redirectUri: String) {
-        viewModelScope.launch {
-            providerConnectionInProgress.value = true
-            providerConnectionFeedback.value = "Finishing Spotify login..."
-            runCatching {
-                authRepository.completeSpotifyAuth(redirectUri)
-            }.onFailure {
-                providerConnectionFeedback.value = "Spotify login failed: ${it.message ?: "Unknown error"}"
-            }.onSuccess {
+        runProviderAction(
+            startingFeedback = "Finishing Spotify login...",
+            action = { authRepository.completeSpotifyAuth(redirectUri) },
+            onFailureFeedback = { "Spotify login failed: ${it.message ?: "Unknown error"}" },
+            onSuccess = {
                 applyProviderChangeSideEffects()
                 providerConnectionFeedback.value = "Spotify connected successfully."
             }
+        )
+    }
+
+    // Shared in-progress/feedback/runCatching scaffold for connect and Spotify link flows,
+    // so a bugfix to the bookkeeping (e.g. when providerConnectionInProgress resets) only
+    // needs to be made once instead of drifting across near-identical copies.
+    private fun <T> runProviderAction(
+        startingFeedback: String,
+        action: suspend () -> T,
+        onFailureFeedback: (Throwable) -> String,
+        onSuccess: suspend (T) -> Unit
+    ) {
+        viewModelScope.launch {
+            providerConnectionInProgress.value = true
+            providerConnectionFeedback.value = startingFeedback
+
+            runCatching { action() }
+                .onFailure {
+                    providerConnectionFeedback.value = onFailureFeedback(it)
+                }
+                .onSuccess {
+                    onSuccess(it)
+                }
+
             providerConnectionInProgress.value = false
         }
     }

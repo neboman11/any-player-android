@@ -57,16 +57,7 @@ class SpotifyPlaybackController @Inject constructor(
             lastError = "Spotify queue is empty"
             return false
         }
-        val accessToken = resolveAccessToken() ?: return false
-
-        val started = connectBridge.playUri(accessToken, trackIds, startIndex)
-        if (!started) {
-            if (lastError == null) lastError = "Spotify failed to start playback."
-            return false
-        }
-
-        lastError = null
-        return true
+        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex) }
     }
 
     suspend fun play(): Boolean = runCommand("play") { connectBridge.resume(it) }
@@ -93,8 +84,8 @@ class SpotifyPlaybackController @Inject constructor(
     fun getAudioNormalizationSettings(): AudioNormalizationSettings =
         rustBridge.getAudioNormalizationSettings() ?: AudioNormalizationSettings()
 
-    fun setAudioNormalizationSettings(enabled: Boolean): Boolean {
-        val result = rustBridge.setAudioNormalizationSettings(enabled)
+    fun setAudioNormalizationSettings(enabled: Boolean, strictMode: Boolean): Boolean {
+        val result = rustBridge.setAudioNormalizationSettings(enabled, strictMode)
         if (result != null) return result
         val errorMessage =
             "Failed to set audio normalization settings. ${rustBridge.lastError ?: ""}".trim()

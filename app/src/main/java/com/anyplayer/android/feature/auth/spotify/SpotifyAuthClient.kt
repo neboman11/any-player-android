@@ -54,15 +54,25 @@ class SpotifyAuthClient @Inject constructor(
         code: String,
         codeVerifier: String,
         redirectUri: String
-    ): SpotifyTokenExchangeResult? {
-        val body = FormBody.Builder()
+    ): SpotifyTokenExchangeResult? = exchangeToken(
+        FormBody.Builder()
             .add("grant_type", "authorization_code")
             .add("client_id", clientId)
             .add("code", code)
             .add("redirect_uri", redirectUri)
             .add("code_verifier", codeVerifier)
             .build()
+    )
 
+    fun refreshAccessToken(clientId: String, refreshToken: String): SpotifyTokenExchangeResult? = exchangeToken(
+        FormBody.Builder()
+            .add("grant_type", "refresh_token")
+            .add("client_id", clientId)
+            .add("refresh_token", refreshToken)
+            .build()
+    )
+
+    private fun exchangeToken(body: FormBody): SpotifyTokenExchangeResult? {
         val request = Request.Builder()
             .url("https://accounts.spotify.com/api/token")
             .post(body)
@@ -79,34 +89,6 @@ class SpotifyAuthClient @Inject constructor(
             return SpotifyTokenExchangeResult(
                 accessToken = accessToken,
                 refreshToken = refreshToken,
-                expiresIn = expiresIn
-            )
-        }
-    }
-
-    fun refreshAccessToken(clientId: String, refreshToken: String): SpotifyTokenExchangeResult? {
-        val body = FormBody.Builder()
-            .add("grant_type", "refresh_token")
-            .add("client_id", clientId)
-            .add("refresh_token", refreshToken)
-            .build()
-
-        val request = Request.Builder()
-            .url("https://accounts.spotify.com/api/token")
-            .post(body)
-            .header("Accept", "application/json")
-            .build()
-
-        okHttpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val raw = response.body?.string().orEmpty()
-            val parsed = json.parseToJsonElement(raw) as? JsonObject ?: return null
-            val accessToken = parsed["access_token"].jsonPrimitiveStringOrNull ?: return null
-            val newRefreshToken = parsed["refresh_token"].jsonPrimitiveStringOrNull
-            val expiresIn = parsed["expires_in"]?.jsonPrimitive?.intOrNull
-            return SpotifyTokenExchangeResult(
-                accessToken = accessToken,
-                refreshToken = newRefreshToken,
                 expiresIn = expiresIn
             )
         }
