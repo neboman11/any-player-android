@@ -1190,7 +1190,7 @@ class PlaybackQueueManager @Inject constructor(
             // poll hadn't caught up yet.
             if (state.state == PlaybackStateType.ERROR && !spotifySnapshot.isPlaying && state.queue.isNotEmpty()) {
                 val currentIndex = queueIndexCache.currentQueueIndex(state)
-                CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=$recovery.spotifyRecoveryAttempts")
+                CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=${recovery.spotifyRecoveryAttempts}")
                 maybeRecoverSpotifyTrack(
                     queueTrackIds = queueIndexCache.cachedQueueTrackIds,
                     startIndex = currentIndex,
@@ -1263,10 +1263,10 @@ class PlaybackQueueManager @Inject constructor(
                 recovery.media3ErrorRecoveryLastAttemptMs = nowMs
                 recovery.media3ErrorRecoveryAttempts++
                 if (recovery.media3ErrorRecoveryAttempts <= 3) {
-                    CompatLog.w(TAG, "Media3 playback error; retrying (attempt $recovery.media3ErrorRecoveryAttempts) trackId=$errorTrackId")
+                    CompatLog.w(TAG, "Media3 playback error; retrying (attempt ${recovery.media3ErrorRecoveryAttempts}) trackId=$errorTrackId")
                     media3PlaybackController.retryAfterError()
                 } else {
-                    CompatLog.w(TAG, "Media3 playback error persisted after $recovery.media3ErrorRecoveryAttempts attempts; skipping track trackId=$errorTrackId")
+                    CompatLog.w(TAG, "Media3 playback error persisted after ${recovery.media3ErrorRecoveryAttempts} attempts; skipping track trackId=$errorTrackId")
                     recovery.media3ErrorRecoveryTrackId = null
                     recovery.media3ErrorRecoveryAttempts = 0
                     media3PlaybackController.retryAfterError()
@@ -1473,12 +1473,12 @@ class PlaybackQueueManager @Inject constructor(
         if (recoveryInFlight || inCooldown) {
             CompatLog.d(
                 TAG,
-                "Skipping Spotify recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - recovery.spotifyRecoveryLastAttemptMs} attempts=$recovery.spotifyRecoveryAttempts"
+                "Skipping Spotify recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - recovery.spotifyRecoveryLastAttemptMs} attempts=${recovery.spotifyRecoveryAttempts}"
             )
             return recoveryInFlight
         }
         if (recovery.spotifyRecoveryAttempts >= 3) {
-            CompatLog.w(TAG, "Spotify recovery exhausted after $recovery.spotifyRecoveryAttempts attempts")
+            CompatLog.w(TAG, "Spotify recovery exhausted after ${recovery.spotifyRecoveryAttempts} attempts")
             return false
         }
         recovery.spotifyRecoveryInFlight = true
