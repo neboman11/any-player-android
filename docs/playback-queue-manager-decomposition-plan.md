@@ -156,6 +156,25 @@ rather than patching forward.
 
 ## Stage 3 — Extract mixed mode (highest risk, do last, do carefully)
 
+**Status: code committed, manual on-device check still pending** (user
+will verify a queue mixing local/Jellyfin and Spotify tracks: source
+transitions in both directions, end-of-track auto-advance across both
+boundary directions, stall detection/recovery). `MixedPlaybackOps.kt`
+(365 lines) holds all mixed-mode dispatch methods plus
+`mixedPlaybackSequence`, `spotifyFallbackQueue`, `playMixedTrackAtIndex`,
+`playMixedTrackById`, `triggerPrefetch`. `playMixedTrackAtIndex` and
+`triggerPrefetch` stayed public since `PlaybackQueueManager.setQueue`
+(mode-agnostic, stays there) calls them too; `PlaybackQueueManager` keeps
+a thin `private fun triggerPrefetch() = mixedOps.triggerPrefetch()`
+re-export since `LocalPlaybackOps` was already wired to a
+`::triggerPrefetch` callback in Stage 1, before `mixedOps` existed.
+`PlaybackQueueManager.kt` shrank 1060 → 741 lines (down from 1666
+originally) and now already matches the Stage 4 target shape below. Full
+build + full test suite green.
+
+If the device check turns up a regression, revert this stage's commit
+rather than patching forward.
+
 1. Create `MixedPlaybackOps.kt`: constructor takes `localOps`, `spotifyOps`,
    `context`, plus whatever mixed-only helpers remain
    (`mixedPlaybackSequence`, `spotifyFallbackQueue`, `playMixedTrackAtIndex`,
