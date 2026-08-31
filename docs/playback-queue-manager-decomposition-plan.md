@@ -193,6 +193,21 @@ rather than patching forward.
 
 ## Stage 4 — Cleanup
 
+**Status: verification done.** `PlaybackQueueManager.kt` already matched
+the target shape below as a byproduct of Stage 3 — no further extraction
+needed. `PlaybackQueueManager.kt` 1666 → 741 lines (55.5%); split across
+`PlaybackEngineContext.kt` (50), `LocalPlaybackOps.kt` (179),
+`SpotifyPlaybackOps.kt` (576), `MixedPlaybackOps.kt` (365) — 1911 lines
+total (growth vs. the original is expected: per-class doc comments,
+companion `TAG` constants, and function signatures at each mode boundary
+that a single big file didn't need). Full test suite green, `lintDebug`
+clean (checked the SARIF report specifically for the 5 touched files: 0
+issues). No unused imports in any of the 5 files.
+
+Commit history left as 5 separate commits (4 stages + 1 fix for a Stage 1
+log-string rename bug) rather than squashed — reviewable one stage at a
+time, matches how the work was actually verified.
+
 1. `PlaybackQueueManager.kt` should now be close to: constructor, `status`/
    `audioNormalizationSettings` flows, `setQueue`/`addNextInQueue` (mode
    computation), `restorePersistedState`/`persistState`/`persistStateAsync`,
