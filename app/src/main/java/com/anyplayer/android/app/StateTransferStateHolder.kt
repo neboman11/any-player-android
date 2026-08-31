@@ -19,8 +19,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Owns MainViewModel's state-transfer (export/import) status and file operations.
- * [stateTransferStatus] and [formatSummary] are also written/used by MainViewModel's
- * sync code path (config-snapshot import), so both stay internal rather than private.
+ * [applyImportSummary] is also passed to SyncStateHolder so it can report its own
+ * config-snapshot import results through this holder's status flow.
  */
 internal class StateTransferStateHolder(
     private val viewModelScope: CoroutineScope,
@@ -77,7 +77,7 @@ internal class StateTransferStateHolder(
                     )
                 }
             }.onSuccess { summary ->
-                stateTransferStatus.value = formatSummary(if (dryRun) "Dry run" else "Import", summary)
+                applyImportSummary(if (dryRun) "Dry run" else "Import", summary)
             }.onFailure {
                 stateTransferStatus.value = "${if (dryRun) "Dry run" else "Import"} failed: ${it.message}"
             }
@@ -96,7 +96,7 @@ internal class StateTransferStateHolder(
                 }
             }.onSuccess { summary ->
                 val prefix = if (dryRun) "Config dry run" else "Config import"
-                stateTransferStatus.value = formatSummary(prefix, summary)
+                applyImportSummary(prefix, summary)
                 if (!dryRun) onImported()
             }.onFailure {
                 stateTransferStatus.value = "Config import failed: ${it.message}"
@@ -104,7 +104,11 @@ internal class StateTransferStateHolder(
         }
     }
 
-    fun formatSummary(prefix: String, summary: ImportSummary): String {
+    fun applyImportSummary(prefix: String, summary: ImportSummary) {
+        stateTransferStatus.value = formatSummary(prefix, summary)
+    }
+
+    private fun formatSummary(prefix: String, summary: ImportSummary): String {
         val warningSummary = if (summary.warnings.isEmpty()) "no warnings" else summary.warnings.joinToString(" | ")
         return "$prefix complete. playlists +${summary.playlistsAdded}/~${summary.playlistsUpdated}, tracks +${summary.tracksAdded}/~${summary.tracksUpdated}, union +${summary.unionLinksAdded}/~${summary.unionLinksUpdated}, connections +${summary.connectionsImported}/skip ${summary.connectionsSkipped}, $warningSummary"
     }

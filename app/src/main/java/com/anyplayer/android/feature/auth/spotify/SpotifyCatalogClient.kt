@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
@@ -25,20 +26,7 @@ class SpotifyCatalogClient @Inject constructor(
         ) ?: return emptyList()
 
         val items = root["items"] as? JsonArray ?: JsonArray(emptyList())
-        return items.mapNotNull { playlistItem ->
-            val obj = playlistItem.jsonObject
-            val id = obj["id"].jsonPrimitiveStringOrNull ?: return@mapNotNull null
-            Playlist(
-                id = id,
-                name = obj["name"].jsonPrimitiveStringOrEmpty,
-                owner = obj["owner"].jsonObject["display_name"].jsonPrimitiveStringOrNull ?: "Spotify",
-                trackCount = obj["tracks"].jsonObject["total"].jsonPrimitiveIntOrZero,
-                source = SourceType.SPOTIFY,
-                imageUrl = bestImageUrl(obj["images"] as? JsonArray),
-                description = obj["description"].jsonPrimitiveStringOrNull,
-                tracks = null
-            )
-        }
+        return items.mapNotNull { parsePlaylist(it.jsonObject) }
     }
 
     fun getPlaylistTracks(accessToken: String, playlistId: String, offset: Int = 0, limit: Int = 100): List<Track> =
@@ -65,23 +53,7 @@ class SpotifyCatalogClient @Inject constructor(
 
         val total = root["total"].jsonPrimitiveIntOrZero
         val items = root["items"] as? JsonArray ?: JsonArray(emptyList())
-        val tracks = items.mapNotNull { item ->
-            val trackObj = item.jsonObject["track"].jsonObject
-            val id = trackObj["id"].jsonPrimitiveStringOrNull ?: return@mapNotNull null
-            val artists = trackObj["artists"] as? JsonArray
-            val album = trackObj["album"].jsonObject
-            Track(
-                id = id,
-                title = trackObj["name"].jsonPrimitiveStringOrEmpty,
-                artist = joinArtistNames(artists),
-                album = album["name"].jsonPrimitiveStringOrNull,
-                durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
-                source = SourceType.SPOTIFY,
-                url = "spotify:track:$id",
-                imageUrl = bestImageUrl(album["images"] as? JsonArray),
-                enriched = true
-            )
-        }
+        val tracks = items.mapNotNull { parseTrack(it.jsonObject["track"].jsonObject) }
         return SpotifyPlaylistTracksPage(tracks = tracks, total = total)
     }
 
@@ -102,23 +74,7 @@ class SpotifyCatalogClient @Inject constructor(
         ) ?: return emptyList()
 
         val items = root["tracks"].jsonObject["items"] as? JsonArray ?: JsonArray(emptyList())
-        return items.mapNotNull { item ->
-            val trackObj = item.jsonObject
-            val id = trackObj["id"].jsonPrimitiveStringOrNull ?: return@mapNotNull null
-            val artists = trackObj["artists"] as? JsonArray
-            val album = trackObj["album"].jsonObject
-            Track(
-                id = id,
-                title = trackObj["name"].jsonPrimitiveStringOrEmpty,
-                artist = joinArtistNames(artists),
-                album = album["name"].jsonPrimitiveStringOrNull,
-                durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
-                source = SourceType.SPOTIFY,
-                url = "spotify:track:$id",
-                imageUrl = bestImageUrl(album["images"] as? JsonArray),
-                enriched = true
-            )
-        }
+        return items.mapNotNull { parseTrack(it.jsonObject) }
     }
 
     fun searchPlaylists(accessToken: String, query: String, offset: Int = 0, limit: Int = 50): List<Playlist> {
@@ -137,20 +93,38 @@ class SpotifyCatalogClient @Inject constructor(
         ) ?: return emptyList()
 
         val items = root["playlists"].jsonObject["items"] as? JsonArray ?: JsonArray(emptyList())
-        return items.mapNotNull { item ->
-            val obj = item.jsonObject
-            val id = obj["id"].jsonPrimitiveStringOrNull ?: return@mapNotNull null
-            Playlist(
-                id = id,
-                name = obj["name"].jsonPrimitiveStringOrEmpty,
-                owner = obj["owner"].jsonObject["display_name"].jsonPrimitiveStringOrNull ?: "Spotify",
-                trackCount = obj["tracks"].jsonObject["total"].jsonPrimitiveIntOrZero,
-                source = SourceType.SPOTIFY,
-                imageUrl = bestImageUrl(obj["images"] as? JsonArray),
-                description = obj["description"].jsonPrimitiveStringOrNull,
-                tracks = null
-            )
-        }
+        return items.mapNotNull { parsePlaylist(it.jsonObject) }
+    }
+
+    private fun parseTrack(trackObj: JsonObject): Track? {
+        val id = trackObj["id"].jsonPrimitiveStringOrNull ?: return null
+        val artists = trackObj["artists"] as? JsonArray
+        val album = trackObj["album"].jsonObject
+        return Track(
+            id = id,
+            title = trackObj["name"].jsonPrimitiveStringOrEmpty,
+            artist = joinArtistNames(artists),
+            album = album["name"].jsonPrimitiveStringOrNull,
+            durationMs = trackObj["duration_ms"]?.jsonPrimitive?.longOrNull,
+            source = SourceType.SPOTIFY,
+            url = "spotify:track:$id",
+            imageUrl = bestImageUrl(album["images"] as? JsonArray),
+            enriched = true
+        )
+    }
+
+    private fun parsePlaylist(obj: JsonObject): Playlist? {
+        val id = obj["id"].jsonPrimitiveStringOrNull ?: return null
+        return Playlist(
+            id = id,
+            name = obj["name"].jsonPrimitiveStringOrEmpty,
+            owner = obj["owner"].jsonObject["display_name"].jsonPrimitiveStringOrNull ?: "Spotify",
+            trackCount = obj["tracks"].jsonObject["total"].jsonPrimitiveIntOrZero,
+            source = SourceType.SPOTIFY,
+            imageUrl = bestImageUrl(obj["images"] as? JsonArray),
+            description = obj["description"].jsonPrimitiveStringOrNull,
+            tracks = null
+        )
     }
 }
 

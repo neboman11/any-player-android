@@ -55,17 +55,21 @@ internal class ProviderPlaylistBrowsingStateHolder(
     }
 
     fun refreshProviderPlaylistData() {
-        viewModelScope.launch {
-            providerPlaylistRefreshInProgress.value = true
-            providerPlaylistRefreshStatus.value = "Starting playlist refresh..."
-
-            runCatching {
+        viewModelScope.launchTrackedAction(
+            inProgress = providerPlaylistRefreshInProgress,
+            status = providerPlaylistRefreshStatus,
+            startingStatus = "Starting playlist refresh...",
+            action = {
                 providerCatalogRepository.refreshAllProviderPlaylistDataWithCache(
                     onProgressUpdate = { status ->
                         providerPlaylistRefreshStatus.value = status
                     }
                 )
-            }.onSuccess { refreshedPlaylists ->
+            },
+            onFailureStatus = { throwable ->
+                throwable.message?.takeIf { it.isNotBlank() } ?: "Playlist data refresh failed."
+            },
+            onSuccess = { refreshedPlaylists ->
                 providerPlaylists.value = refreshedPlaylists
                 providerPlaylistRefreshStatus.value = "Playlist data refreshed successfully!"
 
@@ -80,13 +84,8 @@ internal class ProviderPlaylistBrowsingStateHolder(
                         selectedProviderPlaylistError.value = null
                     }
                 }
-            }.onFailure { throwable ->
-                providerPlaylistRefreshStatus.value = throwable.message?.takeIf { it.isNotBlank() }
-                    ?: "Playlist data refresh failed."
             }
-
-            providerPlaylistRefreshInProgress.value = false
-        }
+        )
     }
 
     fun openProviderPlaylistSummary(playlist: Playlist) {

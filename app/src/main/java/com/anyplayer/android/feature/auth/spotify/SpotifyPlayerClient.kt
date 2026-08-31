@@ -1,6 +1,7 @@
 package com.anyplayer.android.feature.auth.spotify
 
 import com.anyplayer.android.core.model.RepeatMode
+import com.anyplayer.android.feature.playback.normalizeSpotifyTrackId
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -109,7 +110,7 @@ class SpotifyPlayerClient @Inject constructor(
 internal fun spotifyPlaybackUris(trackIds: List<String>): List<String> =
     trackIds
         .asSequence()
-        .map { it.trim().removePrefix("spotify:track:") }
+        .map { normalizeSpotifyTrackId(it) }
         .filter(SPOTIFY_TRACK_ID_PATTERN::matches)
         .map { "spotify:track:$it" }
         .toList()

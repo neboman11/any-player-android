@@ -33,7 +33,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -113,9 +112,7 @@ class MainViewModel @Inject constructor(
             customPlaylistStateHolder.awaitCustomPlaylistsLoaded()
             customPlaylistStateHolder.customPlaylists.value.size
         },
-        applyImportSummary = { prefix, summary ->
-            stateTransferStateHolder.stateTransferStatus.value = stateTransferStateHolder.formatSummary(prefix, summary)
-        },
+        applyImportSummary = stateTransferStateHolder::applyImportSummary,
         onSyncApplied = {
             runStartup(continueWithoutProviders = false)
         }
@@ -541,22 +538,19 @@ class MainViewModel @Inject constructor(
     }
 
     fun clearProviderCaches() {
-        viewModelScope.launch {
-            providerConnectionStateHolder.providerConnectionInProgress.value = true
-            providerConnectionStateHolder.providerConnectionFeedback.value = "Clearing provider cache..."
-
-            runCatching {
+        providerConnectionStateHolder.runProviderAction(
+            startingFeedback = "Clearing provider cache...",
+            action = {
                 providerCatalogRepository.clearProviderPlaylistCacheData()
                 runStartup(continueWithoutProviders = false)
-            }.onSuccess {
+            },
+            onFailureFeedback = { throwable ->
+                throwable.message?.takeIf { it.isNotBlank() } ?: "Failed to clear provider cache."
+            },
+            onSuccess = {
                 providerConnectionStateHolder.providerConnectionFeedback.value = "Provider cache cleared. Fresh provider data loaded."
-            }.onFailure { throwable ->
-                providerConnectionStateHolder.providerConnectionFeedback.value = throwable.message?.takeIf { it.isNotBlank() }
-                    ?: "Failed to clear provider cache."
             }
-
-            providerConnectionStateHolder.providerConnectionInProgress.value = false
-        }
+        )
     }
 
     fun togglePlayPause() {

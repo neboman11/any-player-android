@@ -44,6 +44,17 @@ class QueueTimelineTest {
     }
 
     @Test
+    fun getWindow_duplicateTrackIds_assignsDistinctUidsPerWindow() {
+        val timeline = QueueTimeline(listOf(track("a"), track("b"), track("a")))
+        val window = Timeline.Window()
+
+        val uidFirst = timeline.getWindow(0, window).uid
+        val uidSecond = timeline.getWindow(2, window).uid
+
+        assertNotEquals(uidFirst, uidSecond)
+    }
+
+    @Test
     fun getIndexOfPeriod_duplicateTrackIds_resolveToDistinctIndices() {
         val timeline = QueueTimeline(listOf(track("a"), track("b"), track("a")))
 

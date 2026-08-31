@@ -19,8 +19,11 @@ internal class QueueTimeline(
             ?.takeIf { it > 0 }
             ?.let { it * 1_000L }
             ?: C.TIME_UNSET
+        // Uid is the window index, not the track id: the queue can contain the same
+        // track more than once, and two windows sharing an id would collapse together
+        // in MediaSession/Android Auto queue continuity. Matches getUidOfPeriod.
         return window.set(
-            track.id,
+            windowIndex,
             track.toMediaItem(),
             null,
             C.TIME_UNSET,

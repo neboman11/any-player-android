@@ -10,12 +10,12 @@ import com.anyplayer.android.core.model.normalizePlaylistId
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
 import java.time.Instant
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Thin adapter over [CustomPlaylistEngine] owning MainViewModel's custom-playlist UI state. */
 internal class CustomPlaylistStateHolder(
@@ -27,6 +27,7 @@ internal class CustomPlaylistStateHolder(
 ) {
     companion object {
         private const val TAG = "CustomPlaylistStateHolder"
+        private const val CUSTOM_PLAYLISTS_LOAD_TIMEOUT_MS = 5_000L
     }
 
     val customPlaylists = MutableStateFlow<List<CustomPlaylist>>(emptyList())
@@ -56,7 +57,14 @@ internal class CustomPlaylistStateHolder(
         }
     }
 
-    suspend fun awaitCustomPlaylistsLoaded() = customPlaylistsLoaded.await()
+    // Bounded so a stalled Room flow (never emits, never throws) can't hang the
+    // sync-pull path indefinitely; on timeout callers fall back to whatever
+    // customPlaylists currently holds (empty, if the flow truly never emitted).
+    suspend fun awaitCustomPlaylistsLoaded() {
+        withTimeoutOrNull(CUSTOM_PLAYLISTS_LOAD_TIMEOUT_MS) {
+            customPlaylistsLoaded.await()
+        }
+    }
 
     private suspend fun refreshActiveCustomPlaylistTracks(playlistId: String) {
         activeCustomPlaylistTracks.value = customPlaylistEngine.getTracksForPlaylist(playlistId)
@@ -203,8 +211,9 @@ internal class CustomPlaylistStateHolder(
 
     fun replaceSelectedUnionSources(sources: List<UnionPlaylistSource>) {
         val playlistId = selectedCustomPlaylistId.value ?: return
-        viewModelScope.launch {
-            try {
+        viewModelScope.launchTrackedAction(
+            status = customPlaylistRefreshStatus,
+            action = {
                 val normalizedSources = sources.mapIndexed { index, source ->
                     source.copy(
                         unionPlaylistId = playlistId,
@@ -215,41 +224,37 @@ internal class CustomPlaylistStateHolder(
                 customPlaylistEngine.replaceUnionSources(playlistId, normalizedSources)
                 selectedCustomUnionSources.value = refreshedUnionSources(playlistId)
                 refreshActiveCustomPlaylistTracks(playlistId)
-                customPlaylistRefreshStatus.value = null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                CompatLog.e(TAG, "Failed to replace union sources: ${e.message}", e)
-                customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
-                    ?: "Failed to update union sources."
-            }
-        }
+            },
+            onFailureStatus = { throwable ->
+                CompatLog.e(TAG, "Failed to replace union sources: ${throwable.message}", throwable)
+                throwable.message?.takeIf { it.isNotBlank() } ?: "Failed to update union sources."
+            },
+            onSuccess = { customPlaylistRefreshStatus.value = null }
+        )
     }
 
     fun materializeSelectedUnion() {
         val playlistId = selectedCustomPlaylistId.value ?: return
-        viewModelScope.launch {
-            customPlaylistRefreshInProgress.value = true
-            customPlaylistRefreshStatus.value = "Materializing union playlist..."
-
-            try {
-                val tracks = customPlaylistEngine.materializeUnionTracks(
+        viewModelScope.launchTrackedAction(
+            inProgress = customPlaylistRefreshInProgress,
+            status = customPlaylistRefreshStatus,
+            startingStatus = "Materializing union playlist...",
+            action = {
+                customPlaylistEngine.materializeUnionTracks(
                     playlistId,
                     onProgressUpdate = { status ->
                         customPlaylistRefreshStatus.value = status
                     },
                     forceRefresh = true
                 )
+            },
+            onFailureStatus = { throwable ->
+                throwable.message?.takeIf { it.isNotBlank() } ?: "Failed to materialize union playlist."
+            },
+            onSuccess = { tracks ->
                 activeCustomPlaylistTracks.value = tracks
                 customPlaylistRefreshStatus.value = "Union playlist materialized successfully!"
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                customPlaylistRefreshStatus.value = e.message?.takeIf { it.isNotBlank() }
-                    ?: "Failed to materialize union playlist."
             }
-
-            customPlaylistRefreshInProgress.value = false
-        }
+        )
     }
 }

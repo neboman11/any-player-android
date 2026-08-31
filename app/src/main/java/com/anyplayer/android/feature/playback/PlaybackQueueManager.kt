@@ -44,26 +44,7 @@ class PlaybackQueueManager @Inject constructor(
     private var isRestoring = false
     private var spotifyMode = false
     private var mixedMode = false
-    private var mixedAutoAdvanceTrackId: String? = null
-    private var mixedMediaEndStallTrackId: String? = null
-    private var mixedMediaEndStallPositionMs: Long = -1L
-    private var mixedMediaEndStallSinceMs: Long = 0L
-    private var spotifyAutoAdvanceInFlight = false
-    private var spotifyAutoAdvanceTrackId: String? = null
-    /** Timestamp when we first detected endOfTrack but currentTrackId hadn't changed yet. */
-    private var spotifyEndOfTrackDetectedMs = 0L
-    /** The trackId that was playing when we detected endOfTrack; used for the safety fallback. */
-    private var spotifyEndOfTrackWaitingForTrackId: String? = null
-    private var spotifyRecoveryInFlight = false
-    private var spotifyRecoveryLastAttemptMs = 0L
-    private var spotifyRecoveryAttempts = 0
-    /** Tracks retries of a Media3 (Jellyfin/local) player that entered a fatal error state -
-     *  ExoPlayer stops responding to play()/seek() once playerError is set, until re-prepared. */
-    private var media3ErrorRecoveryTrackId: String? = null
-    private var media3ErrorRecoveryAttempts = 0
-    private var media3ErrorRecoveryLastAttemptMs = 0L
-    private var manualSkipInFlight = false
-    private var lastAcknowledgedEndOfTrackCount = 0L
+    private val recovery = PlaybackRecoveryState()
     private var spotifyQueueRequiresReload = false
     private var persistTickCounter = 0
     private var lastPersistFingerprint = 0L
@@ -198,9 +179,9 @@ class PlaybackQueueManager @Inject constructor(
         if (tracks.isEmpty()) {
             audioCacheManager.cancelPrefetch()
             lastPrefetchedForTrackId = null
-            resetSpotifyAutoAdvanceState()
-            resetSpotifyRecoveryState()
-            resetMixedMediaEndStallState()
+            recovery.resetSpotifyAutoAdvanceState()
+            recovery.resetSpotifyRecoveryState()
+            recovery.resetMixedMediaEndStallState()
             playableQueueIndices = emptyList()
             spotifyQueueRequiresReload = false
             queueIndexCache.rebuildQueueCaches(emptyList())
@@ -228,9 +209,9 @@ class PlaybackQueueManager @Inject constructor(
         if (spotifyMode) {
             audioCacheManager.cancelPrefetch()
             lastPrefetchedForTrackId = null
-            resetSpotifyAutoAdvanceState()
-            resetSpotifyRecoveryState()
-            resetMixedMediaEndStallState()
+            recovery.resetSpotifyAutoAdvanceState()
+            recovery.resetSpotifyRecoveryState()
+            recovery.resetMixedMediaEndStallState()
             queueIndexCache.rebuildQueueCaches(tracks)
             queueIndexCache.spotifyCurrentQueueIndex = index
             media3PlaybackController.setQueue(emptyList(), 0, false)
@@ -270,9 +251,9 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         if (mixedMode) {
-            resetSpotifyAutoAdvanceState()
-            resetSpotifyRecoveryState()
-            resetMixedMediaEndStallState()
+            recovery.resetSpotifyAutoAdvanceState()
+            recovery.resetSpotifyRecoveryState()
+            recovery.resetMixedMediaEndStallState()
             queueIndexCache.rebuildQueueCaches(tracks)
             media3PlaybackController.setQueue(emptyList(), 0, false)
             val clampedIndex = index.coerceIn(0, tracks.lastIndex)
@@ -305,9 +286,9 @@ class PlaybackQueueManager @Inject constructor(
             queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
         }
         queueIndexCache.rebuildQueueCaches(tracks)
-        resetSpotifyAutoAdvanceState()
-        resetSpotifyRecoveryState()
-        resetMixedMediaEndStallState()
+        recovery.resetSpotifyAutoAdvanceState()
+        recovery.resetSpotifyRecoveryState()
+        recovery.resetMixedMediaEndStallState()
         val mappedIndex = media3PlaybackController.setQueue(tracks, index, autoPlay)
         scope.launch {
             applyNormalizedMedia3Volume(mutableStatus.value.volume, SourceType.ALL)
@@ -850,8 +831,8 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         if (spotifyMode) {
-            manualSkipInFlight = true
-            resetSpotifyRecoveryState()
+            recovery.manualSkipInFlight = true
+            recovery.resetSpotifyRecoveryState()
             scope.launch {
                 try {
                     val activeQueue = spotifyPlaybackQueue(state)
@@ -867,7 +848,7 @@ class PlaybackQueueManager @Inject constructor(
                     }
                     val success = startSpotifyAtQueueIndex(targetIndex)
                     if (!success) {
-                        spotifyAutoAdvanceInFlight = false
+                        recovery.spotifyAutoAdvanceInFlight = false
                         CompatLog.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
                     } else {
                         queueIndexCache.spotifyCurrentQueueIndex = targetIndex
@@ -882,7 +863,7 @@ class PlaybackQueueManager @Inject constructor(
                     )
                     persistStateAsync()
                 } finally {
-                    manualSkipInFlight = false
+                    recovery.manualSkipInFlight = false
                 }
             }
             return
@@ -911,8 +892,8 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         if (spotifyMode) {
-            manualSkipInFlight = true
-            resetSpotifyRecoveryState()
+            recovery.manualSkipInFlight = true
+            recovery.resetSpotifyRecoveryState()
             scope.launch {
                 try {
                     val activeQueue = spotifyPlaybackQueue(state)
@@ -942,7 +923,7 @@ class PlaybackQueueManager @Inject constructor(
                     )
                     persistStateAsync()
                 } finally {
-                    manualSkipInFlight = false
+                    recovery.manualSkipInFlight = false
                 }
             }
             return
@@ -990,8 +971,8 @@ class PlaybackQueueManager @Inject constructor(
                     repeatMode = spotifySnapshot.repeatMode,
                     orderedQueue = mixedPlaybackSequence(state)
                 )
-                if (spotifySnapshot.endOfTrackCount > lastAcknowledgedEndOfTrackCount) {
-                    lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
+                if (spotifySnapshot.endOfTrackCount > recovery.lastAcknowledgedEndOfTrackCount) {
+                    recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
                     val sequence = mixedPlaybackSequence(state)
                     val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 } ?: 0
                     val nextTrack = sequence.getOrNull(currentIndex + 1)
@@ -1026,9 +1007,9 @@ class PlaybackQueueManager @Inject constructor(
                 val transitionedOutOfPlaying =
                     state.state == PlaybackStateType.PLAYING && snapshot.state != PlaybackStateType.PLAYING
                 if (transitionedOutOfPlaying && reachedEnd) {
-                    if (mixedAutoAdvanceTrackId != currentTrack.id) {
-                        mixedAutoAdvanceTrackId = currentTrack.id
-                        resetMixedMediaEndStallState()
+                    if (recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
+                        recovery.mixedAutoAdvanceTrackId = currentTrack.id
+                        recovery.resetMixedMediaEndStallState()
                         val nextTrack = sequence.getOrNull(currentIndex + 1)
                         if (nextTrack != null) {
                             playMixedTrackById(nextTrack.id)
@@ -1039,36 +1020,36 @@ class PlaybackQueueManager @Inject constructor(
 
                 if (state.state == PlaybackStateType.PLAYING && snapshot.state == PlaybackStateType.PLAYING && nearTrackEnd) {
                     val nowMs = System.currentTimeMillis()
-                    val sameTrack = mixedMediaEndStallTrackId == currentTrack.id
-                    val samePosition = mixedMediaEndStallPositionMs == snapshot.positionMs
+                    val sameTrack = recovery.mixedMediaEndStallTrackId == currentTrack.id
+                    val samePosition = recovery.mixedMediaEndStallPositionMs == snapshot.positionMs
                     if (!sameTrack || !samePosition) {
-                        mixedMediaEndStallTrackId = currentTrack.id
-                        mixedMediaEndStallPositionMs = snapshot.positionMs
-                        mixedMediaEndStallSinceMs = nowMs
+                        recovery.mixedMediaEndStallTrackId = currentTrack.id
+                        recovery.mixedMediaEndStallPositionMs = snapshot.positionMs
+                        recovery.mixedMediaEndStallSinceMs = nowMs
                     } else {
-                        val stalledMs = nowMs - mixedMediaEndStallSinceMs
-                        if (stalledMs >= 1800L && mixedAutoAdvanceTrackId != currentTrack.id) {
-                            mixedAutoAdvanceTrackId = currentTrack.id
+                        val stalledMs = nowMs - recovery.mixedMediaEndStallSinceMs
+                        if (stalledMs >= 1800L && recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
+                            recovery.mixedAutoAdvanceTrackId = currentTrack.id
                             val nextTrack = sequence.getOrNull(currentIndex + 1)
                             if (nextTrack != null) {
                                 CompatLog.w(
                                     TAG,
                                     "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
                                 )
-                                resetMixedMediaEndStallState()
+                                recovery.resetMixedMediaEndStallState()
                                 playMixedTrackById(nextTrack.id)
                                 return
                             } else {
-                                resetMixedMediaEndStallState()
+                                recovery.resetMixedMediaEndStallState()
                             }
                         }
                     }
                 } else {
-                    resetMixedMediaEndStallState()
+                    recovery.resetMixedMediaEndStallState()
                 }
 
                 if (snapshot.state == PlaybackStateType.PLAYING) {
-                    mixedAutoAdvanceTrackId = null
+                    recovery.mixedAutoAdvanceTrackId = null
                 }
                 mutableStatus.value = state.copy(
                     state = snapshot.state,
@@ -1108,20 +1089,20 @@ class PlaybackQueueManager @Inject constructor(
                 durationMs = duration,
                 toleranceMs = 1500L
             )
-            if (spotifySnapshot.endOfTrackCount > lastAcknowledgedEndOfTrackCount && !manualSkipInFlight) {
+            if (spotifySnapshot.endOfTrackCount > recovery.lastAcknowledgedEndOfTrackCount && !recovery.manualSkipInFlight) {
                 val previousTrackId = state.currentTrack?.id
                 CompatLog.d(
                     TAG,
                     "Spotify endOfTrack detected; advancing queue immediately trackId=$previousTrackId count=${spotifySnapshot.endOfTrackCount}"
                 )
-                lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
-                spotifyEndOfTrackWaitingForTrackId = null
-                spotifyEndOfTrackDetectedMs = 0L
-                if (!spotifyAutoAdvanceInFlight) {
-                    spotifyAutoAdvanceInFlight = true
+                recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
+                recovery.spotifyEndOfTrackWaitingForTrackId = null
+                recovery.spotifyEndOfTrackDetectedMs = 0L
+                if (!recovery.spotifyAutoAdvanceInFlight) {
+                    recovery.spotifyAutoAdvanceInFlight = true
                     scope.launch {
                         val success = spotifyPlaybackController.next()
-                        spotifyAutoAdvanceInFlight = false
+                        recovery.spotifyAutoAdvanceInFlight = false
                         if (success) {
                             val advancedTrackIndex = awaitSpotifyAdvance(
                                 previousTrackId = previousTrackId,
@@ -1145,10 +1126,10 @@ class PlaybackQueueManager @Inject constructor(
                     return
                 }
             }
-            if (spotifyEndOfTrackWaitingForTrackId != null) {
+            if (recovery.spotifyEndOfTrackWaitingForTrackId != null) {
                 val snapshotTrackId = spotifySnapshot.currentTrackId
                 val rustAdvanced = snapshotTrackId != null &&
-                    !trackIdsMatch(snapshotTrackId, spotifyEndOfTrackWaitingForTrackId!!)
+                    !trackIdsMatch(snapshotTrackId, recovery.spotifyEndOfTrackWaitingForTrackId!!)
                 if (rustAdvanced) {
                     if (state.queue.isNotEmpty()) {
                         val advancedTrackIndex = snapshotTrackId
@@ -1158,19 +1139,19 @@ class PlaybackQueueManager @Inject constructor(
                             queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
                         }
                     }
-                    spotifyEndOfTrackWaitingForTrackId = null
-                    spotifyEndOfTrackDetectedMs = 0L
+                    recovery.spotifyEndOfTrackWaitingForTrackId = null
+                    recovery.spotifyEndOfTrackDetectedMs = 0L
                     addToQueueInsertionOffset = 0
                 } else {
-                    val elapsedMs = System.currentTimeMillis() - spotifyEndOfTrackDetectedMs
-                    if (elapsedMs >= 2000L && !spotifyAutoAdvanceInFlight) {
+                    val elapsedMs = System.currentTimeMillis() - recovery.spotifyEndOfTrackDetectedMs
+                    if (elapsedMs >= 2000L && !recovery.spotifyAutoAdvanceInFlight) {
                         CompatLog.w(TAG, "Rust did not auto-advance after ${elapsedMs}ms; issuing one spotifyNext()")
-                        spotifyAutoAdvanceInFlight = true
+                        recovery.spotifyAutoAdvanceInFlight = true
                         scope.launch {
                             val success = spotifyPlaybackController.next()
-                            spotifyAutoAdvanceInFlight = false
+                            recovery.spotifyAutoAdvanceInFlight = false
                             if (success) {
-                                val waitingTrackId = spotifyEndOfTrackWaitingForTrackId
+                                val waitingTrackId = recovery.spotifyEndOfTrackWaitingForTrackId
                                 val advancedTrackIndex = awaitSpotifyAdvance(
                                     previousTrackId = waitingTrackId,
                                     state = mutableStatus.value,
@@ -1186,18 +1167,18 @@ class PlaybackQueueManager @Inject constructor(
                                 }
                             } else {
                                 CompatLog.w(TAG, "Safety spotifyNext() failed; falling back to startQueue")
-                                fallbackAdvanceSpotifyQueue(spotifyEndOfTrackWaitingForTrackId, state)
+                                fallbackAdvanceSpotifyQueue(recovery.spotifyEndOfTrackWaitingForTrackId, state)
                                 addToQueueInsertionOffset = 0
                             }
-                            spotifyEndOfTrackWaitingForTrackId = null
-                            spotifyEndOfTrackDetectedMs = 0L
+                            recovery.spotifyEndOfTrackWaitingForTrackId = null
+                            recovery.spotifyEndOfTrackDetectedMs = 0L
                         }
                         return
                     }
                 }
             }
             if (nearTrackEnd && state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying &&
-                !manualSkipInFlight && spotifyEndOfTrackWaitingForTrackId == null
+                !recovery.manualSkipInFlight && recovery.spotifyEndOfTrackWaitingForTrackId == null
             ) {
                 return
             }
@@ -1209,7 +1190,7 @@ class PlaybackQueueManager @Inject constructor(
             // poll hadn't caught up yet.
             if (state.state == PlaybackStateType.ERROR && !spotifySnapshot.isPlaying && state.queue.isNotEmpty()) {
                 val currentIndex = queueIndexCache.currentQueueIndex(state)
-                CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=$spotifyRecoveryAttempts")
+                CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=$recovery.spotifyRecoveryAttempts")
                 maybeRecoverSpotifyTrack(
                     queueTrackIds = queueIndexCache.cachedQueueTrackIds,
                     startIndex = currentIndex,
@@ -1217,9 +1198,9 @@ class PlaybackQueueManager @Inject constructor(
                 )
                 return
             }
-            if (spotifyAutoAdvanceInFlight) {
-                spotifyAutoAdvanceInFlight = false
-                spotifyAutoAdvanceTrackId = null
+            if (recovery.spotifyAutoAdvanceInFlight) {
+                recovery.spotifyAutoAdvanceInFlight = false
+                recovery.spotifyAutoAdvanceTrackId = null
             }
             val mappedTrackIndex = spotifySnapshot.currentTrackId?.let { id ->
                 queueIndexCache.findQueueIndexNear(id, queueIndexCache.spotifyCurrentQueueIndex, state.queue).takeIf { it >= 0 }
@@ -1272,29 +1253,29 @@ class PlaybackQueueManager @Inject constructor(
         // stuck mid-track and every transport control becomes a no-op.
         if (snapshot.state == PlaybackStateType.ERROR) {
             val errorTrackId = mappedTrack?.id ?: state.currentTrack?.id
-            if (media3ErrorRecoveryTrackId != errorTrackId) {
-                media3ErrorRecoveryTrackId = errorTrackId
-                media3ErrorRecoveryAttempts = 0
-                media3ErrorRecoveryLastAttemptMs = 0L
+            if (recovery.media3ErrorRecoveryTrackId != errorTrackId) {
+                recovery.media3ErrorRecoveryTrackId = errorTrackId
+                recovery.media3ErrorRecoveryAttempts = 0
+                recovery.media3ErrorRecoveryLastAttemptMs = 0L
             }
             val nowMs = System.currentTimeMillis()
-            if (nowMs - media3ErrorRecoveryLastAttemptMs >= 1500L) {
-                media3ErrorRecoveryLastAttemptMs = nowMs
-                media3ErrorRecoveryAttempts++
-                if (media3ErrorRecoveryAttempts <= 3) {
-                    CompatLog.w(TAG, "Media3 playback error; retrying (attempt $media3ErrorRecoveryAttempts) trackId=$errorTrackId")
+            if (nowMs - recovery.media3ErrorRecoveryLastAttemptMs >= 1500L) {
+                recovery.media3ErrorRecoveryLastAttemptMs = nowMs
+                recovery.media3ErrorRecoveryAttempts++
+                if (recovery.media3ErrorRecoveryAttempts <= 3) {
+                    CompatLog.w(TAG, "Media3 playback error; retrying (attempt $recovery.media3ErrorRecoveryAttempts) trackId=$errorTrackId")
                     media3PlaybackController.retryAfterError()
                 } else {
-                    CompatLog.w(TAG, "Media3 playback error persisted after $media3ErrorRecoveryAttempts attempts; skipping track trackId=$errorTrackId")
-                    media3ErrorRecoveryTrackId = null
-                    media3ErrorRecoveryAttempts = 0
+                    CompatLog.w(TAG, "Media3 playback error persisted after $recovery.media3ErrorRecoveryAttempts attempts; skipping track trackId=$errorTrackId")
+                    recovery.media3ErrorRecoveryTrackId = null
+                    recovery.media3ErrorRecoveryAttempts = 0
                     media3PlaybackController.retryAfterError()
                     media3PlaybackController.next()
                 }
             }
-        } else if (media3ErrorRecoveryTrackId != null) {
-            media3ErrorRecoveryTrackId = null
-            media3ErrorRecoveryAttempts = 0
+        } else if (recovery.media3ErrorRecoveryTrackId != null) {
+            recovery.media3ErrorRecoveryTrackId = null
+            recovery.media3ErrorRecoveryAttempts = 0
         }
 
         val syncedTrackId = mutableStatus.value.currentTrack?.id
@@ -1471,30 +1452,7 @@ class PlaybackQueueManager @Inject constructor(
     private fun spotifyErrorOrDefault(defaultMessage: String): String =
         spotifyPlaybackController.lastError?.takeIf { it.isNotBlank() } ?: defaultMessage
 
-    private fun resetSpotifyAutoAdvanceState() {
-        spotifyAutoAdvanceInFlight = false
-        spotifyAutoAdvanceTrackId = null
-        lastAcknowledgedEndOfTrackCount = 0L
-        spotifyEndOfTrackDetectedMs = 0L
-        spotifyEndOfTrackWaitingForTrackId = null
-    }
-
-    private fun resetSpotifyRecoveryState() {
-        spotifyRecoveryInFlight = false
-        spotifyRecoveryLastAttemptMs = 0L
-        spotifyRecoveryAttempts = 0
-    }
-
-    fun resetSpotifyConnectionState() {
-        resetSpotifyAutoAdvanceState()
-        resetSpotifyRecoveryState()
-    }
-
-    private fun resetMixedMediaEndStallState() {
-        mixedMediaEndStallTrackId = null
-        mixedMediaEndStallPositionMs = -1L
-        mixedMediaEndStallSinceMs = 0L
-    }
+    fun resetSpotifyConnectionState() = recovery.resetSpotifyConnectionState()
 
     private fun isNearTrackEnd(positionMs: Long, durationMs: Long, toleranceMs: Long): Boolean {
         if (durationMs <= 0L) return false
@@ -1509,24 +1467,24 @@ class PlaybackQueueManager @Inject constructor(
     ): Boolean {
         if (queueTrackIds.isEmpty()) return false
         val nowMs = System.currentTimeMillis()
-        val cooldownMs = if (spotifyRecoveryAttempts >= 1) 4000L else 2500L
-        val recoveryInFlight = spotifyRecoveryInFlight
-        val inCooldown = (nowMs - spotifyRecoveryLastAttemptMs) < cooldownMs
+        val cooldownMs = if (recovery.spotifyRecoveryAttempts >= 1) 4000L else 2500L
+        val recoveryInFlight = recovery.spotifyRecoveryInFlight
+        val inCooldown = (nowMs - recovery.spotifyRecoveryLastAttemptMs) < cooldownMs
         if (recoveryInFlight || inCooldown) {
             CompatLog.d(
                 TAG,
-                "Skipping Spotify recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - spotifyRecoveryLastAttemptMs} attempts=$spotifyRecoveryAttempts"
+                "Skipping Spotify recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - recovery.spotifyRecoveryLastAttemptMs} attempts=$recovery.spotifyRecoveryAttempts"
             )
             return recoveryInFlight
         }
-        if (spotifyRecoveryAttempts >= 3) {
-            CompatLog.w(TAG, "Spotify recovery exhausted after $spotifyRecoveryAttempts attempts")
+        if (recovery.spotifyRecoveryAttempts >= 3) {
+            CompatLog.w(TAG, "Spotify recovery exhausted after $recovery.spotifyRecoveryAttempts attempts")
             return false
         }
-        spotifyRecoveryInFlight = true
-        spotifyRecoveryLastAttemptMs = nowMs
-        spotifyRecoveryAttempts++
-        val attempt = spotifyRecoveryAttempts
+        recovery.spotifyRecoveryInFlight = true
+        recovery.spotifyRecoveryLastAttemptMs = nowMs
+        recovery.spotifyRecoveryAttempts++
+        val attempt = recovery.spotifyRecoveryAttempts
         CompatLog.i(TAG, "Attempting Spotify recovery (attempt $attempt) startIndex=$startIndex queueSize=${queueTrackIds.size}")
         scope.launch {
             val recovered = spotifyPlaybackController.startQueue(queueTrackIds, startIndex)
@@ -1534,7 +1492,7 @@ class PlaybackQueueManager @Inject constructor(
                 queueIndexCache.spotifyCurrentQueueIndex = startIndex.coerceIn(0, (queueTrackIds.size - 1).coerceAtLeast(0))
                 spotifyPlaybackController.setVolume(mutableStatus.value.volume)
                 CompatLog.i(TAG, "Spotify recovery succeeded on attempt $attempt")
-                spotifyRecoveryAttempts = 0
+                recovery.spotifyRecoveryAttempts = 0
             } else {
                 val state = mutableStatus.value
                 CompatLog.w(TAG, "Spotify recovery attempt $attempt failed: ${spotifyErrorOrDefault("unknown error")}")
@@ -1544,7 +1502,7 @@ class PlaybackQueueManager @Inject constructor(
                 )
                 persistStateAsync()
             }
-            spotifyRecoveryInFlight = false
+            recovery.spotifyRecoveryInFlight = false
         }
         return true
     }

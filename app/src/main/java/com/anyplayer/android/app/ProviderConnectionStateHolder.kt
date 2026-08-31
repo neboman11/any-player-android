@@ -240,27 +240,23 @@ internal class ProviderConnectionStateHolder(
 
     // Shared in-progress/feedback/runCatching scaffold for connect and Spotify link flows,
     // so a bugfix to the bookkeeping (e.g. when providerConnectionInProgress resets) only
-    // needs to be made once instead of drifting across near-identical copies.
-    private fun <T> runProviderAction(
+    // needs to be made once instead of drifting across near-identical copies. Internal (not
+    // private) so MainViewModel can reuse it for its own tracked provider actions instead of
+    // hand-duplicating this pairing.
+    internal fun <T> runProviderAction(
         startingFeedback: String,
         action: suspend () -> T,
         onFailureFeedback: (Throwable) -> String,
         onSuccess: suspend (T) -> Unit
     ) {
-        viewModelScope.launch {
-            providerConnectionInProgress.value = true
-            providerConnectionFeedback.value = startingFeedback
-
-            runCatching { action() }
-                .onFailure {
-                    providerConnectionFeedback.value = onFailureFeedback(it)
-                }
-                .onSuccess {
-                    onSuccess(it)
-                }
-
-            providerConnectionInProgress.value = false
-        }
+        viewModelScope.launchTrackedAction(
+            inProgress = providerConnectionInProgress,
+            status = providerConnectionFeedback,
+            startingStatus = startingFeedback,
+            action = action,
+            onFailureStatus = onFailureFeedback,
+            onSuccess = onSuccess
+        )
     }
 
     fun disconnect(sourceType: SourceType) {
