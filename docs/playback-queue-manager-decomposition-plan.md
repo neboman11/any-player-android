@@ -121,6 +121,23 @@ stage's commit rather than patching forward.
 
 ## Stage 2 — Extract Spotify mode
 
+**Status: code committed, manual on-device check still pending** (user
+will verify Spotify-only playback, Connect handoff, auto-advance, and
+recovery-after-restart later). `SpotifyPlaybackOps.kt` (576 lines) holds
+all Spotify-only dispatch methods plus `maybeRecoverSpotifyTrack`,
+`awaitSpotifyAdvance`, `fallbackAdvanceSpotifyQueue`,
+`startSpotifyAtQueueIndex`, `spotifyErrorOrDefault`,
+`spotifyPlaybackQueue`, `spotifyPlaybackTrackIds`,
+`currentSpotifyQueueIndex`. `maybeRecoverSpotifyTrack` and
+`spotifyErrorOrDefault` stayed public since mixed-mode code still inline
+in `PlaybackQueueManager` (not extracted until Stage 3) calls them too;
+the rest are private to `SpotifyPlaybackOps` since nothing outside it
+calls them. `PlaybackQueueManager.kt` shrank 1603 → 1060 lines. Full
+build + full test suite green.
+
+If the device check turns up a regression, revert this stage's commit
+rather than patching forward.
+
 1. Create `SpotifyPlaybackOps.kt`: constructor takes
    `spotifyPlaybackController`, `context`. Move the Stage-0-extracted
    `*Spotify()` methods in verbatim, qualifying with `context.`. This
