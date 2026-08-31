@@ -947,7 +947,7 @@ class PlaybackQueueManager @Inject constructor(
                 val spotifySnapshot = spotifyPlaybackController.snapshot()
                 if (spotifySnapshot == null) {
                     if (state.state == PlaybackStateType.PLAYING) {
-                        CompatLog.w(TAG, "Mixed-mode Spotify snapshot unavailable; attempting context.recovery")
+                        CompatLog.w(TAG, "Mixed-mode Spotify snapshot unavailable; attempting recovery")
                         maybeRecoverSpotifyTrack(
                             queueTrackIds = listOf(currentTrack.id),
                             startIndex = 0,
@@ -1073,7 +1073,7 @@ class PlaybackQueueManager @Inject constructor(
             if (spotifySnapshot == null) {
                 if ((state.state == PlaybackStateType.PLAYING || state.state == PlaybackStateType.ERROR) && state.queue.isNotEmpty()) {
                     val currentIndex = context.queueIndexCache.currentQueueIndex(state)
-                    CompatLog.w(TAG, "Spotify snapshot unavailable; attempting queue context.recovery at index=$currentIndex state=${state.state}")
+                    CompatLog.w(TAG, "Spotify snapshot unavailable; attempting queue recovery at index=$currentIndex state=${state.state}")
                     maybeRecoverSpotifyTrack(
                         queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
                         startIndex = currentIndex,
@@ -1189,7 +1189,7 @@ class PlaybackQueueManager @Inject constructor(
             // poll hadn't caught up yet.
             if (state.state == PlaybackStateType.ERROR && !spotifySnapshot.isPlaying && state.queue.isNotEmpty()) {
                 val currentIndex = context.queueIndexCache.currentQueueIndex(state)
-                CompatLog.w(TAG, "Spotify in ERROR state; attempting context.recovery at index=$currentIndex attempts=${context.recovery.spotifyRecoveryAttempts}")
+                CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=${context.recovery.spotifyRecoveryAttempts}")
                 maybeRecoverSpotifyTrack(
                     queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
                     startIndex = currentIndex,
@@ -1410,29 +1410,29 @@ class PlaybackQueueManager @Inject constructor(
         if (recoveryInFlight || inCooldown) {
             CompatLog.d(
                 TAG,
-                "Skipping Spotify context.recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - context.recovery.spotifyRecoveryLastAttemptMs} attempts=${context.recovery.spotifyRecoveryAttempts}"
+                "Skipping Spotify recovery attempt inFlight=$recoveryInFlight cooldownMs=${nowMs - context.recovery.spotifyRecoveryLastAttemptMs} attempts=${context.recovery.spotifyRecoveryAttempts}"
             )
             return recoveryInFlight
         }
         if (context.recovery.spotifyRecoveryAttempts >= 3) {
-            CompatLog.w(TAG, "Spotify context.recovery exhausted after ${context.recovery.spotifyRecoveryAttempts} attempts")
+            CompatLog.w(TAG, "Spotify recovery exhausted after ${context.recovery.spotifyRecoveryAttempts} attempts")
             return false
         }
         context.recovery.spotifyRecoveryInFlight = true
         context.recovery.spotifyRecoveryLastAttemptMs = nowMs
         context.recovery.spotifyRecoveryAttempts++
         val attempt = context.recovery.spotifyRecoveryAttempts
-        CompatLog.i(TAG, "Attempting Spotify context.recovery (attempt $attempt) startIndex=$startIndex queueSize=${queueTrackIds.size}")
+        CompatLog.i(TAG, "Attempting Spotify recovery (attempt $attempt) startIndex=$startIndex queueSize=${queueTrackIds.size}")
         context.scope.launch {
             val recovered = spotifyPlaybackController.startQueue(queueTrackIds, startIndex)
             if (recovered) {
                 context.queueIndexCache.spotifyCurrentQueueIndex = startIndex.coerceIn(0, (queueTrackIds.size - 1).coerceAtLeast(0))
                 spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
-                CompatLog.i(TAG, "Spotify context.recovery succeeded on attempt $attempt")
+                CompatLog.i(TAG, "Spotify recovery succeeded on attempt $attempt")
                 context.recovery.spotifyRecoveryAttempts = 0
             } else {
                 val state = context.mutableStatus.value
-                CompatLog.w(TAG, "Spotify context.recovery attempt $attempt failed: ${spotifyErrorOrDefault("unknown error")}")
+                CompatLog.w(TAG, "Spotify recovery attempt $attempt failed: ${spotifyErrorOrDefault("unknown error")}")
                 context.mutableStatus.value = state.copy(
                     state = PlaybackStateType.ERROR,
                     errorMessage = spotifyErrorOrDefault(failureMessage)
