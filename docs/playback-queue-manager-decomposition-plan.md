@@ -91,6 +91,15 @@ step. Ready for Stage 1.
 
 ## Stage 1 — Extract local/Media3 mode (lowest risk, no Spotify Connect races)
 
+**Status: code committed, manual on-device check still pending** (user
+will verify lockscreen/Bluetooth/Android Auto/notification/media session
+behavior later). `PlaybackEngineContext.kt` (50 lines) holds the shared
+mutable state; `LocalPlaybackOps.kt` (179 lines) holds all 11 `*Local()`
+methods from Stage 0, moved in verbatim and qualified with `context.`;
+`PlaybackQueueManager.kt` shrank 1767 → 1603 lines. Full build + full test
+suite green. If the device check turns up a regression, revert this
+stage's commit rather than patching forward.
+
 1. Create `PlaybackEngineContext.kt`: holds `mutableStatus`, `scope`,
    `queueIndexCache`, `recovery`, `playableQueueIndices`,
    `spotifyQueueRequiresReload`, `addToQueueInsertionOffset`,
