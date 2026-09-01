@@ -394,92 +394,109 @@ class ProviderCatalogRepository @Inject constructor(
         val includePlex = source == SourceType.ALL || source == SourceType.PLEX
         val includeSpotify = source == SourceType.ALL || source == SourceType.SPOTIFY
 
-        val jellyTracks = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            rustBridge.providerSearchTracks(
-                source = SourceType.JELLYFIN,
-                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val jellyPlaylists = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            rustBridge.providerSearchPlaylists(
-                source = SourceType.JELLYFIN,
-                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val plexTracks = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            rustBridge.providerSearchTracks(
-                source = SourceType.PLEX,
-                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val plexPlaylists = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            rustBridge.providerSearchPlaylists(
-                source = SourceType.PLEX,
-                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val spotifyTracks = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
-            if (rustBridge.isAvailable()) {
-                rustBridge.providerSearchTracks(
-                    source = SourceType.SPOTIFY,
-                    session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
-                    query = normalizedQuery,
-                    offset = offset,
-                    limit = limit
-                ) ?: emptyList()
-            } else {
-                // Kotlin fallback
-                spotifyCatalogClient.searchTracks(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+        // Fanned out with async/coroutineScope (same pattern as getAllProviderPlaylists())
+        // rather than awaited one at a time - each is a separate network round-trip to a
+        // different backend, so sequential awaiting paid up to 6x the latency for no reason.
+        coroutineScope {
+            val jellyTracksDeferred = async {
+                if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
+                    rustBridge.providerSearchTracks(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
             }
-        } else {
-            emptyList()
-        }
 
-        val spotifyPlaylists = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
-            if (rustBridge.isAvailable()) {
-                rustBridge.providerSearchPlaylists(
-                    source = SourceType.SPOTIFY,
-                    session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
-                    query = normalizedQuery,
-                    offset = offset,
-                    limit = limit
-                ) ?: emptyList()
-            } else {
-                // Kotlin fallback
-                spotifyCatalogClient.searchPlaylists(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+            val jellyPlaylistsDeferred = async {
+                if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
+                    rustBridge.providerSearchPlaylists(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
             }
-        } else {
-            emptyList()
-        }
 
-        ProviderSearchResult(
-            tracks = jellyTracks + plexTracks + spotifyTracks,
-            playlists = jellyPlaylists + plexPlaylists + spotifyPlaylists
-        )
+            val plexTracksDeferred = async {
+                if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
+                    rustBridge.providerSearchTracks(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+
+            val plexPlaylistsDeferred = async {
+                if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
+                    rustBridge.providerSearchPlaylists(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+
+            val spotifyTracksDeferred = async {
+                if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+                    if (rustBridge.isAvailable()) {
+                        rustBridge.providerSearchTracks(
+                            source = SourceType.SPOTIFY,
+                            session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
+                            query = normalizedQuery,
+                            offset = offset,
+                            limit = limit
+                        ) ?: emptyList()
+                    } else {
+                        // Kotlin fallback
+                        spotifyCatalogClient.searchTracks(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+                    }
+                } else {
+                    emptyList()
+                }
+            }
+
+            val spotifyPlaylistsDeferred = async {
+                if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+                    if (rustBridge.isAvailable()) {
+                        rustBridge.providerSearchPlaylists(
+                            source = SourceType.SPOTIFY,
+                            session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
+                            query = normalizedQuery,
+                            offset = offset,
+                            limit = limit
+                        ) ?: emptyList()
+                    } else {
+                        // Kotlin fallback
+                        spotifyCatalogClient.searchPlaylists(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+                    }
+                } else {
+                    emptyList()
+                }
+            }
+
+            ProviderSearchResult(
+                tracks = jellyTracksDeferred.await() + plexTracksDeferred.await() + spotifyTracksDeferred.await(),
+                playlists = jellyPlaylistsDeferred.await() + plexPlaylistsDeferred.await() + spotifyPlaylistsDeferred.await()
+            )
+        }
     }
 
     private fun buildJellyfinSession(url: String, apiKey: String, userId: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =

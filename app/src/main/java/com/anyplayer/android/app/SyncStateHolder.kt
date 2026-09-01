@@ -11,6 +11,7 @@ import com.anyplayer.android.feature.sync.SyncPreferences
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import com.anyplayer.android.feature.sync.SyncSnapshotClient
 import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
@@ -68,7 +69,10 @@ internal class SyncStateHolder(
     val syncSettingsEnabled = MutableStateFlow(true)
     val syncStatus = MutableStateFlow("Sync idle")
 
-    private var lastSyncVersion: Long = 0
+    // AtomicLong: pullSyncState()'s REST fetch and the realtime WS loop each update this
+    // from their own independently-launched coroutine, and a non-atomic read-modify-write
+    // here can lose one side's update if they interleave.
+    private val lastSyncVersion = AtomicLong(0)
     private var suppressSyncPushUntilMs: Long = 0
     private var lastPushedSignature: String = ""
     private var lastPushAtMs: Long = 0
@@ -138,7 +142,7 @@ internal class SyncStateHolder(
                 applyAppStateMutex.withLock { applyAppStateDomain(snapshot) }
                 val snapshotVersion = snapshot["version"]?.jsonPrimitive?.longOrNull
                 if (snapshotVersion != null) {
-                    lastSyncVersion = max(lastSyncVersion, snapshotVersion)
+                    lastSyncVersion.updateAndGet { current -> max(current, snapshotVersion) }
                 }
                 applied += 1
             }
@@ -233,17 +237,17 @@ internal class SyncStateHolder(
                                     if (!event.source_client_id.isNullOrBlank() && event.source_client_id == clientId) {
                                         return@collect
                                     }
-                                    if (event.version != null && event.version <= lastSyncVersion) {
+                                    if (event.version != null && event.version <= lastSyncVersion.get()) {
                                         return@collect
                                     }
 
-                                    val snapshot = syncSnapshotClient.fetchSnapshotSince(serverTarget, max(0L, lastSyncVersion))
+                                    val snapshot = syncSnapshotClient.fetchSnapshotSince(serverTarget, max(0L, lastSyncVersion.get()))
                                         ?: return@collect
 
                                     suppressSyncPushUntilMs = System.currentTimeMillis() + 3500L
                                     applyAppStateMutex.withLock { applyAppStateDomain(snapshot) }
-                                    val nextVersion = snapshot["version"]?.jsonPrimitive?.longOrNull ?: lastSyncVersion
-                                    lastSyncVersion = max(lastSyncVersion, nextVersion)
+                                    val nextVersion = snapshot["version"]?.jsonPrimitive?.longOrNull ?: lastSyncVersion.get()
+                                    lastSyncVersion.updateAndGet { current -> max(current, nextVersion) }
                                 }
                             }
 

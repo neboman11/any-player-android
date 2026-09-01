@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.auth.spotify
 
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.feature.playback.normalizeSpotifyTrackId
 import kotlinx.serialization.json.JsonArray
@@ -8,6 +9,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TAG = "SpotifyPlayerClient"
 
 /** Spotify Connect playback-control calls (play/pause/seek/devices/etc), used by SpotifyConnectBridge. */
 @Singleton
@@ -107,13 +110,15 @@ class SpotifyPlayerClient @Inject constructor(
 
 // Keeps the full queue (not just the tail from startIndex) so a Spotify Connect
 // device's own "Previous" control still has the earlier tracks to step back into.
-internal fun spotifyPlaybackUris(trackIds: List<String>): List<String> =
-    trackIds
-        .asSequence()
-        .map { normalizeSpotifyTrackId(it) }
-        .filter(SPOTIFY_TRACK_ID_PATTERN::matches)
-        .map { "spotify:track:$it" }
-        .toList()
+internal fun spotifyPlaybackUris(trackIds: List<String>): List<String> {
+    val normalized = trackIds.map { normalizeSpotifyTrackId(it) }
+    val valid = normalized.filter(SPOTIFY_TRACK_ID_PATTERN::matches)
+    val droppedCount = normalized.size - valid.size
+    if (droppedCount > 0) {
+        CompatLog.w(TAG, "Dropped $droppedCount Spotify track id(s) failing validation pattern")
+    }
+    return valid.map { "spotify:track:$it" }
+}
 
 // Position of startIndex within the filtered/canonicalized uri list returned by
 // [spotifyPlaybackUris], so playback still starts at the requested track even

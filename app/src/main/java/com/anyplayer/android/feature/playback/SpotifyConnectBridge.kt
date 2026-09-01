@@ -38,7 +38,9 @@ class SpotifyConnectBridge @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SpotifyConnectBridge"
-        private const val POLL_INTERVAL_MS = 2_000L
+        // internal: SpotifyPlaybackOps derives its snapshot-wait timeouts from this so
+        // they can't drift shorter than the cadence they're actually waiting on.
+        internal const val POLL_INTERVAL_MS = 2_000L
 
         // Wider than the App Remote bridge's 500ms window (which reacted to a
         // pushed event) - a poll only samples every POLL_INTERVAL_MS, so a natural

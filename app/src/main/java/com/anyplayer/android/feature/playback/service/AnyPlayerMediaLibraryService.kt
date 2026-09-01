@@ -3,9 +3,6 @@ package com.anyplayer.android.feature.playback.service
 import android.app.Notification
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.os.Build
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -18,8 +15,6 @@ import androidx.media3.session.SessionError
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
-import com.anyplayer.android.core.model.PlaybackStatus
-import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
@@ -62,51 +57,13 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var restoreJob: Deferred<Unit>? = null
     private lateinit var notificationBuilder: PlaybackNotificationBuilder
     private lateinit var projectionControllerGuard: ProjectionControllerGuard
-
-    // ExoPlayer/Media3 handles audio focus on its own for local playback (setAudioAttributes(...,
-    // handleAudioFocus = true)), but the Spotify Connect path is driven remotely over HTTP and
-    // never touches ExoPlayer, so it needs its own focus handling here.
-    private val audioManager by lazy { getSystemService(AudioManager::class.java) }
-    private var wasPlayingBeforeFocusLoss = false
-    private var audioFocusRequest: AudioFocusRequest? = null
-    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        val activeSource = playbackQueueManager.status.value.currentTrack?.source
-        if (activeSource != SourceType.SPOTIFY) {
-            wasPlayingBeforeFocusLoss = false
-            return@OnAudioFocusChangeListener
-        }
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                val shouldResume = wasPlayingBeforeFocusLoss
-                wasPlayingBeforeFocusLoss = false
-                if (shouldResume &&
-                    playbackQueueManager.status.value.state == PlaybackStateType.PAUSED
-                ) {
-                    playbackQueueManager.play()
-                }
-            }
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                wasPlayingBeforeFocusLoss = false
-                playbackQueueManager.pause()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                val isPlaying = playbackQueueManager.status.value.state == PlaybackStateType.PLAYING
-                wasPlayingBeforeFocusLoss = isPlaying
-                if (isPlaying) {
-                    playbackQueueManager.pause()
-                }
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Let the system handle ducking via AudioAttributes; no manual volume change needed.
-                // Media3/ExoPlayer handles ducking automatically when AudioAttributes are set.
-            }
-        }
-    }
+    private lateinit var audioFocusGuard: SpotifyAudioFocusGuard
 
     override fun onCreate() {
         super.onCreate()
         notificationBuilder = PlaybackNotificationBuilder(this)
         projectionControllerGuard = ProjectionControllerGuard(this, serviceScope, playbackQueueManager)
+        audioFocusGuard = SpotifyAudioFocusGuard(this, playbackQueueManager)
         playerBridge.open()
         spotifyConnectBridge.attach()
         startProviderRestore()
@@ -317,7 +274,7 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
 
         serviceScope.launch {
             playbackQueueManager.status.collect { status ->
-                updateAudioFocus(status)
+                audioFocusGuard.update(status)
             }
         }
 
@@ -386,67 +343,13 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         playerBridge.close()
         spotifyConnectBridge.release()
         projectionControllerGuard.release()
-        abandonAudioFocus()
+        audioFocusGuard.abandon()
         stopForeground(STOP_FOREGROUND_REMOVE)
         mediaLibrarySession?.run {
             release()
         }
         mediaLibrarySession = null
         super.onDestroy()
-    }
-
-    private fun updateAudioFocus(status: PlaybackStatus) {
-        val currentTrack = status.currentTrack
-
-        // Only manage audio focus here for sources that do NOT rely on ExoPlayer's
-        // built-in audio focus handling (e.g., the Spotify Connect path). Media3/ExoPlayer
-        // playback already handles audio focus via setAudioAttributes(..., handleAudioFocus = true),
-        // so we avoid double pause/resume handling by skipping those sources here.
-        if (currentTrack != null && currentTrack.source != SourceType.SPOTIFY) {
-            // We may still be holding audio focus from a previous Spotify track.
-            // Explicitly abandon it before deferring to ExoPlayer's own focus handling.
-            abandonAudioFocus()
-            wasPlayingBeforeFocusLoss = false
-            return
-        }
-
-        if (status.state == PlaybackStateType.PLAYING && currentTrack != null) {
-            requestAudioFocus()
-        } else {
-            abandonAudioFocus()
-        }
-    }
-
-    private fun requestAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener(audioFocusListener)
-                .build()
-                .also { audioFocusRequest = it }
-            audioManager?.requestAudioFocus(request)
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager?.requestAudioFocus(
-                audioFocusListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            )
-        }
-    }
-
-    private fun abandonAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager?.abandonAudioFocus(audioFocusListener)
-        }
     }
 
     companion object {

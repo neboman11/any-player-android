@@ -108,7 +108,9 @@ class SpotifyPlaybackController @Inject constructor(
     suspend fun setRepeatMode(mode: RepeatMode): Boolean =
         runCommand("setRepeatMode") { connectBridge.setRepeatMode(it, mode) }
 
-    fun snapshot(): SpotifyPlaybackState? = connectBridge.snapshot()
+    /** Guarded by [rustCommandMutex] so it can't read a snapshot mid-command
+     *  (e.g. mid [startQueue] retry loop) and observe stale pre-command state. */
+    suspend fun snapshot(): SpotifyPlaybackState? = rustCommandMutex.withLock { connectBridge.snapshot() }
 
     private suspend fun runCommand(
         action: String,
@@ -116,6 +118,10 @@ class SpotifyPlaybackController @Inject constructor(
     ): Boolean = rustCommandMutex.withLock {
         val accessToken = resolveAccessToken() ?: return@withLock false
 
+        // Cleared so a failure below that doesn't set its own specific message
+        // (only playUri's resolveDeviceId path does, via errorListener) can't
+        // report a stale message left over from a prior, unrelated command.
+        lastError = null
         val success = try {
             block(accessToken)
         } catch (e: CancellationException) {
@@ -127,7 +133,11 @@ class SpotifyPlaybackController @Inject constructor(
         }
         if (!success) {
             val specificError = lastError
-            lastError = "Spotify command failed: $action. ${specificError ?: ""}".trim()
+            lastError = if (specificError != null) {
+                "Spotify command failed: $action. $specificError".trim()
+            } else {
+                "Spotify command failed: $action"
+            }
             CompatLog.w(TAG, "Spotify command '$action' failed: $lastError")
             return@withLock false
         }

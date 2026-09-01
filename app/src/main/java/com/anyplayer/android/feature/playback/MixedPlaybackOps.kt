@@ -244,11 +244,12 @@ internal class MixedPlaybackOps(
                     playMixedTrackById(nextTrack.id)
                     return
                 }
-                spotifyOps.maybeRecoverSpotifyTrack(
-                    queueTrackIds = listOf(currentTrack.id),
-                    startIndex = 0,
-                    failureMessage = "Spotify failed to recover mixed-track playback"
-                )
+                // Note: a mid-track pause (not near the end) is intentionally left to the
+                // state copy above, which already reflects it as PAUSED. Force-restarting
+                // via maybeRecoverSpotifyTrack() here reintroduces the spurious-restart bug
+                // that was deliberately removed from SpotifyPlaybackOps.sync() for the
+                // pure-Spotify case - including when the user (or another Connect client)
+                // paused Spotify directly.
             }
         } else {
             val snapshot = media3PlaybackController.snapshot()

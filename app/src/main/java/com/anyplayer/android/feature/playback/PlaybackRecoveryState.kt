@@ -17,12 +17,6 @@ internal class PlaybackRecoveryState {
     var spotifyAutoAdvanceInFlight = false
     var spotifyAutoAdvanceTrackId: String? = null
 
-    /** Timestamp when we first detected endOfTrack but currentTrackId hadn't changed yet. */
-    var spotifyEndOfTrackDetectedMs = 0L
-
-    /** The trackId that was playing when we detected endOfTrack; used for the safety fallback. */
-    var spotifyEndOfTrackWaitingForTrackId: String? = null
-
     var spotifyRecoveryInFlight = false
     var spotifyRecoveryLastAttemptMs = 0L
     var spotifyRecoveryAttempts = 0
@@ -40,8 +34,6 @@ internal class PlaybackRecoveryState {
         spotifyAutoAdvanceInFlight = false
         spotifyAutoAdvanceTrackId = null
         lastAcknowledgedEndOfTrackCount = 0L
-        spotifyEndOfTrackDetectedMs = 0L
-        spotifyEndOfTrackWaitingForTrackId = null
     }
 
     fun resetSpotifyRecoveryState() {

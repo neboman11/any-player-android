@@ -28,6 +28,11 @@ internal class SpotifyPlaybackOps(
 ) {
     companion object {
         private const val TAG = "SpotifyPlaybackOps"
+
+        // Any wait for a fresh SpotifyConnectBridge snapshot must exceed its background
+        // poll cadence with margin, since the wait can start at any point within that
+        // poll's own cycle - not just right after a poll fires.
+        private val SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS = SpotifyConnectBridge.POLL_INTERVAL_MS + 1000L
     }
 
     private fun spotifyPlaybackQueue(state: PlaybackStatus): List<Track> =
@@ -244,6 +249,9 @@ internal class SpotifyPlaybackOps(
                 if (activeQueue.isEmpty()) return@launch
                 val currentIndex = currentSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex + 1).coerceAtMost(activeQueue.lastIndex)
+                if (targetIndex == currentIndex && currentIndex == activeQueue.lastIndex) {
+                    return@launch
+                }
                 val targetTrack = activeQueue.getOrNull(targetIndex)
                 if (targetTrack == null) {
                     context.mutableStatus.value = context.mutableStatus.value.copy(
@@ -334,8 +342,6 @@ internal class SpotifyPlaybackOps(
                 "Spotify endOfTrack detected; advancing queue immediately trackId=$previousTrackId count=${spotifySnapshot.endOfTrackCount}"
             )
             context.recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
-            context.recovery.spotifyEndOfTrackWaitingForTrackId = null
-            context.recovery.spotifyEndOfTrackDetectedMs = 0L
             if (!context.recovery.spotifyAutoAdvanceInFlight) {
                 context.recovery.spotifyAutoAdvanceInFlight = true
                 context.scope.launch {
@@ -345,7 +351,7 @@ internal class SpotifyPlaybackOps(
                         val advancedTrackIndex = awaitSpotifyAdvance(
                             previousTrackId = previousTrackId,
                             state = context.mutableStatus.value,
-                            timeoutMs = 1200L
+                            timeoutMs = SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
                         )
                         if (advancedTrackIndex != null) {
                             context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
@@ -364,59 +370,8 @@ internal class SpotifyPlaybackOps(
                 return
             }
         }
-        if (context.recovery.spotifyEndOfTrackWaitingForTrackId != null) {
-            val snapshotTrackId = spotifySnapshot.currentTrackId
-            val rustAdvanced = snapshotTrackId != null &&
-                !trackIdsMatch(snapshotTrackId, context.recovery.spotifyEndOfTrackWaitingForTrackId!!)
-            if (rustAdvanced) {
-                if (state.queue.isNotEmpty()) {
-                    val advancedTrackIndex = snapshotTrackId
-                        ?.let { context.queueIndexCache.findQueueIndexNear(it, context.queueIndexCache.spotifyCurrentQueueIndex, state.queue) }
-                        ?.takeIf { it >= 0 }
-                    if (advancedTrackIndex != null) {
-                        context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
-                    }
-                }
-                context.recovery.spotifyEndOfTrackWaitingForTrackId = null
-                context.recovery.spotifyEndOfTrackDetectedMs = 0L
-                context.addToQueueInsertionOffset = 0
-            } else {
-                val elapsedMs = System.currentTimeMillis() - context.recovery.spotifyEndOfTrackDetectedMs
-                if (elapsedMs >= 2000L && !context.recovery.spotifyAutoAdvanceInFlight) {
-                    CompatLog.w(TAG, "Rust did not auto-advance after ${elapsedMs}ms; issuing one spotifyNext()")
-                    context.recovery.spotifyAutoAdvanceInFlight = true
-                    context.scope.launch {
-                        val success = spotifyPlaybackController.next()
-                        context.recovery.spotifyAutoAdvanceInFlight = false
-                        if (success) {
-                            val waitingTrackId = context.recovery.spotifyEndOfTrackWaitingForTrackId
-                            val advancedTrackIndex = awaitSpotifyAdvance(
-                                previousTrackId = waitingTrackId,
-                                state = context.mutableStatus.value,
-                                timeoutMs = 1200L
-                            )
-                            if (advancedTrackIndex != null) {
-                                context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
-                                context.addToQueueInsertionOffset = 0
-                            } else {
-                                CompatLog.w(TAG, "spotifyNext() returned success without advancing; falling back to startQueue")
-                                fallbackAdvanceSpotifyQueue(waitingTrackId, context.mutableStatus.value)
-                                context.addToQueueInsertionOffset = 0
-                            }
-                        } else {
-                            CompatLog.w(TAG, "Safety spotifyNext() failed; falling back to startQueue")
-                            fallbackAdvanceSpotifyQueue(context.recovery.spotifyEndOfTrackWaitingForTrackId, state)
-                            context.addToQueueInsertionOffset = 0
-                        }
-                        context.recovery.spotifyEndOfTrackWaitingForTrackId = null
-                        context.recovery.spotifyEndOfTrackDetectedMs = 0L
-                    }
-                    return
-                }
-            }
-        }
         if (nearTrackEnd && state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying &&
-            !context.recovery.manualSkipInFlight && context.recovery.spotifyEndOfTrackWaitingForTrackId == null
+            !context.recovery.manualSkipInFlight
         ) {
             return
         }
@@ -591,7 +546,8 @@ internal class SpotifyPlaybackOps(
         spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
         if (expectedTrackId != null && positionMs > 0) {
             var readyForSeek = false
-            for (attempt in 1..10) {
+            val deadlineMs = System.currentTimeMillis() + SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadlineMs) {
                 delay(200)
                 val snap = spotifyPlaybackController.snapshot()
                 if (snap?.currentTrackId != null && trackIdsMatch(snap.currentTrackId, expectedTrackId)) {
