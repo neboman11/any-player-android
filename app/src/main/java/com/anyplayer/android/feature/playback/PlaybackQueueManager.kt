@@ -491,6 +491,10 @@ class PlaybackQueueManager @Inject constructor(
     fun setVolume(volume: Int) {
         val requestedVolume = volume.coerceIn(0, 100)
 
+        if (mixedMode) {
+            mixedOps.setVolume(requestedVolume)
+            return
+        }
         if (spotifyMode) {
             spotifyOps.setVolume(requestedVolume)
             return

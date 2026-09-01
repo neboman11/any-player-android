@@ -239,5 +239,8 @@ internal fun mergeEndOfTrackCount(
     )
 }
 
-internal fun extrapolatePosition(cached: SpotifyPlaybackState, elapsedSincePollMs: Long): SpotifyPlaybackState =
-    cached.copy(progressMs = cached.progressMs + elapsedSincePollMs)
+internal fun extrapolatePosition(cached: SpotifyPlaybackState, elapsedSincePollMs: Long): SpotifyPlaybackState {
+    val extrapolated = cached.progressMs + elapsedSincePollMs
+    val clamped = if (cached.durationMs > 0) extrapolated.coerceIn(0, cached.durationMs) else extrapolated.coerceAtLeast(0)
+    return cached.copy(progressMs = clamped)
+}

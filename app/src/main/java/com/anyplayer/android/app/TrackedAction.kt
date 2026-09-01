@@ -23,15 +23,18 @@ internal fun <T> CoroutineScope.launchTrackedAction(
         inProgress?.value = true
         if (startingStatus != null) status.value = startingStatus
 
-        val result = try {
-            Result.success(action())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
+        try {
+            val result = try {
+                Result.success(action())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            result.onFailure { status.value = onFailureStatus(it) }
+            result.onSuccess { onSuccess(it) }
+        } finally {
+            inProgress?.value = false
         }
-        result.onFailure { status.value = onFailureStatus(it) }
-        result.onSuccess { onSuccess(it) }
-        inProgress?.value = false
     }
 }

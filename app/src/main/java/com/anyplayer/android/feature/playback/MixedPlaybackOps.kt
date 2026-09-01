@@ -153,6 +153,19 @@ internal class MixedPlaybackOps(
         }
     }
 
+    fun setVolume(requestedVolume: Int) {
+        val currentTrack = context.mutableStatus.value.currentTrack
+        context.scope.launch {
+            if (currentTrack?.source == SourceType.SPOTIFY) {
+                spotifyPlaybackController.setVolume(requestedVolume)
+            } else {
+                applyNormalizedMedia3Volume(requestedVolume, currentTrack?.source ?: SourceType.ALL)
+            }
+            context.mutableStatus.value = context.mutableStatus.value.copy(volume = requestedVolume)
+            persistStateAsync()
+        }
+    }
+
     fun setShuffle(enabled: Boolean) {
         val state = context.mutableStatus.value
         context.mutableStatus.value = state.copy(

@@ -126,8 +126,9 @@ class SpotifyPlaybackController @Inject constructor(
             return@withLock false
         }
         if (!success) {
-            lastError = "Spotify command failed: $action."
-            CompatLog.w(TAG, "Spotify command '$action' failed")
+            val specificError = lastError
+            lastError = "Spotify command failed: $action. ${specificError ?: ""}".trim()
+            CompatLog.w(TAG, "Spotify command '$action' failed: $lastError")
             return@withLock false
         }
 

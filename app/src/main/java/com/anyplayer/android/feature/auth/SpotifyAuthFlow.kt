@@ -166,11 +166,14 @@ class SpotifyAuthFlow @Inject constructor(
     }
 
     /**
-     * A nonblank token is ready after the caller has validated it with Spotify's Web API.
-     * Native playback initialization is optional and must not change provider connection status.
+     * A token is ready for playback once it validates against Spotify's Web API.
+     * Native playback initialization no longer exists (the librespot JNI session was
+     * removed) and must not change provider connection status.
      */
     fun resolveSpotifyPlaybackReady(accessToken: String?): Boolean {
-        return accessToken?.trim()?.isNotBlank() == true
+        val token = accessToken?.trim().orEmpty()
+        if (token.isBlank()) return false
+        return spotifyAuthClient.validate(token) is ProviderConnectionCheck.Connected
     }
 
     fun computeTokenExpiresAt(expiresIn: Int?): Long? {

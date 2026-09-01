@@ -7,7 +7,7 @@ fun normalizePlaylistId(sourceType: SourceType, playlistId: String): String {
 
     val uriPrefix = "spotify:playlist:"
     if (trimmed.startsWith(uriPrefix, ignoreCase = true)) {
-        return trimmed.substringAfterLast(':')
+        return trimmed.substringAfterLast(':').substringBefore('?').substringBefore('/')
     }
 
     val marker = "/playlist/"

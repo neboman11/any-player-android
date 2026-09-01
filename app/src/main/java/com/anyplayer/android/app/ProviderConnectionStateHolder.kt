@@ -262,8 +262,8 @@ internal class ProviderConnectionStateHolder(
     fun disconnect(sourceType: SourceType) {
         viewModelScope.launch {
             authRepository.disconnect(sourceType)
-            applyProviderChangeSideEffects()
             providerConnectionFeedback.value = "Disconnected ${sourceType.name.lowercase()}."
+            applyProviderChangeSideEffects()
         }
     }
 

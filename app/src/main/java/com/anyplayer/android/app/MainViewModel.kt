@@ -478,8 +478,8 @@ class MainViewModel @Inject constructor(
 
     init {
         providerConnectionStateHolder.loadSavedProviderInputs()
-        restoreStartup()
         customPlaylistStateHolder.observeCustomPlaylists()
+        restoreStartup()
         syncStateHolder.startRealtimePlaybackSync()
         enforcePlaybackDisabledState()
     }
