@@ -90,7 +90,7 @@ class SpotifyPlayerClient @Inject constructor(
             isPlaying = root["is_playing"].jsonPrimitiveBooleanOrFalse,
             progressMs = root["progress_ms"]?.jsonPrimitive?.longOrNull ?: 0L,
             durationMs = item["duration_ms"]?.jsonPrimitive?.longOrNull ?: 0L,
-            volumePercent = root["device"].jsonObject["volume_percent"]?.jsonPrimitive?.intOrNull ?: 0,
+            volumePercent = root["device"].jsonObject["volume_percent"]?.jsonPrimitive?.intOrNull ?: 100,
             shuffleEnabled = root["shuffle_state"].jsonPrimitiveBooleanOrFalse,
             repeatMode = repeatModeFromWireValue(root["repeat_state"].jsonPrimitiveStringOrEmpty),
             currentTrackId = item["id"].jsonPrimitiveStringOrNull
