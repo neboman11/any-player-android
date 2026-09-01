@@ -82,7 +82,7 @@ class SpotifyAuthClient @Inject constructor(
         okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return null
             val raw = response.body?.string().orEmpty()
-            val parsed = json.parseToJsonElement(raw) as? JsonObject ?: return null
+            val parsed = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
             val accessToken = parsed["access_token"].jsonPrimitiveStringOrNull ?: return null
             val refreshToken = parsed["refresh_token"].jsonPrimitiveStringOrNull
             val expiresIn = parsed["expires_in"]?.jsonPrimitive?.intOrNull

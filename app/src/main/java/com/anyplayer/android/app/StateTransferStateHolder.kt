@@ -11,6 +11,7 @@ import com.anyplayer.android.feature.state.transfer.MergePolicy
 import com.anyplayer.android.feature.state.transfer.StateTransferManager
 import java.io.InputStream
 import java.io.OutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,40 +44,56 @@ internal class StateTransferStateHolder(
             stream.use { block(it) }
         }
 
-    fun exportStateToUri(uri: Uri, mode: ExportMode, includePlayback: Boolean, passphrase: String?) {
+    /** Runs [block] and reports its outcome via [onResult], without swallowing cancellation
+     *  (letting a runCatching-style catch-all also catch CancellationException breaks
+     *  structured concurrency when the ViewModel is cleared mid-flight). */
+    private fun <T> launchTracked(block: suspend () -> T, onResult: (Result<T>) -> Unit) {
         viewModelScope.launch {
-            runCatching {
-                withOutputStream(uri, "Could not open output stream for export") { stream ->
-                    stateTransferManager.exportToStream(
-                        stream = stream,
-                        options = ExportOptions(
-                            mode = mode,
-                            includePlaybackState = includePlayback,
-                            passphrase = passphrase
-                        ),
-                        playbackStatus = currentPlaybackStatus()
-                    )
-                }
-                "Export complete"
-            }.onSuccess { stateTransferStatus.value = it }
+            val result = try {
+                Result.success(block())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            onResult(result)
+        }
+    }
+
+    fun exportStateToUri(uri: Uri, mode: ExportMode, includePlayback: Boolean, passphrase: String?) {
+        launchTracked({
+            withOutputStream(uri, "Could not open output stream for export") { stream ->
+                stateTransferManager.exportToStream(
+                    stream = stream,
+                    options = ExportOptions(
+                        mode = mode,
+                        includePlaybackState = includePlayback,
+                        passphrase = passphrase
+                    ),
+                    playbackStatus = currentPlaybackStatus()
+                )
+            }
+            "Export complete"
+        }) { result ->
+            result.onSuccess { stateTransferStatus.value = it }
                 .onFailure { stateTransferStatus.value = "Export failed: ${it.message}" }
         }
     }
 
     fun importStateFromUri(uri: Uri, policy: MergePolicy, passphrase: String?, dryRun: Boolean) {
-        viewModelScope.launch {
-            runCatching {
-                withInputStream(uri, "Could not open input stream for import") { stream ->
-                    stateTransferManager.importFromStream(
-                        stream = stream,
-                        options = ImportOptions(
-                            mergePolicy = policy,
-                            passphrase = passphrase,
-                            dryRun = dryRun
-                        )
+        launchTracked({
+            withInputStream(uri, "Could not open input stream for import") { stream ->
+                stateTransferManager.importFromStream(
+                    stream = stream,
+                    options = ImportOptions(
+                        mergePolicy = policy,
+                        passphrase = passphrase,
+                        dryRun = dryRun
                     )
-                }
-            }.onSuccess { summary ->
+                )
+            }
+        }) { result ->
+            result.onSuccess { summary ->
                 applyImportSummary(if (dryRun) "Dry run" else "Import", summary)
             }.onFailure {
                 stateTransferStatus.value = "${if (dryRun) "Dry run" else "Import"} failed: ${it.message}"
@@ -85,16 +102,16 @@ internal class StateTransferStateHolder(
     }
 
     fun importConfigFromUri(uri: Uri, policy: MergePolicy, dryRun: Boolean, onImported: () -> Unit) {
-        viewModelScope.launch {
-            runCatching {
-                withInputStream(uri, "Could not open input stream for config import") { stream ->
-                    configFileImporter.importFromStream(
-                        stream = stream,
-                        mergePolicy = policy,
-                        dryRun = dryRun
-                    )
-                }
-            }.onSuccess { summary ->
+        launchTracked({
+            withInputStream(uri, "Could not open input stream for config import") { stream ->
+                configFileImporter.importFromStream(
+                    stream = stream,
+                    mergePolicy = policy,
+                    dryRun = dryRun
+                )
+            }
+        }) { result ->
+            result.onSuccess { summary ->
                 val prefix = if (dryRun) "Config dry run" else "Config import"
                 applyImportSummary(prefix, summary)
                 if (!dryRun) onImported()

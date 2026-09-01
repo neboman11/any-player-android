@@ -18,7 +18,7 @@ class RateLimitRetryInterceptor(
         var response = chain.proceed(request)
         var attempt = 0
 
-        while ((response.code == 429 || response.code in 500..599) && attempt < maxRetries) {
+        while (isRetryable(request.method, response.code) && attempt < maxRetries) {
             val waitMs = retryAfterMillis(response) ?: backoffMillis(attempt)
             response.close()
             Thread.sleep(waitMs)
@@ -27,6 +27,17 @@ class RateLimitRetryInterceptor(
         }
 
         return response
+    }
+
+    /** 429 means the request was rejected before any server-side effect, so it's safe to
+     *  retry regardless of method. A 5xx is ambiguous - for a non-idempotent write (POST/PUT/
+     *  PATCH/DELETE, e.g. a Spotify next/seek/setVolume command) the mutation may already have
+     *  applied server-side before the error response arrived, so blindly replaying it risks
+     *  double-firing (e.g. skipping two tracks instead of one). Only retry those on GET/HEAD. */
+    private fun isRetryable(method: String, code: Int): Boolean {
+        if (code == 429) return true
+        if (code in 500..599) return method == "GET" || method == "HEAD"
+        return false
     }
 
     private fun retryAfterMillis(response: Response): Long? {

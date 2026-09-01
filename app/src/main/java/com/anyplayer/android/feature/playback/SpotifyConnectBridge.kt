@@ -60,6 +60,14 @@ class SpotifyConnectBridge @Inject constructor(
 
     var errorListener: ErrorListener? = null
 
+    /** Whether Spotify is the currently active/mixed-in playback source. Set by
+     *  [com.anyplayer.android.feature.playback.PlaybackQueueManager] whenever the queue's
+     *  source composition changes. Defaults to true so playback isn't missed before the
+     *  first queue is loaded. When false, the poll loop skips the network call - a user who
+     *  only ever plays Jellyfin/Plex/local tracks shouldn't pay for a Spotify Web API call
+     *  every [POLL_INTERVAL_MS] for the life of the media service. */
+    @Volatile var pollingEnabled: Boolean = true
+
     private val playbackStateCache = SpotifyPlaybackStateCache(END_OF_TRACK_POSITION_TOLERANCE_MS)
     private var bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
@@ -71,7 +79,11 @@ class SpotifyConnectBridge @Inject constructor(
         bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         pollJob = bridgeScope.launch {
             while (true) {
-                pollOnce()
+                if (pollingEnabled) {
+                    pollOnce()
+                } else {
+                    playbackStateCache.clear()
+                }
                 delay(POLL_INTERVAL_MS)
             }
         }

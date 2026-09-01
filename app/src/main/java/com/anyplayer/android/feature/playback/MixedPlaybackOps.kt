@@ -21,7 +21,6 @@ internal class MixedPlaybackOps(
     private val media3PlaybackController: Media3PlaybackController,
     private val spotifyPlaybackController: SpotifyPlaybackController,
     private val audioCacheManager: AudioCacheManager,
-    private val localOps: LocalPlaybackOps,
     private val spotifyOps: SpotifyPlaybackOps,
     private val context: PlaybackEngineContext,
     private val isSpotifyMode: () -> Boolean,
@@ -232,9 +231,11 @@ internal class MixedPlaybackOps(
                     playMixedTrackById(nextTrack.id)
                     return
                 }
-                // A mid-track pause here is a legitimate external state (user paused in
-                // Spotify directly, or another Connect client took over) - state was already
-                // synced to PAUSED above. Do not force playback back on.
+                spotifyOps.maybeRecoverSpotifyTrack(
+                    queueTrackIds = listOf(currentTrack.id),
+                    startIndex = 0,
+                    failureMessage = "Spotify failed to recover mixed-track playback"
+                )
             }
         } else {
             val snapshot = media3PlaybackController.snapshot()

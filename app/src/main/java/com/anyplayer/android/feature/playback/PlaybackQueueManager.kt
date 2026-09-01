@@ -42,7 +42,6 @@ class PlaybackQueueManager @Inject constructor(
 
     private val localOps = LocalPlaybackOps(
         media3PlaybackController = media3PlaybackController,
-        audioCacheManager = audioCacheManager,
         context = context,
         applyNormalizedMedia3Volume = ::applyNormalizedMedia3Volume,
         triggerPrefetch = ::triggerPrefetch,
@@ -59,7 +58,6 @@ class PlaybackQueueManager @Inject constructor(
         media3PlaybackController = media3PlaybackController,
         spotifyPlaybackController = spotifyPlaybackController,
         audioCacheManager = audioCacheManager,
-        localOps = localOps,
         spotifyOps = spotifyOps,
         context = context,
         isSpotifyMode = { spotifyMode },
@@ -162,15 +160,24 @@ class PlaybackQueueManager @Inject constructor(
         }
     }
 
+    /** Single owner for the "does this queue contain Spotify tracks, non-Spotify tracks, or
+     *  both" check that [setQueue] and [addNextInQueue] each need to derive spotifyMode/
+     *  mixedMode - was duplicated verbatim in both methods. */
+    private fun classifySourceMix(tracks: List<Track>): Pair<Boolean, Boolean> {
+        val hasSpotify = tracks.any { it.source == SourceType.SPOTIFY }
+        val hasNonSpotify = tracks.any { it.source != SourceType.SPOTIFY }
+        return hasSpotify to hasNonSpotify
+    }
+
     fun setQueue(tracks: List<Track>, startIndex: Int = 0, autoPlay: Boolean = true) {
         CompatLog.i(
             TAG,
             "setQueue size=${tracks.size} startIndex=$startIndex autoPlay=$autoPlay spotifyMode=${tracks.isNotEmpty() && tracks.all { it.source == SourceType.SPOTIFY }} mixedMode=${tracks.any { it.source == SourceType.SPOTIFY } && tracks.any { it.source != SourceType.SPOTIFY }}"
         )
-        val hasSpotify = tracks.any { it.source == SourceType.SPOTIFY }
-        val hasNonSpotify = tracks.any { it.source != SourceType.SPOTIFY }
-        spotifyMode = tracks.isNotEmpty() && tracks.all { it.source == SourceType.SPOTIFY }
+        val (hasSpotify, hasNonSpotify) = classifySourceMix(tracks)
+        spotifyMode = tracks.isNotEmpty() && !hasNonSpotify
         mixedMode = hasSpotify && hasNonSpotify
+        spotifyPlaybackController.setSpotifyPollingActive(spotifyMode || mixedMode)
 
         if (tracks.isEmpty()) {
             audioCacheManager.cancelPrefetch()
@@ -341,10 +348,10 @@ class PlaybackQueueManager @Inject constructor(
         }
 
         context.addToQueueInsertionOffset++
-        val hasSpotify = updatedQueue.any { it.source == SourceType.SPOTIFY }
-        val hasNonSpotify = updatedQueue.any { it.source != SourceType.SPOTIFY }
-        spotifyMode = updatedQueue.isNotEmpty() && updatedQueue.all { it.source == SourceType.SPOTIFY }
+        val (hasSpotify, hasNonSpotify) = classifySourceMix(updatedQueue)
+        spotifyMode = updatedQueue.isNotEmpty() && !hasNonSpotify
         mixedMode = hasSpotify && hasNonSpotify
+        spotifyPlaybackController.setSpotifyPollingActive(spotifyMode || mixedMode)
         context.playableQueueIndices = if (!spotifyMode && !mixedMode) {
             updatedQueue.mapIndexedNotNull { queueIndex, queuedTrack ->
                 queueIndex.takeIf { !queuedTrack.url.isNullOrBlank() && queuedTrack.source != SourceType.SPOTIFY }
@@ -631,30 +638,7 @@ class PlaybackQueueManager @Inject constructor(
                 restoreStartIndex = startIndex
             }
 
-            val expectedTrackId = restoreTrackIds.getOrNull(restoreStartIndex)
-            val started = spotifyPlaybackController.startQueue(restoreTrackIds, restoreStartIndex)
-            if (started) {
-                context.spotifyQueueRequiresReload = false
-                spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
-                if (expectedTrackId != null && persisted.positionMs > 0) {
-                    var readyForSeek = false
-                    for (attempt in 1..10) {
-                        delay(200)
-                        val snap = spotifyPlaybackController.snapshot()
-                        if (snap?.currentTrackId != null &&
-                            trackIdsMatch(snap.currentTrackId, expectedTrackId)
-                        ) {
-                            readyForSeek = true
-                            break
-                        }
-                    }
-                    if (readyForSeek) {
-                        spotifyPlaybackController.seekTo(persisted.positionMs)
-                        delay(100)
-                    }
-                }
-                spotifyPlaybackController.pause()
-            }
+            spotifyOps.restoreQueueAndPause(restoreTrackIds, restoreStartIndex, persisted.positionMs)
         }
 
         // Spotify's own pause is only meaningful once something was actually

@@ -8,6 +8,7 @@ import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -46,6 +47,13 @@ class SpotifyPlaybackController @Inject constructor(
             lastError = message
             CompatLog.w(TAG, "Spotify Connect error [$type]: $message")
         }
+    }
+
+    /** Enables/disables [SpotifyConnectBridge]'s background poll loop's network calls based on
+     *  whether Spotify is actually part of the current queue. Called by [PlaybackQueueManager]
+     *  whenever the queue's source composition changes. */
+    fun setSpotifyPollingActive(active: Boolean) {
+        connectBridge.pollingEnabled = active
     }
 
     /** Starts playback of the track at [startIndex] in [trackIds]. Spotify Connect
@@ -108,7 +116,15 @@ class SpotifyPlaybackController @Inject constructor(
     ): Boolean = rustCommandMutex.withLock {
         val accessToken = resolveAccessToken() ?: return@withLock false
 
-        val success = block(accessToken)
+        val success = try {
+            block(accessToken)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            lastError = "Spotify command failed: $action. ${e.message.orEmpty()}".trim()
+            CompatLog.w(TAG, "Spotify command '$action' threw", e)
+            return@withLock false
+        }
         if (!success) {
             lastError = "Spotify command failed: $action."
             CompatLog.w(TAG, "Spotify command '$action' failed")

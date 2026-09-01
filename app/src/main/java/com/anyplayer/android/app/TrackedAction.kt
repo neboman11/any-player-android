@@ -1,5 +1,6 @@
 package com.anyplayer.android.app
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -22,10 +23,15 @@ internal fun <T> CoroutineScope.launchTrackedAction(
         inProgress?.value = true
         if (startingStatus != null) status.value = startingStatus
 
-        runCatching { action() }
-            .onFailure { status.value = onFailureStatus(it) }
-            .onSuccess { onSuccess(it) }
-
+        val result = try {
+            Result.success(action())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        result.onFailure { status.value = onFailureStatus(it) }
+        result.onSuccess { onSuccess(it) }
         inProgress?.value = false
     }
 }

@@ -573,4 +573,38 @@ internal class SpotifyPlaybackOps(
         }
         return started
     }
+
+    /**
+     * Cold-launch restore path: starts Spotify playback of [trackIds] at [startIndex],
+     * waits (bounded, 10 x 200ms) for the target track to become the reported current
+     * track, seeks to [positionMs] if positive, then pauses - so the app resumes to the
+     * persisted position without audibly playing from 0 first. Single owner for this
+     * "start and wait" sequence so it can't drift out of sync with [play]/[togglePlayPause]'s
+     * own reload-and-resume handling.
+     */
+    suspend fun restoreQueueAndPause(trackIds: List<String>, startIndex: Int, positionMs: Long): Boolean {
+        if (trackIds.isEmpty()) return false
+        val expectedTrackId = trackIds.getOrNull(startIndex)
+        val started = spotifyPlaybackController.startQueue(trackIds, startIndex)
+        if (!started) return false
+        context.spotifyQueueRequiresReload = false
+        spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
+        if (expectedTrackId != null && positionMs > 0) {
+            var readyForSeek = false
+            for (attempt in 1..10) {
+                delay(200)
+                val snap = spotifyPlaybackController.snapshot()
+                if (snap?.currentTrackId != null && trackIdsMatch(snap.currentTrackId, expectedTrackId)) {
+                    readyForSeek = true
+                    break
+                }
+            }
+            if (readyForSeek) {
+                spotifyPlaybackController.seekTo(positionMs)
+                delay(100)
+            }
+        }
+        spotifyPlaybackController.pause()
+        return true
+    }
 }

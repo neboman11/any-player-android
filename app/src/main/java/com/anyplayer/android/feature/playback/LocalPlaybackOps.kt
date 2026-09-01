@@ -11,13 +11,10 @@ import kotlinx.coroutines.launch
 /**
  * Local/Media3 (Jellyfin, Plex, local-file) branch of [PlaybackQueueManager]'s
  * per-operation mode dispatch, moved out verbatim (Stage 1 of
- * docs/playback-queue-manager-decomposition-plan.md). [audioCacheManager] is
- * not used directly yet — kept as a constructor dependency per the plan for
- * when Stage 3 re-homes prefetch-queue selection here.
+ * docs/playback-queue-manager-decomposition-plan.md).
  */
 internal class LocalPlaybackOps(
     private val media3PlaybackController: Media3PlaybackController,
-    private val audioCacheManager: AudioCacheManager,
     private val context: PlaybackEngineContext,
     private val applyNormalizedMedia3Volume: suspend (Int, SourceType) -> Unit,
     private val triggerPrefetch: () -> Unit,

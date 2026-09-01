@@ -164,7 +164,9 @@ boundary directions, stall detection/recovery). `MixedPlaybackOps.kt`
 `mixedPlaybackSequence`, `spotifyFallbackQueue`, `playMixedTrackAtIndex`,
 `playMixedTrackById`, `triggerPrefetch`. `playMixedTrackAtIndex` and
 `triggerPrefetch` stayed public since `PlaybackQueueManager.setQueue`
-(mode-agnostic, stays there) calls them too; `PlaybackQueueManager` keeps
+(does its own per-mode dispatch and the shared mode computation, stays
+there — not mode-agnostic, it branches on spotifyMode/mixedMode/local
+internally) calls them too; `PlaybackQueueManager` keeps
 a thin `private fun triggerPrefetch() = mixedOps.triggerPrefetch()`
 re-export since `LocalPlaybackOps` was already wired to a
 `::triggerPrefetch` callback in Stage 1, before `mixedOps` existed.
