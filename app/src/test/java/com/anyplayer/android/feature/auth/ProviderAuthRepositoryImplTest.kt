@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.network.ProviderConnectionCheck
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.spotify.SpotifyAuthClient
+import com.anyplayer.android.feature.auth.spotify.SpotifyClientIds
 import com.anyplayer.android.feature.auth.spotify.SpotifyTokenExchangeResult
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -13,6 +14,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.verifyNoMoreInteractions
@@ -131,6 +133,41 @@ class ProviderAuthRepositoryImplTest {
         verify(secureConnectionStore).save(savedConnection.capture())
         assertTrue(savedConnection.firstValue.playbackReady == true)
         verifyNoInteractions(rustBridge)
+        // Regression: playbackReady used to be recomputed via a second validate()
+        // call on the same already-Connected token (finding #6, PR 33 review).
+        verify(spotifyAuthClient, times(1)).validate(VALID_TOKEN)
+    }
+
+    @Test
+    fun restoreAll_expiredSpotifyTokenWithRefreshToken_refreshesAndValidatesRefreshedTokenOnce() = runTest {
+        whenever(secureConnectionStore.readAll()).thenReturn(
+            listOf(
+                StoredConnection(
+                    source = SourceType.SPOTIFY,
+                    token = EXPIRED_TOKEN,
+                    refreshToken = FIXTURE_REFRESH_TOKEN,
+                    spotifyPremium = true,
+                    playbackReady = true
+                )
+            )
+        )
+        whenever(spotifyAuthClient.validate(EXPIRED_TOKEN))
+            .thenReturn(ProviderConnectionCheck.Failed("token expired"))
+        whenever(spotifyAuthClient.refreshAccessToken(SpotifyClientIds.ACTIVE, FIXTURE_REFRESH_TOKEN))
+            .thenReturn(SpotifyTokenExchangeResult(VALID_TOKEN, "new-refresh-token", 3600))
+        whenever(spotifyAuthClient.validate(VALID_TOKEN)).thenReturn(premiumConnection())
+
+        val statuses = repository.restoreAll()
+
+        assertTrue(statuses.single().connected)
+        assertTrue(statuses.single().playbackReady == true)
+        val savedConnection = argumentCaptor<StoredConnection>()
+        verify(secureConnectionStore).save(savedConnection.capture())
+        assertEquals(VALID_TOKEN, savedConnection.firstValue.token)
+        assertTrue(savedConnection.firstValue.playbackReady == true)
+        // Regression: playbackReady used to be recomputed via a second validate()
+        // call on the same freshly-refreshed token (finding #7, PR 33 review).
+        verify(spotifyAuthClient, times(1)).validate(VALID_TOKEN)
     }
 
     private fun premiumConnection() = ProviderConnectionCheck.Connected(
@@ -140,6 +177,8 @@ class ProviderAuthRepositoryImplTest {
 
     private companion object {
         const val VALID_TOKEN = "valid-spotify-token"
+        const val EXPIRED_TOKEN = "test-fixture-expired-token"
+        const val FIXTURE_REFRESH_TOKEN = "test-fixture-refresh-token"
         const val REDIRECT_URI = "anyplayer://spotify/callback"
     }
 }

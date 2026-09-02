@@ -20,9 +20,10 @@ import kotlinx.coroutines.launch
  * have no callers outside this class and stay private.
  */
 internal class SpotifyPlaybackOps(
+    private val media3PlaybackController: Media3PlaybackController,
     private val spotifyPlaybackController: SpotifyPlaybackController,
+    private val audioCacheManager: AudioCacheManager,
     private val context: PlaybackEngineContext,
-    private val isSpotifyMode: () -> Boolean,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
     private val persistStateAsync: () -> Unit
 ) {
@@ -33,6 +34,14 @@ internal class SpotifyPlaybackOps(
         // poll cadence with margin, since the wait can start at any point within that
         // poll's own cycle - not just right after a poll fires.
         private val SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS = SpotifyConnectBridge.POLL_INTERVAL_MS + 1000L
+
+        // A mid-track pause reported by a single poll is ambiguous - it could be a
+        // legitimate pause from another Connect client, or the poll simply landing
+        // right after a track started before the bridge caught up. Requiring the same
+        // (track, position) to persist across several poll cycles before treating it
+        // as a genuine stuck session filters out that single-poll race while still
+        // recovering from a real stall within a bounded time.
+        private val MID_TRACK_STALL_THRESHOLD_MS = SpotifyConnectBridge.POLL_INTERVAL_MS * 3
     }
 
     private fun spotifyPlaybackQueue(state: PlaybackStatus): List<Track> =
@@ -46,6 +55,53 @@ internal class SpotifyPlaybackOps(
 
     fun spotifyErrorOrDefault(defaultMessage: String): String =
         spotifyPlaybackController.lastError?.takeIf { it.isNotBlank() } ?: defaultMessage
+
+    /** Spotify-mode branch of [PlaybackQueueManager.setQueue]: [tracks] is entirely
+     *  Spotify-sourced, per [PlaybackEngineContext.spotifyMode] having already been
+     *  computed by the caller. [startIndex] is pre-resolved (shuffle-aware). */
+    fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
+        audioCacheManager.cancelPrefetch()
+        context.lastPrefetchedForTrackId = null
+        context.recovery.resetSpotifyAutoAdvanceState()
+        context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.resetMixedMediaEndStallState()
+        context.queueIndexCache.rebuildQueueCaches(tracks)
+        context.queueIndexCache.spotifyCurrentQueueIndex = startIndex
+        media3PlaybackController.setQueue(emptyList(), 0, false)
+        context.mutableStatus.value = context.mutableStatus.value.copy(
+            queue = tracks,
+            orderedQueue = tracks,
+            currentTrack = tracks[startIndex],
+            state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
+            position = 0,
+            duration = tracks[startIndex].durationMs ?: 0
+        )
+        // Only start the Spotify queue when autoPlay is true. startQueue() begins playback
+        // immediately; when autoPlay is false we defer until play()/togglePlayPause() is called,
+        // which falls back to startQueue() when resume fails.
+        context.spotifyQueueRequiresReload = !autoPlay
+        if (autoPlay) {
+            context.scope.launch {
+                var started = spotifyPlaybackController.startQueue(context.queueIndexCache.cachedQueueTrackIds, startIndex)
+                if (!started) {
+                    delay(350)
+                    started = spotifyPlaybackController.startQueue(context.queueIndexCache.cachedQueueTrackIds, startIndex)
+                }
+                if (started) {
+                    context.spotifyQueueRequiresReload = false
+                    spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
+                } else {
+                    context.spotifyQueueRequiresReload = true
+                    context.mutableStatus.value = context.mutableStatus.value.copy(
+                        state = PlaybackStateType.ERROR,
+                        errorMessage = spotifyErrorOrDefault("Spotify failed to start playback")
+                    )
+                }
+            }
+        }
+        persistStateAsync()
+    }
 
     fun playFromIndex(state: PlaybackStatus, target: Int) {
         context.scope.launch {
@@ -87,6 +143,9 @@ internal class SpotifyPlaybackOps(
 
     fun togglePlayPause() {
         val state = context.mutableStatus.value
+        // An explicit play/pause command is unambiguous user intent - it can't be
+        // mistaken for a stall, so it always cancels any in-progress stall watch.
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = if (state.state == PlaybackStateType.PLAYING) {
                 spotifyPlaybackController.pause()
@@ -126,6 +185,7 @@ internal class SpotifyPlaybackOps(
 
     fun play() {
         val state = context.mutableStatus.value
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             // Try to resume first (works if track is already loaded/paused).
             // If that fails (e.g. player is in Stopped state after app restart),
@@ -158,6 +218,7 @@ internal class SpotifyPlaybackOps(
     }
 
     fun pause() {
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = spotifyPlaybackController.pause()
             context.mutableStatus.value = context.mutableStatus.value.copy(
@@ -243,6 +304,7 @@ internal class SpotifyPlaybackOps(
     fun next(state: PlaybackStatus) {
         context.recovery.manualSkipInFlight = true
         context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             try {
                 val activeQueue = spotifyPlaybackQueue(state)
@@ -284,6 +346,7 @@ internal class SpotifyPlaybackOps(
     fun previous(state: PlaybackStatus) {
         context.recovery.manualSkipInFlight = true
         context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             try {
                 val activeQueue = spotifyPlaybackQueue(state)
@@ -375,12 +438,47 @@ internal class SpotifyPlaybackOps(
         ) {
             return
         }
-        // Note: a mid-track pause (state PLAYING, snapshot not playing, not near the end)
-        // is intentionally left to the sync below, which just reflects it as PAUSED.
-        // It used to trigger maybeRecoverSpotifyTrack() here, which force-restarted
-        // playback - including when the user (or another Connect client) paused Spotify
-        // directly, and spuriously right after a track was started but the 2s-cadence
-        // poll hadn't caught up yet.
+        // A mid-track pause (state PLAYING, snapshot not playing, not near the end) is
+        // reflected as PAUSED by the sync below on its own, since a single poll can't
+        // tell a legitimate remote pause apart from a genuine stuck Connect session.
+        // Only recover once the same (track, position) has persisted across several
+        // poll cycles - see MID_TRACK_STALL_THRESHOLD_MS. The state write below flips
+        // state.state to PAUSED after the first stalled poll, so continuing to watch an
+        // already-detected stall across later polls can't gate on state.state staying
+        // PLAYING - it uses spotifyMidTrackStallTrackId being already set instead. A
+        // fresh watch still only ever starts from an unexpected PLAYING->not-playing
+        // transition, never from an explicit pause (pause()/togglePlayPause() clear the
+        // watch directly), so a deliberate pause can't be mistaken for a stall.
+        val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying
+        val continuingKnownStallWatch = context.recovery.spotifyMidTrackStallTrackId != null && !spotifySnapshot.isPlaying
+        if ((startingNewStallWatch || continuingKnownStallWatch) &&
+            !context.recovery.manualSkipInFlight && state.queue.isNotEmpty()
+        ) {
+            val nowMs = System.currentTimeMillis()
+            val currentTrackId = state.currentTrack?.id
+            val sameTrack = context.recovery.spotifyMidTrackStallTrackId == currentTrackId
+            val samePosition = context.recovery.spotifyMidTrackStallPositionMs == spotifySnapshot.progressMs
+            if (!sameTrack || !samePosition) {
+                context.recovery.spotifyMidTrackStallTrackId = currentTrackId
+                context.recovery.spotifyMidTrackStallPositionMs = spotifySnapshot.progressMs
+                context.recovery.spotifyMidTrackStallSinceMs = nowMs
+            } else {
+                val stalledMs = nowMs - context.recovery.spotifyMidTrackStallSinceMs
+                if (stalledMs >= MID_TRACK_STALL_THRESHOLD_MS) {
+                    val currentIndex = context.queueIndexCache.currentQueueIndex(state)
+                    CompatLog.w(TAG, "Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery at index=$currentIndex")
+                    context.recovery.resetSpotifyMidTrackStallState()
+                    maybeRecoverSpotifyTrack(
+                        queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
+                        startIndex = currentIndex,
+                        failureMessage = "Spotify playback stalled mid-track"
+                    )
+                    return
+                }
+            }
+        } else {
+            context.recovery.resetSpotifyMidTrackStallState()
+        }
         if (state.state == PlaybackStateType.ERROR && !spotifySnapshot.isPlaying && state.queue.isNotEmpty()) {
             val currentIndex = context.queueIndexCache.currentQueueIndex(state)
             CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=${context.recovery.spotifyRecoveryAttempts}")
@@ -518,7 +616,7 @@ internal class SpotifyPlaybackOps(
     private suspend fun startSpotifyAtQueueIndex(targetIndex: Int): Boolean {
         val state = context.mutableStatus.value
         val activeTrackIds = spotifyPlaybackTrackIds(state)
-        if (!isSpotifyMode() || activeTrackIds.isEmpty()) return false
+        if (!context.spotifyMode || activeTrackIds.isEmpty()) return false
         val safeIndex = targetIndex.coerceIn(0, activeTrackIds.lastIndex)
         val started = spotifyPlaybackController.startQueue(activeTrackIds, safeIndex)
         if (started) {

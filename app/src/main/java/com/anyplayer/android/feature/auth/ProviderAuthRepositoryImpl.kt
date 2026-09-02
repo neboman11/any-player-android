@@ -188,7 +188,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                         is ProviderConnectionCheck.Connected -> stored.copy(
                             username = validation.username ?: stored.username,
                             spotifyPremium = validation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(stored.token)
+                            // validation is already Connected for this exact token, so it's
+                            // already playback-ready per resolveSpotifyPlaybackReady's own
+                            // definition - no need to re-validate the same token again.
+                            playbackReady = true
                         ).also { secureConnectionStore.save(it) }.toStatus()
 
                         is ProviderConnectionCheck.Failed -> {
@@ -209,7 +212,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                                             refreshToken = refreshed.refreshToken ?: stored.refreshToken,
                                             tokenExpiresAt = refreshedTokenExpiresAt,
                                             spotifyPremium = refreshedValidation.metadata["isPremium"]?.toBooleanStrictOrNull() ?: stored.spotifyPremium,
-                                            playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(refreshed.accessToken)
+                                            // refreshedValidation is already Connected for this
+                                            // exact freshly-refreshed token - same redundant
+                                            // re-validate avoided as above.
+                                            playbackReady = true
                                         )
                                         secureConnectionStore.save(updated)
                                         updated.toStatus()

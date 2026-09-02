@@ -65,4 +65,16 @@ class QueueTimelineTest {
         assertEquals(0, timeline.getIndexOfPeriod(uidFirst))
         assertEquals(2, timeline.getIndexOfPeriod(uidSecond))
     }
+
+    @Test
+    fun getWindow_multiTrackQueue_ownsItsOwnPeriodNotAlwaysPeriodZero() {
+        val timeline = QueueTimeline(listOf(track("a"), track("b"), track("c")))
+        val window = Timeline.Window()
+
+        for (index in 0..2) {
+            val result = timeline.getWindow(index, window)
+            assertEquals("firstPeriodIndex for window $index", index, result.firstPeriodIndex)
+            assertEquals("lastPeriodIndex for window $index", index, result.lastPeriodIndex)
+        }
+    }
 }

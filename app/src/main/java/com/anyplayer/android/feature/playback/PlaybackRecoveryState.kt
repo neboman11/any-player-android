@@ -21,6 +21,15 @@ internal class PlaybackRecoveryState {
     var spotifyRecoveryLastAttemptMs = 0L
     var spotifyRecoveryAttempts = 0
 
+    /** Dwell-time bookkeeping for a Spotify track that stays reported as
+     *  PLAYING-but-not-actually-playing (not near track end): distinguishes a
+     *  genuine stuck Connect session from the single-poll lag right after a
+     *  track starts, or a momentary state read mid-transition. See
+     *  [SpotifyPlaybackOps.sync] / [MixedPlaybackOps.sync]. */
+    var spotifyMidTrackStallTrackId: String? = null
+    var spotifyMidTrackStallPositionMs: Long = -1L
+    var spotifyMidTrackStallSinceMs: Long = 0L
+
     /** Tracks retries of a Media3 (Jellyfin/local) player that entered a fatal error state -
      *  ExoPlayer stops responding to play()/seek() once playerError is set, until re-prepared. */
     var media3ErrorRecoveryTrackId: String? = null
@@ -42,9 +51,16 @@ internal class PlaybackRecoveryState {
         spotifyRecoveryAttempts = 0
     }
 
+    fun resetSpotifyMidTrackStallState() {
+        spotifyMidTrackStallTrackId = null
+        spotifyMidTrackStallPositionMs = -1L
+        spotifyMidTrackStallSinceMs = 0L
+    }
+
     fun resetSpotifyConnectionState() {
         resetSpotifyAutoAdvanceState()
         resetSpotifyRecoveryState()
+        resetSpotifyMidTrackStallState()
     }
 
     fun resetMixedMediaEndStallState() {

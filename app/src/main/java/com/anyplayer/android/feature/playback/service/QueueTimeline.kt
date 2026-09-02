@@ -34,8 +34,8 @@ internal class QueueTimeline(
             null,
             0,
             durationUs,
-            0,
-            0,
+            windowIndex,
+            windowIndex,
             0
         )
     }

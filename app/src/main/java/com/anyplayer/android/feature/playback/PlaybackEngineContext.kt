@@ -43,6 +43,15 @@ internal class PlaybackEngineContext(spotifyPlaybackController: SpotifyPlaybackC
 
     val queueIndexCache = QueueIndexCache(spotifyPlaybackController)
     val recovery = PlaybackRecoveryState()
+
+    /** Whether the current queue is Spotify-only / a mix of Spotify and non-Spotify
+     *  tracks. Single source of truth for the per-mode dispatch in
+     *  [PlaybackQueueManager] and the Ops classes - was previously duplicated as
+     *  private vars on [PlaybackQueueManager] with the Ops classes reading them
+     *  through a constructor-injected closure instead of this shared context. */
+    var spotifyMode: Boolean = false
+    var mixedMode: Boolean = false
+
     var playableQueueIndices: List<Int> = emptyList()
     var spotifyQueueRequiresReload = false
     var addToQueueInsertionOffset: Int = 0

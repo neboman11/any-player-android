@@ -86,7 +86,7 @@ class Media3PlaybackController @Inject constructor(
         get() = playerInstance
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
-        val playableTracks = tracks.filter(::isMedia3Playable)
+        val playableTracks = tracks.filter(::isMedia3PlayableTrack)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()
             playerInstance.stop()
@@ -120,20 +120,6 @@ class Media3PlaybackController @Inject constructor(
         playerInstance.playWhenReady = autoPlay
 
         return mappedIndex
-    }
-
-    private fun isMedia3Playable(track: Track): Boolean {
-        if (track.source == com.anyplayer.android.core.model.SourceType.SPOTIFY) {
-            return false
-        }
-        val raw = track.url?.trim().orEmpty()
-        if (raw.isEmpty()) return false
-        val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
-        val scheme = parsed.scheme?.lowercase().orEmpty()
-        return when (scheme) {
-            "http", "https", "file", "content", "android.resource" -> true
-            else -> false
-        }
     }
 
     fun playFromIndex(index: Int) {
@@ -250,6 +236,24 @@ data class PlaybackSnapshot(
     val repeatMode: RepeatMode,
     val shuffledMediaIndices: List<Int>
 )
+
+/** Whether [track] can be handed to ExoPlayer directly: Spotify tracks are always
+ *  excluded (driven separately over Connect, see [SpotifyPlaybackController]), and a
+ *  local/provider track needs a non-blank URL with a scheme Media3's default data
+ *  source factories can resolve. */
+internal fun isMedia3PlayableTrack(track: Track): Boolean {
+    if (track.source == SourceType.SPOTIFY) {
+        return false
+    }
+    val raw = track.url?.trim().orEmpty()
+    if (raw.isEmpty()) return false
+    val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
+    val scheme = parsed.scheme?.lowercase().orEmpty()
+    return when (scheme) {
+        "http", "https", "file", "content", "android.resource" -> true
+        else -> false
+    }
+}
 
 internal fun buildJellyfinRequestHeaders(
     requestUri: Uri,

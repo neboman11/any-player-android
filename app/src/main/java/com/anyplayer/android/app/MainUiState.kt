@@ -32,15 +32,6 @@ internal data class CatalogUiState(
     val providerPlaylistRefreshStatus: String?
 )
 
-internal data class CatalogCoreUiState(
-    val providerStatuses: List<ProviderConnectionProfile>,
-    val playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
-    val audioNormalizationSettings: AudioNormalizationSettings,
-    val searchResults: List<Track>,
-    val searchPlaylistResults: List<com.anyplayer.android.core.model.Playlist>,
-    val providerPlaylists: List<com.anyplayer.android.core.model.Playlist>
-)
-
 internal data class ProviderPlaylistSummaryUiState(
     val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
     val selectedProviderPlaylistTracks: List<Track>,
@@ -49,14 +40,6 @@ internal data class ProviderPlaylistSummaryUiState(
     val selectedProviderPlaylistError: String?,
     val providerPlaylistRefreshInProgress: Boolean,
     val providerPlaylistRefreshStatus: String?
-)
-
-internal data class ProviderPlaylistSummaryCoreUiState(
-    val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
-    val selectedProviderPlaylistTracks: List<Track>,
-    val selectedProviderPlaylistIsDistinct: Boolean,
-    val selectedProviderPlaylistLoading: Boolean,
-    val selectedProviderPlaylistError: String?
 )
 
 internal data class LocalUiState(
@@ -86,23 +69,6 @@ internal data class LocalUiState(
     val syncProviderConfigurationEnabled: Boolean,
     val syncSettingsEnabled: Boolean,
     val syncStatus: String
-)
-
-internal data class LocalCoreUiState(
-    val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist>,
-    val activeCustomPlaylistTracks: List<Track>,
-    val selectedCustomPlaylistId: String?,
-    val selectedCustomUnionSources: List<UnionPlaylistSource>,
-    val customPlaylistRefreshInProgress: Boolean,
-    val customPlaylistRefreshStatus: String?,
-    val stateTransferStatus: String
-)
-
-internal data class LocalBasicStatePart(
-    val playlists: List<com.anyplayer.android.core.model.CustomPlaylist>,
-    val tracks: List<Track>,
-    val playlistId: String?,
-    val unionSources: List<UnionPlaylistSource>
 )
 
 data class MainUiState(

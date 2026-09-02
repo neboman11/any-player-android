@@ -29,16 +29,19 @@ class SecureConnectionStore @Inject constructor(
 
     private val cache = mutableMapOf<SourceType, StoredConnection?>()
 
+    @Synchronized
     fun save(connection: StoredConnection) {
         prefs.edit().putString(connection.source.name, json.encodeToString(connection)).apply()
         cache[connection.source] = connection
     }
 
+    @Synchronized
     fun remove(source: SourceType) {
         prefs.edit().remove(source.name).apply()
         cache.remove(source)
     }
 
+    @Synchronized
     fun read(source: SourceType): StoredConnection? {
         cache[source]?.let { return it }
         val payload = prefs.getString(source.name, null) ?: return null

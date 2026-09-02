@@ -9,8 +9,10 @@ import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -116,34 +118,36 @@ class SpotifyPlaybackController @Inject constructor(
         action: String,
         block: suspend (accessToken: String) -> Boolean
     ): Boolean = rustCommandMutex.withLock {
-        val accessToken = resolveAccessToken() ?: return@withLock false
+        withContext(Dispatchers.IO) {
+            val accessToken = resolveAccessToken() ?: return@withContext false
 
-        // Cleared so a failure below that doesn't set its own specific message
-        // (only playUri's resolveDeviceId path does, via errorListener) can't
-        // report a stale message left over from a prior, unrelated command.
-        lastError = null
-        val success = try {
-            block(accessToken)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            lastError = "Spotify command failed: $action. ${e.message.orEmpty()}".trim()
-            CompatLog.w(TAG, "Spotify command '$action' threw", e)
-            return@withLock false
-        }
-        if (!success) {
-            val specificError = lastError
-            lastError = if (specificError != null) {
-                "Spotify command failed: $action. $specificError".trim()
-            } else {
-                "Spotify command failed: $action"
+            // Cleared so a failure below that doesn't set its own specific message
+            // (only playUri's resolveDeviceId path does, via errorListener) can't
+            // report a stale message left over from a prior, unrelated command.
+            lastError = null
+            val success = try {
+                block(accessToken)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = "Spotify command failed: $action. ${e.message.orEmpty()}".trim()
+                CompatLog.w(TAG, "Spotify command '$action' threw", e)
+                return@withContext false
             }
-            CompatLog.w(TAG, "Spotify command '$action' failed: $lastError")
-            return@withLock false
-        }
+            if (!success) {
+                val specificError = lastError
+                lastError = if (specificError != null) {
+                    "Spotify command failed: $action. $specificError".trim()
+                } else {
+                    "Spotify command failed: $action"
+                }
+                CompatLog.w(TAG, "Spotify command '$action' failed: $lastError")
+                return@withContext false
+            }
 
-        lastError = null
-        true
+            lastError = null
+            true
+        }
     }
 
     private suspend fun resolveAccessToken(): String? {

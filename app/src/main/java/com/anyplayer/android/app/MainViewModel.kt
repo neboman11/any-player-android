@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.RepeatMode
@@ -124,6 +125,23 @@ class MainViewModel @Inject constructor(
     ) { inProgress, status ->
         inProgress to status
     }
+
+    private data class LocalBasicStatePart(
+        val playlists: List<com.anyplayer.android.core.model.CustomPlaylist>,
+        val tracks: List<Track>,
+        val playlistId: String?,
+        val unionSources: List<UnionPlaylistSource>
+    )
+
+    private data class LocalCoreUiState(
+        val customPlaylists: List<com.anyplayer.android.core.model.CustomPlaylist>,
+        val activeCustomPlaylistTracks: List<Track>,
+        val selectedCustomPlaylistId: String?,
+        val selectedCustomUnionSources: List<UnionPlaylistSource>,
+        val customPlaylistRefreshInProgress: Boolean,
+        val customPlaylistRefreshStatus: String?,
+        val stateTransferStatus: String
+    )
 
     private val localBasicState = combine(
         customPlaylistStateHolder.customPlaylists,
@@ -256,6 +274,23 @@ class MainViewModel @Inject constructor(
             syncInputs.syncStatusValue
         )
     }
+
+    private data class CatalogCoreUiState(
+        val providerStatuses: List<ProviderConnectionProfile>,
+        val playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
+        val audioNormalizationSettings: AudioNormalizationSettings,
+        val searchResults: List<Track>,
+        val searchPlaylistResults: List<com.anyplayer.android.core.model.Playlist>,
+        val providerPlaylists: List<com.anyplayer.android.core.model.Playlist>
+    )
+
+    private data class ProviderPlaylistSummaryCoreUiState(
+        val selectedProviderPlaylist: com.anyplayer.android.core.model.Playlist?,
+        val selectedProviderPlaylistTracks: List<Track>,
+        val selectedProviderPlaylistIsDistinct: Boolean,
+        val selectedProviderPlaylistLoading: Boolean,
+        val selectedProviderPlaylistError: String?
+    )
 
     private val catalogPlaybackState = combine(
         providerStatuses,

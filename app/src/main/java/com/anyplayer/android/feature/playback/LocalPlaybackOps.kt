@@ -24,6 +24,51 @@ internal class LocalPlaybackOps(
         private const val TAG = "LocalPlaybackOps"
     }
 
+    /** Local/fallthrough branch of [PlaybackQueueManager.setQueue]: [tracks] contains
+     *  no Spotify tracks, per [PlaybackEngineContext.spotifyMode]/[PlaybackEngineContext.mixedMode]
+     *  both having already been computed false by the caller. [startIndex] is pre-resolved. */
+    fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
+        context.spotifyQueueRequiresReload = false
+        context.playableQueueIndices = tracks.mapIndexedNotNull { queueIndex, track ->
+            queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
+        }
+        context.queueIndexCache.rebuildQueueCaches(tracks)
+        context.recovery.resetSpotifyAutoAdvanceState()
+        context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.resetMixedMediaEndStallState()
+        val mappedIndex = media3PlaybackController.setQueue(tracks, startIndex, autoPlay)
+        context.scope.launch {
+            applyNormalizedMedia3Volume(context.mutableStatus.value.volume, SourceType.ALL)
+        }
+        if (mappedIndex < 0) {
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                queue = tracks,
+                orderedQueue = tracks,
+                currentTrack = null,
+                state = PlaybackStateType.ERROR,
+                position = 0,
+                duration = 0
+            )
+            persistStateAsync()
+            return
+        }
+        val selectedTrack = tracks.getOrNull(context.playableQueueIndices.getOrNull(mappedIndex) ?: startIndex) ?: tracks[startIndex]
+        context.mutableStatus.value = context.mutableStatus.value.copy(
+            queue = tracks,
+            orderedQueue = tracks,
+            currentTrack = selectedTrack,
+            state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
+            position = 0,
+            duration = selectedTrack.durationMs ?: 0
+        )
+        if (autoPlay && !context.mutableStatus.value.shuffle) {
+            context.lastPrefetchedForTrackId = selectedTrack.id
+            triggerPrefetch()
+        }
+        persistStateAsync()
+    }
+
     fun playFromIndex(state: PlaybackStatus, target: Int) {
         val mediaIndex = context.playableQueueIndices.indexOf(target)
         if (mediaIndex >= 0) {

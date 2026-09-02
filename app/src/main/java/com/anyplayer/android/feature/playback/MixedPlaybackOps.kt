@@ -13,9 +13,8 @@ import kotlinx.coroutines.launch
  * of [PlaybackQueueManager]'s per-operation mode dispatch, moved out verbatim
  * (Stage 3, the highest-regression-risk stage, of
  * docs/playback-queue-manager-decomposition-plan.md). [playMixedTrackAtIndex]
- * and [triggerPrefetch] are also called from [PlaybackQueueManager.setQueue]
- * (mode-agnostic, stays there), so they stay public; [playMixedTrackById] has
- * no callers outside this class and stays private.
+ * is also called from [PlaybackQueueManager.playFromIndex], so it stays public;
+ * [playMixedTrackById] has no callers outside this class and stays private.
  */
 internal class MixedPlaybackOps(
     private val media3PlaybackController: Media3PlaybackController,
@@ -23,8 +22,6 @@ internal class MixedPlaybackOps(
     private val audioCacheManager: AudioCacheManager,
     private val spotifyOps: SpotifyPlaybackOps,
     private val context: PlaybackEngineContext,
-    private val isSpotifyMode: () -> Boolean,
-    private val isMixedMode: () -> Boolean,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
     private val applyNormalizedMedia3Volume: suspend (Int, SourceType) -> Unit,
     private val persistStateAsync: () -> Unit
@@ -35,6 +32,17 @@ internal class MixedPlaybackOps(
 
     private fun mixedPlaybackSequence(state: PlaybackStatus): List<Track> =
         state.orderedQueue.takeIf { it.isNotEmpty() } ?: state.queue
+
+    /** Index of [trackId] within [sequence], via the same normalized-id comparison
+     *  [QueueIndexCache] uses elsewhere - a queue can contain the same Spotify track
+     *  more than once under different raw ID formats, and a plain `it.id == trackId`
+     *  comparison would miss that. [sequence] is the shuffle-aware playback order
+     *  (from [mixedPlaybackSequence]), which is why this can't just delegate to
+     *  [QueueIndexCache.findQueueIndex] - that cache is keyed to the unshuffled queue. */
+    private fun sequenceIndexOf(sequence: List<Track>, trackId: String?): Int {
+        if (trackId == null) return -1
+        return sequence.indexOfFirst { trackIdsMatch(it.id, trackId) }
+    }
 
     /**
      * Builds a startQueue fallback for mixed-mode Spotify sessions: collects all Spotify tracks
@@ -50,12 +58,46 @@ internal class MixedPlaybackOps(
         return ids to index
     }
 
+    /** Mixed-mode branch of [PlaybackQueueManager.setQueue]: [tracks] contains both
+     *  Spotify and non-Spotify tracks, per [PlaybackEngineContext.mixedMode] having
+     *  already been computed by the caller. [startIndex] is pre-resolved. */
+    fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
+        context.recovery.resetSpotifyAutoAdvanceState()
+        context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.resetMixedMediaEndStallState()
+        context.queueIndexCache.rebuildQueueCaches(tracks)
+        media3PlaybackController.setQueue(emptyList(), 0, false)
+        val clampedIndex = startIndex.coerceIn(0, tracks.lastIndex)
+        val selectedTrack = tracks[clampedIndex]
+        if (!autoPlay && selectedTrack.source != SourceType.SPOTIFY) {
+            media3PlaybackController.setQueue(listOf(selectedTrack), 0, false)
+        }
+        context.mutableStatus.value = context.mutableStatus.value.copy(
+            queue = tracks,
+            orderedQueue = QueueOrderingUtils.buildOrderedQueue(
+                queue = tracks,
+                currentTrackId = selectedTrack.id,
+                shuffleEnabled = context.mutableStatus.value.shuffle
+            ),
+            currentTrack = selectedTrack,
+            state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
+            position = 0,
+            duration = selectedTrack.durationMs ?: 0,
+            errorMessage = null
+        )
+        if (autoPlay) {
+            playMixedTrackAtIndex(clampedIndex)
+        }
+        persistStateAsync()
+    }
+
     fun triggerPrefetch() {
         val state = context.mutableStatus.value
-        if (isSpotifyMode() || state.queue.isEmpty()) return
+        if (context.spotifyMode || state.queue.isEmpty()) return
         val currentId = state.currentTrack?.id ?: return
-        val queue = if (isMixedMode()) mixedPlaybackSequence(state) else state.orderedQueue
-        val currentIdx = queue.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: return
+        val queue = if (context.mixedMode) mixedPlaybackSequence(state) else state.orderedQueue
+        val currentIdx = sequenceIndexOf(queue, currentId).takeIf { it >= 0 } ?: return
         val upcoming = queue
             .drop(currentIdx + 1)
             .filter { !it.url.isNullOrBlank() && it.source != SourceType.SPOTIFY }
@@ -66,6 +108,9 @@ internal class MixedPlaybackOps(
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack
         if (currentTrack == null) return
+        // An explicit play/pause command is unambiguous user intent - it can't be
+        // mistaken for a stall, so it always cancels any in-progress stall watch.
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val isPlaying = state.state == PlaybackStateType.PLAYING
             val success = when {
@@ -98,6 +143,7 @@ internal class MixedPlaybackOps(
     fun play() {
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = if (currentTrack.source == SourceType.SPOTIFY) {
                 var ok = spotifyPlaybackController.play()
@@ -123,6 +169,7 @@ internal class MixedPlaybackOps(
     fun pause() {
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
+        context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = if (currentTrack.source == SourceType.SPOTIFY) {
                 spotifyPlaybackController.pause()
@@ -184,7 +231,7 @@ internal class MixedPlaybackOps(
         val sequence = mixedPlaybackSequence(state)
         if (sequence.isEmpty()) return
         val currentId = state.currentTrack?.id
-        val currentIndex = sequence.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: 0
+        val currentIndex = sequenceIndexOf(sequence, currentId).takeIf { it >= 0 } ?: 0
         val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
         playMixedTrackById(nextTrack.id)
     }
@@ -194,7 +241,7 @@ internal class MixedPlaybackOps(
         val sequence = mixedPlaybackSequence(state)
         if (sequence.isEmpty()) return
         val currentId = state.currentTrack?.id
-        val currentIndex = sequence.indexOfFirst { it.id == currentId }.takeIf { it >= 0 } ?: 0
+        val currentIndex = sequenceIndexOf(sequence, currentId).takeIf { it >= 0 } ?: 0
         val prevTrack = sequence.getOrNull(currentIndex - 1) ?: return
         playMixedTrackById(prevTrack.id)
     }
@@ -229,32 +276,60 @@ internal class MixedPlaybackOps(
             if (spotifySnapshot.endOfTrackCount > context.recovery.lastAcknowledgedEndOfTrackCount) {
                 context.recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
                 val sequence = mixedPlaybackSequence(state)
-                val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 } ?: 0
+                val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nextTrack != null) {
                     playMixedTrackById(nextTrack.id)
                     return
                 }
             }
-            if (state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying) {
+            val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying
+            if (startingNewStallWatch) {
                 val sequence = mixedPlaybackSequence(state)
-                val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }.takeIf { it >= 0 } ?: 0
+                val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nearTrackEnd && nextTrack != null) {
                     playMixedTrackById(nextTrack.id)
                     return
                 }
-                // Note: a mid-track pause (not near the end) is intentionally left to the
-                // state copy above, which already reflects it as PAUSED. Force-restarting
-                // via maybeRecoverSpotifyTrack() here reintroduces the spurious-restart bug
-                // that was deliberately removed from SpotifyPlaybackOps.sync() for the
-                // pure-Spotify case - including when the user (or another Connect client)
-                // paused Spotify directly.
+            }
+            // A mid-track pause is reflected as PAUSED by the state copy above on its own,
+            // since a single poll can't tell a legitimate remote pause apart from a genuine
+            // stuck Connect session. Only recover once the same (track, position) has
+            // persisted across several poll cycles, mirroring SpotifyPlaybackOps.sync()'s
+            // dwell check - including why this can't gate on state.state staying PLAYING
+            // across polls (the copy above already flips it to PAUSED after the first
+            // stalled poll, so a continuing watch is tracked via spotifyMidTrackStallTrackId
+            // instead).
+            val continuingKnownStallWatch =
+                context.recovery.spotifyMidTrackStallTrackId == currentTrack.id && !spotifySnapshot.isPlaying
+            if (startingNewStallWatch || continuingKnownStallWatch) {
+                val nowMs = System.currentTimeMillis()
+                val samePosition = context.recovery.spotifyMidTrackStallPositionMs == spotifySnapshot.progressMs
+                if (!continuingKnownStallWatch || !samePosition) {
+                    context.recovery.spotifyMidTrackStallTrackId = currentTrack.id
+                    context.recovery.spotifyMidTrackStallPositionMs = spotifySnapshot.progressMs
+                    context.recovery.spotifyMidTrackStallSinceMs = nowMs
+                } else {
+                    val stalledMs = nowMs - context.recovery.spotifyMidTrackStallSinceMs
+                    if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 3) {
+                        CompatLog.w(TAG, "Mixed-mode Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery")
+                        context.recovery.resetSpotifyMidTrackStallState()
+                        spotifyOps.maybeRecoverSpotifyTrack(
+                            queueTrackIds = listOf(currentTrack.id),
+                            startIndex = 0,
+                            failureMessage = "Spotify playback stalled mid-track"
+                        )
+                        return
+                    }
+                }
+            } else {
+                context.recovery.resetSpotifyMidTrackStallState()
             }
         } else {
             val snapshot = media3PlaybackController.snapshot()
             val sequence = mixedPlaybackSequence(state)
-            val currentIndex = sequence.indexOfFirst { it.id == currentTrack.id }
+            val currentIndex = sequenceIndexOf(sequence, currentTrack.id)
             val effectiveDuration = snapshot.durationMs.takeIf { it > 0 } ?: (currentTrack.durationMs ?: state.duration)
             val nearTrackEnd = isNearTrackEnd(snapshot.positionMs, effectiveDuration, 1200L)
             val reachedEnd = snapshot.durationMs > 0L && snapshot.positionMs >= (snapshot.durationMs - 1000L)

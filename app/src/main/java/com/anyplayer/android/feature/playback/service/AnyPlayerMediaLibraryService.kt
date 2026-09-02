@@ -57,13 +57,11 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var restoreJob: Deferred<Unit>? = null
     private lateinit var notificationBuilder: PlaybackNotificationBuilder
     private lateinit var projectionControllerGuard: ProjectionControllerGuard
-    private lateinit var audioFocusGuard: SpotifyAudioFocusGuard
 
     override fun onCreate() {
         super.onCreate()
         notificationBuilder = PlaybackNotificationBuilder(this)
         projectionControllerGuard = ProjectionControllerGuard(this, serviceScope, playbackQueueManager)
-        audioFocusGuard = SpotifyAudioFocusGuard(this, playbackQueueManager)
         playerBridge.open()
         spotifyConnectBridge.attach()
         startProviderRestore()
@@ -273,12 +271,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         ).build()
 
         serviceScope.launch {
-            playbackQueueManager.status.collect { status ->
-                audioFocusGuard.update(status)
-            }
-        }
-
-        serviceScope.launch {
             data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val state: PlaybackStateType)
             playbackQueueManager.status
                 .map { status ->
@@ -343,7 +335,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         playerBridge.close()
         spotifyConnectBridge.release()
         projectionControllerGuard.release()
-        audioFocusGuard.abandon()
         stopForeground(STOP_FOREGROUND_REMOVE)
         mediaLibrarySession?.run {
             release()

@@ -8,6 +8,8 @@ import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.spotify.SpotifyAuthClient
 import com.anyplayer.android.feature.auth.spotify.SpotifyClientIds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,6 +28,12 @@ class SpotifyAuthFlow @Inject constructor(
         private const val TAG = "SpotifyAuthFlow"
         private const val SPOTIFY_REFRESH_WINDOW_MILLIS = 5 * 60 * 1000L
     }
+
+    // Guards refreshTokenIfNeeded's read-check-refresh-save critical section: it is
+    // reached concurrently by SpotifyConnectBridge's poll loop and
+    // SpotifyPlaybackController's command path, and without a shared lock the loser
+    // of the race can persist a stale/rotated-out refresh token over the winner's.
+    private val refreshMutex = Mutex()
 
     suspend fun beginAuth(clientId: String, redirectUri: String): String {
         return withContext(Dispatchers.IO) {
@@ -121,8 +129,8 @@ class SpotifyAuthFlow @Inject constructor(
         }
     }
 
-    suspend fun refreshTokenIfNeeded(): String? {
-        return withContext(Dispatchers.IO) {
+    suspend fun refreshTokenIfNeeded(): String? = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
             val stored = secureConnectionStore.read(SourceType.SPOTIFY) ?: return@withContext null
             val currentToken = stored.token?.trim().orEmpty()
             if (currentToken.isBlank()) return@withContext null

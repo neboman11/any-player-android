@@ -213,6 +213,10 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
     testImplementation("org.robolectric:robolectric:4.12.1")
+    // Lets Media3PlaybackControllerTest construct a real (Robolectric-shadowed)
+    // ExoPlayer in a plain JVM test - no device audio/codec hardware needed.
+    testImplementation("androidx.media3:media3-test-utils:1.5.1")
+    testImplementation("androidx.media3:media3-test-utils-robolectric:1.5.1")
     // Robolectric 4.12.1 pre-instrumented SDK JAR (API 34, PREINSTRUMENTED_VERSION=6).
     // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
     // robolectric.dependency.dir can point to it for fully offline test execution.
