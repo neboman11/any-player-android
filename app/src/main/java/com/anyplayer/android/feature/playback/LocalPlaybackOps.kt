@@ -30,7 +30,7 @@ internal class LocalPlaybackOps(
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
         context.spotifyQueueRequiresReload = false
         context.playableQueueIndices = tracks.mapIndexedNotNull { queueIndex, track ->
-            queueIndex.takeIf { !track.url.isNullOrBlank() && track.source != SourceType.SPOTIFY }
+            queueIndex.takeIf { isLocallyPlayableTrack(track) }
         }
         context.queueIndexCache.rebuildQueueCaches(tracks)
         context.recovery.resetSpotifyAutoAdvanceState()

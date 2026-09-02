@@ -36,6 +36,11 @@ class PlaybackQueueManager @Inject constructor(
     private val context = PlaybackEngineContext(spotifyPlaybackController)
     private var isRestoring = false
     private var persistTickCounter = 0
+
+    // persistStateAsync() launches on Dispatchers.IO, so back-to-back calls can run
+    // concurrently on different IO-pool threads with no lock between them - @Volatile
+    // guarantees each sees the other's latest write instead of a stale cached value.
+    @Volatile
     private var lastPersistFingerprint = 0L
 
     private val localOps = LocalPlaybackOps(
@@ -226,7 +231,15 @@ class PlaybackQueueManager @Inject constructor(
             setQueue(listOf(track), startIndex = 0, autoPlay = false)
             return
         }
-        val currentIndex = context.queueIndexCache.currentQueueIndex(state)
+        // spotifyCurrentQueueIndex is a Spotify-only cursor (see QueueIndexCache doc) - using
+        // it to disambiguate duplicate track ids in a local/mixed queue would bias toward a
+        // stale index left over from a prior Spotify session. Only trust it in Spotify mode;
+        // otherwise resolve the current track's exact position in this queue directly.
+        val currentIndex = if (context.spotifyMode) {
+            context.queueIndexCache.currentQueueIndex(state)
+        } else {
+            state.currentTrack?.id?.let { context.queueIndexCache.findQueueIndex(it) }?.takeIf { it >= 0 } ?: 0
+        }
         val insertionIndex = (currentIndex + 1 + context.addToQueueInsertionOffset)
             .coerceAtMost(state.queue.size)
 
@@ -250,7 +263,7 @@ class PlaybackQueueManager @Inject constructor(
         spotifyPlaybackController.setSpotifyPollingActive(context.spotifyMode || context.mixedMode)
         context.playableQueueIndices = if (!context.spotifyMode && !context.mixedMode) {
             updatedQueue.mapIndexedNotNull { queueIndex, queuedTrack ->
-                queueIndex.takeIf { !queuedTrack.url.isNullOrBlank() && queuedTrack.source != SourceType.SPOTIFY }
+                queueIndex.takeIf { isLocallyPlayableTrack(queuedTrack) }
             }
         } else {
             emptyList()
@@ -508,13 +521,14 @@ class PlaybackQueueManager @Inject constructor(
 
         // Restore the persisted orderedQueue if available and valid, so the
         // shuffled order is preserved across restarts instead of re-randomizing.
+        // Only trust it when its track-id set matches the persisted queue - a stale
+        // or corrupted persisted orderedQueue from an older app version must not be
+        // adopted anywhere, including the Spotify Connect restore path below.
         val persistedOrdered = persisted.orderedQueue
-        if (persisted.shuffle && !persistedOrdered.isNullOrEmpty()) {
-            val persistedIds = persistedOrdered.map { it.id }.toSet()
-            val currentIds = persisted.queue.map { it.id }.toSet()
-            if (persistedIds == currentIds) {
-                context.mutableStatus.value = context.mutableStatus.value.copy(orderedQueue = persistedOrdered)
-            }
+        val persistedOrderedIsValid = persisted.shuffle && !persistedOrdered.isNullOrEmpty() &&
+            persistedOrdered.map { it.id }.toSet() == persisted.queue.map { it.id }.toSet()
+        if (persistedOrderedIsValid) {
+            context.mutableStatus.value = context.mutableStatus.value.copy(orderedQueue = persistedOrdered!!)
         }
 
         setVolume(persisted.volume)
@@ -526,8 +540,8 @@ class PlaybackQueueManager @Inject constructor(
         if (context.spotifyMode && persisted.queue.isNotEmpty()) {
             val restoreTrackIds: List<String>
             val restoreStartIndex: Int
-            if (persisted.shuffle && !persistedOrdered.isNullOrEmpty()) {
-                restoreTrackIds = persistedOrdered.map { it.id }
+            if (persistedOrderedIsValid) {
+                restoreTrackIds = persistedOrdered!!.map { it.id }
                 val expectedTrackId = persisted.queue.getOrNull(startIndex)?.id
                 restoreStartIndex = if (expectedTrackId != null) {
                     restoreTrackIds.indexOfFirst { normalizeSpotifyTrackId(it) == normalizeSpotifyTrackId(expectedTrackId) }
@@ -578,6 +592,9 @@ class PlaybackQueueManager @Inject constructor(
         fp = fp * 31 + if (audioNorm.enabled) 1L else 0L
         fp = fp * 31 + if (audioNorm.strictMode) 1L else 0L
         fp = fp * 31 + state.state.ordinal
+        fp = fp * 31 + (state.orderedQueue.firstOrNull()?.id?.hashCode()?.toLong() ?: 0L)
+        fp = fp * 31 + (state.orderedQueue.lastOrNull()?.id?.hashCode()?.toLong() ?: 0L)
+        fp = fp * 31 + state.orderedQueue.size
         if (fp == lastPersistFingerprint) {
             return
         }
@@ -593,7 +610,15 @@ class PlaybackQueueManager @Inject constructor(
         val persistedCurrentQueueIndex = currentQueueIndex?.takeIf { it < persistedQueue.size }
         val payload = PersistedPlaybackState(
             queue = persistedQueue,
-            orderedQueue = if (state.shuffle && state.orderedQueue.isNotEmpty()) state.orderedQueue else null,
+            // orderedQueue is only meaningful alongside a persisted queue - restore bails
+            // out when persisted.queue is empty, so writing it while persistedQueue was
+            // truncated (queue.size > maxPersistedQueueTracks) would defeat the size cap
+            // above for zero benefit.
+            orderedQueue = if (state.shuffle && persistedQueue.isNotEmpty() && state.orderedQueue.isNotEmpty()) {
+                state.orderedQueue
+            } else {
+                null
+            },
             currentQueueIndex = persistedCurrentQueueIndex,
             positionMs = state.position,
             shuffle = state.shuffle,

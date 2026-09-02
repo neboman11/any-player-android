@@ -241,10 +241,15 @@ data class PlaybackSnapshot(
  *  excluded (driven separately over Connect, see [SpotifyPlaybackController]), and a
  *  local/provider track needs a non-blank URL with a scheme Media3's default data
  *  source factories can resolve. */
+/** Source/URL-presence check shared with call sites (PlaybackQueueManager, LocalPlaybackOps)
+ *  exercised by plain-JUnit tests without Robolectric - those can't use
+ *  [isMedia3PlayableTrack]'s android.net.Uri scheme validation below, since Uri isn't
+ *  mocked outside a Robolectric run. */
+internal fun isLocallyPlayableTrack(track: Track): Boolean =
+    track.source != SourceType.SPOTIFY && !track.url.isNullOrBlank()
+
 internal fun isMedia3PlayableTrack(track: Track): Boolean {
-    if (track.source == SourceType.SPOTIFY) {
-        return false
-    }
+    if (!isLocallyPlayableTrack(track)) return false
     val raw = track.url?.trim().orEmpty()
     if (raw.isEmpty()) return false
     val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false

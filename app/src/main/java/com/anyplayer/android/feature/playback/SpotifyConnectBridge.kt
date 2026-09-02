@@ -121,13 +121,18 @@ class SpotifyConnectBridge @Inject constructor(
         return playbackStateCache.snapshot(SystemClock.elapsedRealtime())
     }
 
-    suspend fun playUri(accessToken: String, trackIds: List<String>, startIndex: Int): Boolean {
+    suspend fun playUri(accessToken: String, trackIds: List<String>, startIndex: Int, deviceId: String): Boolean {
         if (spotifyPlaybackUris(trackIds).isEmpty()) return false
-        val deviceId = resolveDeviceId(accessToken) ?: return false
         return withContext(Dispatchers.IO) {
             spotifyPlayerClient.startPlayback(accessToken, trackIds, startIndex, deviceId)
         }
     }
+
+    /** Exposed so [SpotifyPlaybackController.startQueue] can resolve the device before
+     *  acquiring its command mutex - the device-wait retry loop below can take several
+     *  seconds, and running it under that lock would freeze [snapshot] polling for the
+     *  whole wait. */
+    suspend fun resolveDeviceIdForPlayback(accessToken: String): String? = resolveDeviceId(accessToken)
 
     suspend fun resume(accessToken: String): Boolean = withContext(Dispatchers.IO) { spotifyPlayerClient.play(accessToken) }
 

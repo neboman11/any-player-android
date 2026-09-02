@@ -16,8 +16,13 @@ object QueueOrderingUtils {
         shuffleEnabled: Boolean
     ): List<Track> {
         if (!shuffleEnabled || queue.size <= 1) return queue
-        val current = currentTrackId?.let { id -> queue.firstOrNull { it.id == id } }
-        val remainder = if (current != null) queue.filterNot { it.id == current.id } else queue
+        val currentIndex = currentTrackId?.let { id -> queue.indexOfFirst { it.id == id } } ?: -1
+        val current = currentIndex.takeIf { it >= 0 }?.let { queue[it] }
+        val remainder = if (current != null) {
+            queue.filterIndexed { index, _ -> index != currentIndex }
+        } else {
+            queue
+        }
         val shuffledRemainder = remainder.shuffled()
         return if (current != null) listOf(current) + shuffledRemainder else shuffledRemainder
     }

@@ -67,7 +67,12 @@ class SpotifyPlaybackController @Inject constructor(
             lastError = "Spotify queue is empty"
             return false
         }
-        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex) }
+        // Resolved outside rustCommandMutex: the device-wait retry loop here can take
+        // several seconds (auto-launching Spotify + polling), and running it under the
+        // lock would freeze snapshot() polling for that whole duration.
+        val accessToken = resolveAccessToken() ?: return false
+        val deviceId = connectBridge.resolveDeviceIdForPlayback(accessToken) ?: return false
+        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex, deviceId) }
     }
 
     suspend fun play(): Boolean = runCommand("play") { connectBridge.resume(it) }

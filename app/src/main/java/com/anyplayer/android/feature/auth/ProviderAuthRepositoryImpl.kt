@@ -32,7 +32,6 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                 is AuthRequest.Spotify -> {
                     val token = request.accessToken.trim()
                     require(token.isNotBlank()) { "Spotify access token is required" }
-                    val playbackReady = spotifyAuthFlow.resolveSpotifyPlaybackReady(token)
                     when (val check = spotifyAuthClient.validate(token)) {
                         is ProviderConnectionCheck.Connected -> StoredConnection(
                             source = SourceType.SPOTIFY,
@@ -41,7 +40,10 @@ class ProviderAuthRepositoryImpl @Inject constructor(
                             refreshToken = request.refreshToken,
                             tokenExpiresAt = spotifyAuthFlow.computeTokenExpiresAt(request.expiresIn),
                             spotifyPremium = request.isPremium ?: check.metadata["isPremium"]?.toBooleanStrictOrNull(),
-                            playbackReady = playbackReady
+                            // check is already Connected for this exact token, so it's
+                            // already playback-ready per resolveSpotifyPlaybackReady's own
+                            // definition - no need to re-validate the same token again.
+                            playbackReady = true
                         ).also { connection ->
                             if (connection.spotifyPremium != true) {
                                 throw IllegalStateException("Spotify Premium is required for playback integration.")

@@ -30,4 +30,19 @@ internal object ProviderSessionBuilder {
         "token" to token,
         "page_size" to pageSize.toString()
     )
+
+    fun spotifySession(
+        accessToken: String,
+        refreshToken: String? = null,
+        pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE
+    ): Map<String, String> {
+        val session = mutableMapOf(
+            "access_token" to accessToken,
+            "page_size" to pageSize.toString()
+        )
+        if (!refreshToken.isNullOrBlank()) {
+            session["refresh_token"] = refreshToken
+        }
+        return session
+    }
 }

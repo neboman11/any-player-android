@@ -111,7 +111,10 @@ class SpotifyAuthFlow @Inject constructor(
             }
             val validated = validation as ProviderConnectionCheck.Connected
             val tokenExpiresAt = computeTokenExpiresAt(tokenResult.expiresIn)
-            val playbackReady = resolveSpotifyPlaybackReady(tokenResult.accessToken)
+            // validation is already Connected for this exact token, so it's already
+            // playback-ready per resolveSpotifyPlaybackReady's own definition - no need
+            // to re-validate the same token again.
+            val playbackReady = true
 
             val connection = StoredConnection(
                 source = SourceType.SPOTIFY,

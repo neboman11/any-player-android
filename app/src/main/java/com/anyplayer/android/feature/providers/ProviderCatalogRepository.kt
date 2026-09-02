@@ -505,16 +505,8 @@ class ProviderCatalogRepository @Inject constructor(
     private fun buildPlexSession(url: String, token: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =
         ProviderSessionBuilder.plexSession(url, token, pageSize)
 
-    private fun buildSpotifySession(accessToken: String, refreshToken: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> {
-        val session = mutableMapOf(
-            "access_token" to accessToken,
-            "page_size" to pageSize.toString()
-        )
-        if (!refreshToken.isNullOrBlank()) {
-            session["refresh_token"] = refreshToken
-        }
-        return session
-    }
+    private fun buildSpotifySession(accessToken: String, refreshToken: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =
+        ProviderSessionBuilder.spotifySession(accessToken, refreshToken, pageSize)
 
     private suspend fun loadSpotifyPlaylistsOnly(offset: Int = 0, limit: Int = 100): List<Playlist> = withContext(Dispatchers.IO) {
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)

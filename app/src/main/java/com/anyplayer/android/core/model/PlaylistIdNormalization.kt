@@ -19,5 +19,5 @@ fun normalizePlaylistId(sourceType: SourceType, playlistId: String): String {
             .substringBefore('/')
     }
 
-    return trimmed
+    return trimmed.substringBefore('?').substringBefore('/')
 }

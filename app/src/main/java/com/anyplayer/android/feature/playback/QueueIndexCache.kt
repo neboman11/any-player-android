@@ -14,10 +14,18 @@ internal class QueueIndexCache(
 ) {
     var spotifyCurrentQueueIndex: Int = 0
 
+    // rebuildQueueCaches() writes these on the Main dispatcher (called from
+    // PlaybackQueueManager/LocalPlaybackOps), but PlaybackQueueManager.persistState()
+    // reads findQueueIndex()/cachedQueueTrackIds from a Dispatchers.IO coroutine -
+    // @Volatile guarantees the IO thread sees the latest rebuilt reference instead of
+    // a stale one, since there's no other synchronization between the two dispatchers.
+
     /** O(1) track-ID → queue-index lookup; rebuilt by [rebuildQueueCaches]. */
+    @Volatile
     private var trackIdIndexMap: Map<String, Int> = emptyMap()
 
     /** Cached list of track IDs matching the current queue order; rebuilt by [rebuildQueueCaches]. */
+    @Volatile
     var cachedQueueTrackIds: List<String> = emptyList()
         private set
 

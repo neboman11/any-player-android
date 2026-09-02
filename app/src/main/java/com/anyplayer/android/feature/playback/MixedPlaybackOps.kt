@@ -233,7 +233,11 @@ internal class MixedPlaybackOps(
         val currentId = state.currentTrack?.id
         val currentIndex = sequenceIndexOf(sequence, currentId).takeIf { it >= 0 } ?: 0
         val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
-        playMixedTrackById(nextTrack.id)
+        // Mirrors SpotifyPlaybackOps.next(): an explicit skip command can't be mistaken
+        // for a stall by sync()'s stall-detection while the async track switch is in flight.
+        context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
+        playMixedTrackById(nextTrack.id, manualSkip = true)
     }
 
     fun previous(state: PlaybackStatus) {
@@ -243,7 +247,9 @@ internal class MixedPlaybackOps(
         val currentId = state.currentTrack?.id
         val currentIndex = sequenceIndexOf(sequence, currentId).takeIf { it >= 0 } ?: 0
         val prevTrack = sequence.getOrNull(currentIndex - 1) ?: return
-        playMixedTrackById(prevTrack.id)
+        context.recovery.resetSpotifyRecoveryState()
+        context.recovery.resetSpotifyMidTrackStallState()
+        playMixedTrackById(prevTrack.id, manualSkip = true)
     }
 
     suspend fun sync() {
@@ -273,7 +279,9 @@ internal class MixedPlaybackOps(
                 repeatMode = spotifySnapshot.repeatMode,
                 orderedQueue = mixedPlaybackSequence(state)
             )
-            if (spotifySnapshot.endOfTrackCount > context.recovery.lastAcknowledgedEndOfTrackCount) {
+            if (spotifySnapshot.endOfTrackCount > context.recovery.lastAcknowledgedEndOfTrackCount &&
+                !context.recovery.manualSkipInFlight
+            ) {
                 context.recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
                 val sequence = mixedPlaybackSequence(state)
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
@@ -283,7 +291,8 @@ internal class MixedPlaybackOps(
                     return
                 }
             }
-            val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying
+            val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying &&
+                !context.recovery.manualSkipInFlight
             if (startingNewStallWatch) {
                 val sequence = mixedPlaybackSequence(state)
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
@@ -389,6 +398,40 @@ internal class MixedPlaybackOps(
                 repeatMode = snapshot.repeatMode,
                 orderedQueue = mixedPlaybackSequence(state)
             )
+
+            // ExoPlayer stops responding to play()/pause()/skip once it hits a fatal error
+            // until re-prepared - mirrors the recovery in LocalPlaybackOps.sync() so a local
+            // track in a mixed queue doesn't get stuck the same way.
+            if (snapshot.state == PlaybackStateType.ERROR) {
+                val errorTrackId = currentTrack.id
+                if (context.recovery.media3ErrorRecoveryTrackId != errorTrackId) {
+                    context.recovery.media3ErrorRecoveryTrackId = errorTrackId
+                    context.recovery.media3ErrorRecoveryAttempts = 0
+                    context.recovery.media3ErrorRecoveryLastAttemptMs = 0L
+                }
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - context.recovery.media3ErrorRecoveryLastAttemptMs >= 1500L) {
+                    context.recovery.media3ErrorRecoveryLastAttemptMs = nowMs
+                    context.recovery.media3ErrorRecoveryAttempts++
+                    if (context.recovery.media3ErrorRecoveryAttempts <= 3) {
+                        CompatLog.w(TAG, "Mixed-mode media3 playback error; retrying (attempt ${context.recovery.media3ErrorRecoveryAttempts}) trackId=$errorTrackId")
+                        media3PlaybackController.retryAfterError()
+                    } else {
+                        CompatLog.w(TAG, "Mixed-mode media3 playback error persisted after ${context.recovery.media3ErrorRecoveryAttempts} attempts; skipping track trackId=$errorTrackId")
+                        context.recovery.media3ErrorRecoveryTrackId = null
+                        context.recovery.media3ErrorRecoveryAttempts = 0
+                        val nextTrack = sequence.getOrNull(currentIndex + 1)
+                        if (nextTrack != null) {
+                            playMixedTrackById(nextTrack.id)
+                            return
+                        }
+                    }
+                }
+            } else if (context.recovery.media3ErrorRecoveryTrackId != null) {
+                context.recovery.media3ErrorRecoveryTrackId = null
+                context.recovery.media3ErrorRecoveryAttempts = 0
+            }
+
             if (currentTrack.id != context.lastPrefetchedForTrackId) {
                 context.lastPrefetchedForTrackId = currentTrack.id
                 triggerPrefetch()
@@ -396,13 +439,16 @@ internal class MixedPlaybackOps(
         }
     }
 
-    fun playMixedTrackAtIndex(index: Int) {
+    fun playMixedTrackAtIndex(index: Int, manualSkip: Boolean = false) {
         val state = context.mutableStatus.value
         if (state.queue.isEmpty()) return
         val target = index.coerceIn(0, state.queue.lastIndex)
         val track = state.queue[target]
         val previousTrack = state.currentTrack
 
+        if (manualSkip) {
+            context.recovery.manualSkipInFlight = true
+        }
         context.scope.launch {
             if (previousTrack?.source == SourceType.SPOTIFY && track.source != SourceType.SPOTIFY) {
                 spotifyPlaybackController.pause()
@@ -443,13 +489,16 @@ internal class MixedPlaybackOps(
                 errorMessage = if (success) null else spotifyOps.spotifyErrorOrDefault("Failed to start track")
             )
             persistStateAsync()
+            if (manualSkip) {
+                context.recovery.manualSkipInFlight = false
+            }
         }
     }
 
-    private fun playMixedTrackById(trackId: String) {
+    private fun playMixedTrackById(trackId: String, manualSkip: Boolean = false) {
         val state = context.mutableStatus.value
         val target = context.queueIndexCache.findQueueIndex(trackId)
         if (target < 0) return
-        playMixedTrackAtIndex(target)
+        playMixedTrackAtIndex(target, manualSkip)
     }
 }
