@@ -4,14 +4,15 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.core.model.normalizePlaylistId
 import com.anyplayer.android.core.network.ProviderSearchResult
-import com.anyplayer.android.core.network.SpotifyClient
 import com.anyplayer.android.core.rust.RustBridge
-import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
-import com.anyplayer.android.core.storage.entity.AppCacheEntryEntity
 import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
 import com.anyplayer.android.feature.auth.SecureConnectionStore
+import com.anyplayer.android.feature.auth.spotify.SpotifyCatalogClient
 import com.anyplayer.android.feature.startup.StartupCatalogGateway
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -20,33 +21,18 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import java.time.Instant
-import javax.inject.Inject
-import javax.inject.Singleton
 
 private const val TAG = "ProviderCatalogRepository"
 
 @Singleton
 class ProviderCatalogRepository @Inject constructor(
     private val secureConnectionStore: SecureConnectionStore,
-    private val spotifyClient: SpotifyClient,
+    private val spotifyCatalogClient: SpotifyCatalogClient,
     private val rustBridge: RustBridge,
-    private val appCacheEntryDao: AppCacheEntryDao,
-    private val json: Json
+    private val playlistCache: ProviderPlaylistCache
 ) : StartupCatalogGateway {
-    override suspend fun getCachedProviderPlaylists(): List<Playlist> = withContext(Dispatchers.IO) {
-        val entry = safeGetCacheEntry(PROVIDER_PLAYLIST_CACHE_KEY) ?: return@withContext emptyList()
-        runCatching {
-            json.decodeFromString(ProviderPlaylistCacheEntry.serializer(), entry.valueJson).playlists
-        }.getOrElse {
-            runCatching { appCacheEntryDao.delete(PROVIDER_PLAYLIST_CACHE_KEY) }
-            emptyList()
-        }
-    }
+    override suspend fun getCachedProviderPlaylists(): List<Playlist> =
+        playlistCache.getCachedProviderPlaylists()
 
     override suspend fun getAllProviderPlaylistsWithCache(offset: Int, limit: Int): List<Playlist> {
         val cached = getCachedProviderPlaylists()
@@ -56,18 +42,17 @@ class ProviderCatalogRepository @Inject constructor(
 
         val remote = getAllProviderPlaylists(offset = offset, limit = limit)
         if (remote.isNotEmpty()) {
-            saveProviderPlaylistCache(remote)
+            playlistCache.saveProviderPlaylistCache(remote)
         }
         return remote
     }
 
-    suspend fun clearProviderPlaylistCacheData() = withContext(Dispatchers.IO) {
-        appCacheEntryDao.delete(PROVIDER_PLAYLIST_CACHE_KEY)
-        appCacheEntryDao.deleteByPrefix(PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX)
-    }
+    suspend fun clearProviderPlaylistCacheData() = playlistCache.clearProviderPlaylistCacheData()
+
+    suspend fun getCachedPlaylistTracks(sourceType: SourceType, playlistId: String): List<Track> =
+        playlistCache.getCachedPlaylistTracks(sourceType, playlistId)
 
     suspend fun getAllProviderPlaylists(offset: Int = 0, limit: Int = 100): List<Playlist> = withContext(Dispatchers.IO) {
-
         if (!rustBridge.isAvailable()) {
             return@withContext loadSpotifyPlaylistsOnly(offset, limit)
         }
@@ -120,26 +105,6 @@ class ProviderCatalogRepository @Inject constructor(
         }
     }
 
-    private suspend fun saveProviderPlaylistCache(playlists: List<Playlist>) = withContext(Dispatchers.IO) {
-        val payload = ProviderPlaylistCacheEntry(
-            updatedAt = Instant.now().toString(),
-            playlists = playlists
-        )
-        val valueJson = json.encodeToString(payload)
-        if (valueJson.length > MAX_CACHE_JSON_CHARS) {
-            runCatching { appCacheEntryDao.delete(PROVIDER_PLAYLIST_CACHE_KEY) }
-            return@withContext
-        }
-        appCacheEntryDao.upsert(
-            AppCacheEntryEntity(
-                key = PROVIDER_PLAYLIST_CACHE_KEY,
-                valueJson = valueJson,
-                version = PROVIDER_PLAYLIST_CACHE_VERSION,
-                updatedAt = payload.updatedAt
-            )
-        )
-    }
-
     suspend fun refreshAllProviderPlaylistDataWithCache(
         offset: Int = 0,
         limit: Int = 100,
@@ -182,7 +147,7 @@ class ProviderCatalogRepository @Inject constructor(
         }
 
         onProgressUpdate("Saving playlist data...")
-        saveProviderPlaylistCache(enrichedPlaylists)
+        playlistCache.saveProviderPlaylistCache(enrichedPlaylists)
         onProgressUpdate("Playlist refresh complete!")
         return enrichedPlaylists
     }
@@ -197,7 +162,7 @@ class ProviderCatalogRepository @Inject constructor(
     ): List<Track> {
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
         if (!forceRefresh) {
-            val cached = getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
+            val cached = playlistCache.getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
             if (cached.isNotEmpty()) {
                 return if (maxTracks != null) cached.take(maxTracks) else cached
             }
@@ -211,11 +176,11 @@ class ProviderCatalogRepository @Inject constructor(
             maxTracks = maxTracks
         )
         if (remoteTracks.isNotEmpty()) {
-            savePlaylistTrackCache(sourceType, resolvedPlaylistId, remoteTracks)
+            playlistCache.savePlaylistTrackCache(sourceType, resolvedPlaylistId, remoteTracks)
             return remoteTracks
         }
 
-        return getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
+        return playlistCache.getCachedPlaylistTracks(sourceType, resolvedPlaylistId)
     }
 
     suspend fun getPlaylistTracks(
@@ -226,14 +191,14 @@ class ProviderCatalogRepository @Inject constructor(
         maxTracks: Int? = null
     ): List<Track> = withContext(Dispatchers.IO) {
         // Provider track fetching prefers the Rust provider bridge.
-        // Spotify falls back to SpotifyClient pagination when the Rust bridge is unavailable.
+        // Spotify falls back to SpotifyCatalogClient pagination when the Rust bridge is unavailable.
         val resolvedPlaylistId = normalizePlaylistId(sourceType, playlistId)
-        
+
         // Get the configured page size for this provider, or use default.
         // Read the stored connection once and reuse it for credentials below.
         val storedConnection = secureConnectionStore.read(sourceType)
         val configuredPageSize = storedConnection?.playlistPageSize ?: PROVIDER_DEFAULT_PAGE_SIZE
-        
+
         val effectivePageSize = (pageSize ?: configuredPageSize).coerceAtLeast(1)
 
         suspend fun loadAllPages(
@@ -292,10 +257,10 @@ class ProviderCatalogRepository @Inject constructor(
                                 limit = pageLimit
                             ) ?: emptyList()
                         }
-                        } catch (e: Exception) {
-                            CompatLog.e(TAG, "Failed to fetch Plex playlist tracks: ${e.message}", e)
-                            throw IllegalStateException("Failed to fetch Plex playlist tracks", e)
-                        }
+                    } catch (e: Exception) {
+                        CompatLog.e(TAG, "Failed to fetch Plex playlist tracks: ${e.message}", e)
+                        throw IllegalStateException("Failed to fetch Plex playlist tracks", e)
+                    }
                 } else {
                     emptyList()
                 }
@@ -307,7 +272,7 @@ class ProviderCatalogRepository @Inject constructor(
                     try {
                         // If the Rust provider bridge is available, prefer it (handled earlier by caller).
                         // However tests and some environments may not have Rust available; in that case
-                        // fall back to the Kotlin SpotifyClient and paginate using the 'total' field so
+                        // fall back to the Kotlin SpotifyCatalogClient and paginate using the 'total' field so
                         // mapNotNull filtering doesn't prematurely stop pagination.
                         if (rustBridge.isAvailable()) {
                             val spotifyPageSize = effectivePageSize.coerceAtMost(100)
@@ -321,13 +286,13 @@ class ProviderCatalogRepository @Inject constructor(
                                 ) ?: emptyList()
                             }
                         } else {
-                            // Kotlin fallback using SpotifyClient.getPlaylistTracksPage
+                            // Kotlin fallback using SpotifyCatalogClient.getPlaylistTracksPage
                             val pageSize = effectivePageSize.coerceAtMost(100)
                             val allTracks = mutableListOf<Track>()
                             var currentOffset = offset.coerceAtLeast(0)
                             var total = Int.MAX_VALUE
                             while (true) {
-                                val page = spotifyClient.getPlaylistTracksPage(
+                                val page = spotifyCatalogClient.getPlaylistTracksPage(
                                     accessToken = spotify.token,
                                     playlistId = resolvedPlaylistId,
                                     offset = currentOffset,
@@ -342,10 +307,10 @@ class ProviderCatalogRepository @Inject constructor(
                             }
                             if (maxTracks != null && allTracks.size > maxTracks) allTracks.take(maxTracks) else allTracks
                         }
-                        } catch (e: Exception) {
-                            CompatLog.e(TAG, "Failed to fetch Spotify playlist tracks: ${e.message}", e)
-                            throw IllegalStateException("Failed to fetch Spotify playlist tracks", e)
-                        }
+                    } catch (e: Exception) {
+                        CompatLog.e(TAG, "Failed to fetch Spotify playlist tracks: ${e.message}", e)
+                        throw IllegalStateException("Failed to fetch Spotify playlist tracks", e)
+                    }
                 } else {
                     emptyList()
                 }
@@ -408,79 +373,6 @@ class ProviderCatalogRepository @Inject constructor(
         }
     }
 
-    private suspend fun savePlaylistTrackCache(sourceType: SourceType, playlistId: String, tracks: List<Track>) = withContext(Dispatchers.IO) {
-        val payload = ProviderPlaylistTrackCacheEntry(
-            updatedAt = Instant.now().toString(),
-            source = sourceType,
-            playlistId = playlistId,
-            tracks = tracks
-        )
-        val valueJson = json.encodeToString(payload)
-        if (valueJson.length > MAX_CACHE_JSON_CHARS) {
-            runCatching { appCacheEntryDao.delete(playlistTrackCacheKey(sourceType, playlistId)) }
-            return@withContext
-        }
-        appCacheEntryDao.upsert(
-            AppCacheEntryEntity(
-                key = playlistTrackCacheKey(sourceType, playlistId),
-                valueJson = valueJson,
-                version = PROVIDER_PLAYLIST_TRACK_CACHE_VERSION,
-                updatedAt = payload.updatedAt
-            )
-        )
-    }
-
-    internal suspend fun getCachedPlaylistTracks(sourceType: SourceType, playlistId: String): List<Track> = withContext(Dispatchers.IO) {
-        val key = playlistTrackCacheKey(sourceType, playlistId)
-        val entry = safeGetCacheEntry(key) ?: return@withContext emptyList()
-        if (entry.version != PROVIDER_PLAYLIST_TRACK_CACHE_VERSION) {
-            // Stale cache format (e.g. pre-dates the multi-artist join fix) — drop it
-            // so callers fall through to a live refetch instead of serving old data forever.
-            runCatching { appCacheEntryDao.delete(key) }
-            return@withContext emptyList()
-        }
-        runCatching {
-            json.decodeFromString<ProviderPlaylistTrackCacheEntry>(entry.valueJson).tracks
-        }.getOrElse {
-            runCatching { appCacheEntryDao.delete(key) }
-            emptyList()
-        }
-    }
-
-    private suspend fun safeGetCacheEntry(key: String): AppCacheEntryEntity? = withContext(Dispatchers.IO) {
-        runCatching {
-            appCacheEntryDao.get(key)
-        }.getOrElse {
-            runCatching { appCacheEntryDao.delete(key) }
-            null
-        }
-    }
-
-    private fun playlistTrackCacheKey(sourceType: SourceType, playlistId: String): String =
-        "provider_playlist_tracks_${sourceType.name.lowercase()}_$playlistId"
-
-    private fun normalizePlaylistId(sourceType: SourceType, playlistId: String): String {
-        if (sourceType != SourceType.SPOTIFY) return playlistId
-        val trimmed = playlistId.trim()
-        if (trimmed.isBlank()) return trimmed
-
-        val uriPrefix = "spotify:playlist:"
-        if (trimmed.startsWith(uriPrefix, ignoreCase = true)) {
-            return trimmed.substringAfterLast(':')
-        }
-
-        val marker = "/playlist/"
-        val markerIndex = trimmed.indexOf(marker)
-        if (markerIndex >= 0) {
-            return trimmed
-                .substring(markerIndex + marker.length)
-                .substringBefore('?')
-                .substringBefore('/')
-        }
-
-        return trimmed
-    }
-
     suspend fun search(
         query: String,
         source: SourceType,
@@ -502,155 +394,130 @@ class ProviderCatalogRepository @Inject constructor(
         val includePlex = source == SourceType.ALL || source == SourceType.PLEX
         val includeSpotify = source == SourceType.ALL || source == SourceType.SPOTIFY
 
-        val jellyTracks = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            rustBridge.providerSearchTracks(
-                source = SourceType.JELLYFIN,
-                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val jellyPlaylists = if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
-            rustBridge.providerSearchPlaylists(
-                source = SourceType.JELLYFIN,
-                session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val plexTracks = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            rustBridge.providerSearchTracks(
-                source = SourceType.PLEX,
-                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val plexPlaylists = if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
-            rustBridge.providerSearchPlaylists(
-                source = SourceType.PLEX,
-                session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
-                query = normalizedQuery,
-                offset = offset,
-                limit = limit
-            ) ?: emptyList()
-        } else {
-            emptyList()
-        }
-
-        val spotifyTracks = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
-            if (rustBridge.isAvailable()) {
-                rustBridge.providerSearchTracks(
-                    source = SourceType.SPOTIFY,
-                    session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
-                    query = normalizedQuery,
-                    offset = offset,
-                    limit = limit
-                ) ?: emptyList()
+        // Fanned out with async/coroutineScope (same pattern as getAllProviderPlaylists())
+        // rather than awaited one at a time - each is a separate network round-trip to a
+        // different backend, so sequential awaiting paid up to 6x the latency for no reason.
+        coroutineScope {
+            val jellyTracksDeferred = async {
+                if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
+                    rustBridge.providerSearchTracks(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
                 } else {
-                // Kotlin fallback
-                spotifyClient.searchTracks(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+                    emptyList()
+                }
             }
-        } else {
-            emptyList()
-        }
 
-        val spotifyPlaylists = if (includeSpotify && !spotify?.token.isNullOrBlank()) {
-            if (rustBridge.isAvailable()) {
-                rustBridge.providerSearchPlaylists(
-                    source = SourceType.SPOTIFY,
-                    session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
-                    query = normalizedQuery,
-                    offset = offset,
-                    limit = limit
-                ) ?: emptyList()
-            } else {
-                // Kotlin fallback
-                spotifyClient.searchPlaylists(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+            val jellyPlaylistsDeferred = async {
+                if (includeJelly && jelly?.serverUrl != null && !jelly.token.isNullOrBlank()) {
+                    rustBridge.providerSearchPlaylists(
+                        source = SourceType.JELLYFIN,
+                        session = buildJellyfinSession(jelly.serverUrl, jelly.token, jelly.refreshToken, jelly.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
             }
-        } else {
-            emptyList()
+
+            val plexTracksDeferred = async {
+                if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
+                    rustBridge.providerSearchTracks(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+
+            val plexPlaylistsDeferred = async {
+                if (includePlex && plex?.serverUrl != null && !plex.token.isNullOrBlank()) {
+                    rustBridge.providerSearchPlaylists(
+                        source = SourceType.PLEX,
+                        session = buildPlexSession(plex.serverUrl, plex.token, plex.playlistPageSize),
+                        query = normalizedQuery,
+                        offset = offset,
+                        limit = limit
+                    ) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+
+            val spotifyTracksDeferred = async {
+                if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+                    if (rustBridge.isAvailable()) {
+                        rustBridge.providerSearchTracks(
+                            source = SourceType.SPOTIFY,
+                            session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
+                            query = normalizedQuery,
+                            offset = offset,
+                            limit = limit
+                        ) ?: emptyList()
+                    } else {
+                        // Kotlin fallback
+                        spotifyCatalogClient.searchTracks(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+                    }
+                } else {
+                    emptyList()
+                }
+            }
+
+            val spotifyPlaylistsDeferred = async {
+                if (includeSpotify && !spotify?.token.isNullOrBlank()) {
+                    if (rustBridge.isAvailable()) {
+                        rustBridge.providerSearchPlaylists(
+                            source = SourceType.SPOTIFY,
+                            session = buildSpotifySession(spotify.token, spotify.refreshToken, limit),
+                            query = normalizedQuery,
+                            offset = offset,
+                            limit = limit
+                        ) ?: emptyList()
+                    } else {
+                        // Kotlin fallback
+                        spotifyCatalogClient.searchPlaylists(spotify.token, normalizedQuery, offset, limit.coerceAtMost(50))
+                    }
+                } else {
+                    emptyList()
+                }
+            }
+
+            ProviderSearchResult(
+                tracks = jellyTracksDeferred.await() + plexTracksDeferred.await() + spotifyTracksDeferred.await(),
+                playlists = jellyPlaylistsDeferred.await() + plexPlaylistsDeferred.await() + spotifyPlaylistsDeferred.await()
+            )
         }
-
-        ProviderSearchResult(
-            tracks = jellyTracks + plexTracks + spotifyTracks,
-            playlists = jellyPlaylists + plexPlaylists + spotifyPlaylists
-        )
     }
 
-    private fun buildJellyfinSession(url: String, apiKey: String, userId: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> {
-        val session = mutableMapOf(
-            "url" to url,
-            "api_key" to apiKey,
-            "page_size" to pageSize.toString()
-        )
-        if (!userId.isNullOrBlank()) {
-            session["user_id"] = userId
-        }
-        return session
-    }
+    private fun buildJellyfinSession(url: String, apiKey: String, userId: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =
+        ProviderSessionBuilder.jellyfinSession(url, apiKey, userId, pageSize)
 
-    private fun buildPlexSession(url: String, token: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> {
-        return mapOf(
-            "url" to url,
-            "token" to token,
-            "page_size" to pageSize.toString()
-        )
-    }
+    private fun buildPlexSession(url: String, token: String, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =
+        ProviderSessionBuilder.plexSession(url, token, pageSize)
 
-    private fun buildSpotifySession(accessToken: String, refreshToken: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> {
-        val session = mutableMapOf(
-            "access_token" to accessToken,
-            "page_size" to pageSize.toString()
-        )
-        if (!refreshToken.isNullOrBlank()) {
-            session["refresh_token"] = refreshToken
-        }
-        return session
-    }
+    private fun buildSpotifySession(accessToken: String, refreshToken: String?, pageSize: Int = PROVIDER_DEFAULT_PAGE_SIZE): Map<String, String> =
+        ProviderSessionBuilder.spotifySession(accessToken, refreshToken, pageSize)
+
     private suspend fun loadSpotifyPlaylistsOnly(offset: Int = 0, limit: Int = 100): List<Playlist> = withContext(Dispatchers.IO) {
         val spotify = secureConnectionStore.read(SourceType.SPOTIFY)
         if (spotify?.token.isNullOrBlank()) return@withContext emptyList()
         try {
             // Spotify API limits playlists fetch to max 50 per request
             val requestLimit = limit.coerceIn(1, 50)
-            spotifyClient.getPlaylists(spotify.token, offset.coerceAtLeast(0), requestLimit)
-            } catch (e: Exception) {
-                CompatLog.e(TAG, "Failed to fetch Spotify playlists via Kotlin client: ${e.message}", e)
-                emptyList()
-            }
+            spotifyCatalogClient.getPlaylists(spotify.token, offset.coerceAtLeast(0), requestLimit)
+        } catch (e: Exception) {
+            CompatLog.e(TAG, "Failed to fetch Spotify playlists via Kotlin client: ${e.message}", e)
+            emptyList()
+        }
     }
-
 }
-
-private const val PROVIDER_PLAYLIST_CACHE_KEY = "provider_playlists"
-private const val PROVIDER_PLAYLIST_CACHE_VERSION = 1
-private const val PROVIDER_PLAYLIST_TRACK_CACHE_VERSION = 2
-private const val PROVIDER_PLAYLIST_TRACK_CACHE_PREFIX = "provider_playlist_tracks_"
-private const val MAX_CACHE_JSON_CHARS = 500_000
-
-@Serializable
-private data class ProviderPlaylistCacheEntry(
-    val updatedAt: String,
-    val playlists: List<Playlist>
-)
-
-@Serializable
-private data class ProviderPlaylistTrackCacheEntry(
-    val updatedAt: String,
-    val source: SourceType,
-    val playlistId: String,
-    val tracks: List<Track>
-)

@@ -4,11 +4,11 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
-import com.anyplayer.android.core.network.SpotifyClientIds
-import com.anyplayer.android.core.network.SpotifyPlaybackState
+import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.SecureConnectionStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,16 +17,22 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Spotify playback controller backed by the Rust JNI bridge (librespot + rodio).
- *
- * Audio is decoded and rendered directly in-process by the Rust librespot engine.
- * No Spotify app or Spotify Connect device is required.
+ * Spotify playback controller backed by the Web API's Connect endpoints (see
+ * [SpotifyConnectBridge]), which control whichever Spotify Connect device is
+ * currently active on the account rather than decoding audio in-process - Spotify
+ * now rejects non-approved client IDs on the private endpoints the old librespot
+ * path depended on, a WebView-hosted Web Playback SDK proved unreliable across real
+ * OEM Widevine/EME builds, and the App Remote SDK's app-to-app IPC connect() depends
+ * on a Background-Activity-Launch exemption that is unreliable on Android 14+.
+ * [RustBridge] is kept only for the volume normalization utilities used by
+ * non-Spotify sources.
  */
 @Singleton
 class SpotifyPlaybackController @Inject constructor(
     private val providerAuthRepository: ProviderAuthRepository,
     private val secureConnectionStore: SecureConnectionStore,
-    private val rustBridge: RustBridge
+    private val rustBridge: RustBridge,
+    private val connectBridge: SpotifyConnectBridge
 ) {
     companion object {
         private const val TAG = "SpotifyPlaybackCtrl"
@@ -38,50 +44,50 @@ class SpotifyPlaybackController @Inject constructor(
     @Volatile var lastError: String? = null
         private set
 
-    /**
-     * Starts playback of [trackIds] beginning at [startIndex].
-     *
-     * Initialises the librespot session (if not already active) and hands the queue
-     * directly to the Rust engine for gapless, in-process audio output.
-     */
-    suspend fun startQueue(trackIds: List<String>, startIndex: Int): Boolean =
-        rustCommandMutex.withLock {
-            withContext(Dispatchers.IO) {
-            if (trackIds.isEmpty()) {
-                lastError = "Spotify queue is empty"
-                return@withContext false
-            }
-
-            val accessToken = requireReadyAccessToken()
-            if (accessToken == null) {
-                return@withContext false
-            }
-
-            val normalizedIndex = startIndex.coerceIn(0, trackIds.lastIndex)
-            val started = rustBridge.spotifyStartQueue(accessToken, trackIds, normalizedIndex)
-            if (started != true) {
-                lastError = "Spotify failed to start playback. ${rustBridge.lastError ?: ""}"
-                return@withContext false
-            }
-
-            lastError = null
-            true
-            }
+    init {
+        connectBridge.errorListener = SpotifyConnectBridge.ErrorListener { type, message ->
+            lastError = message
+            CompatLog.w(TAG, "Spotify Connect error [$type]: $message")
         }
+    }
 
-    suspend fun play(): Boolean = runRustCommand("play") { rustBridge.spotifyPlay() }
+    /** Enables/disables [SpotifyConnectBridge]'s background poll loop's network calls based on
+     *  whether Spotify is actually part of the current queue. Called by [PlaybackQueueManager]
+     *  whenever the queue's source composition changes. */
+    fun setSpotifyPollingActive(active: Boolean) {
+        connectBridge.pollingEnabled = active
+    }
 
-    suspend fun pause(): Boolean = runRustCommand("pause") { rustBridge.spotifyPause() }
+    /** Starts playback of the track at [startIndex] in [trackIds]. Spotify Connect
+     *  plays one URI at a time - Any Player's own queue state machine drives
+     *  advancement, the same restart-at-index pattern already used for
+     *  user-initiated skip. */
+    suspend fun startQueue(trackIds: List<String>, startIndex: Int): Boolean {
+        if (trackIds.isEmpty()) {
+            lastError = "Spotify queue is empty"
+            return false
+        }
+        // Resolved outside rustCommandMutex: the device-wait retry loop here can take
+        // several seconds (auto-launching Spotify + polling), and running it under the
+        // lock would freeze snapshot() polling for that whole duration.
+        val accessToken = resolveAccessToken() ?: return false
+        val deviceId = connectBridge.resolveDeviceIdForPlayback(accessToken) ?: return false
+        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex, deviceId) }
+    }
 
-    suspend fun next(): Boolean = runRustCommand("next") { rustBridge.spotifyNext() }
+    suspend fun play(): Boolean = runCommand("play") { connectBridge.resume(it) }
 
-    suspend fun previous(): Boolean = runRustCommand("previous") { rustBridge.spotifyPrevious() }
+    suspend fun pause(): Boolean = runCommand("pause") { connectBridge.pause(it) }
+
+    suspend fun next(): Boolean = runCommand("next") { connectBridge.next(it) }
 
     suspend fun seekTo(positionMs: Long): Boolean =
-        runRustCommand("seek") { rustBridge.spotifySeek(positionMs) }
+        runCommand("seek") { connectBridge.seek(it, positionMs) }
 
-    suspend fun setVolume(volume: Int): Boolean =
-        runRustCommand("setVolume") { rustBridge.spotifySetVolume(volume) }
+    suspend fun setVolume(volume: Int): Boolean {
+        val normalizedVolume = normalizeVolumeForSource(volume, SourceType.SPOTIFY)
+        return runCommand("setVolume") { connectBridge.setVolume(it, normalizedVolume) }
+    }
 
     fun normalizeVolumeForSource(volume: Int, source: SourceType): Int {
         val normalized = rustBridge.applyAudioNormalizationVolume(volume, source)
@@ -104,63 +110,49 @@ class SpotifyPlaybackController @Inject constructor(
     }
 
     suspend fun setShuffle(enabled: Boolean): Boolean =
-        runRustCommand("setShuffle") { rustBridge.spotifySetShuffle(enabled) }
+        runCommand("setShuffle") { connectBridge.setShuffle(it, enabled) }
 
     suspend fun setRepeatMode(mode: RepeatMode): Boolean =
-        runRustCommand("setRepeatMode") { rustBridge.spotifySetRepeatMode(mode) }
+        runCommand("setRepeatMode") { connectBridge.setRepeatMode(it, mode) }
 
-    suspend fun snapshot(): SpotifyPlaybackState? = rustCommandMutex.withLock {
-        withContext(Dispatchers.IO) {
-            rustBridge.spotifySnapshot()
-        }
-    }
+    /** Guarded by [rustCommandMutex] so it can't read a snapshot mid-command
+     *  (e.g. mid [startQueue] retry loop) and observe stale pre-command state. */
+    suspend fun snapshot(): SpotifyPlaybackState? = rustCommandMutex.withLock { connectBridge.snapshot() }
 
-    /**
-     * Ensures the librespot session is alive, then executes [block].
-     * Re-initialises the session transparently when the token has expired.
-     */
-    private suspend fun runRustCommand(
+    private suspend fun runCommand(
         action: String,
-        block: () -> Boolean?
+        block: suspend (accessToken: String) -> Boolean
     ): Boolean = rustCommandMutex.withLock {
         withContext(Dispatchers.IO) {
-            if (requireReadyAccessToken() == null) {
+            val accessToken = resolveAccessToken() ?: return@withContext false
+
+            // Cleared so a failure below that doesn't set its own specific message
+            // (only playUri's resolveDeviceId path does, via errorListener) can't
+            // report a stale message left over from a prior, unrelated command.
+            lastError = null
+            val success = try {
+                block(accessToken)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = "Spotify command failed: $action. ${e.message.orEmpty()}".trim()
+                CompatLog.w(TAG, "Spotify command '$action' threw", e)
                 return@withContext false
             }
-
-            val success = block()
-            if (success != true) {
-                lastError = "Rust Spotify playback command failed: $action. ${rustBridge.lastError ?: ""}"
-                CompatLog.w(TAG, "Rust command '$action' failed: ${rustBridge.lastError}")
+            if (!success) {
+                val specificError = lastError
+                lastError = if (specificError != null) {
+                    "Spotify command failed: $action. $specificError".trim()
+                } else {
+                    "Spotify command failed: $action"
+                }
+                CompatLog.w(TAG, "Spotify command '$action' failed: $lastError")
                 return@withContext false
             }
 
             lastError = null
             true
         }
-    }
-
-    private suspend fun requireReadyAccessToken(): String? {
-        val accessToken = resolveAccessToken()
-        if (accessToken == null) {
-            if (lastError == null) {
-                lastError = "Spotify access token unavailable. Reconnect Spotify and retry."
-            }
-            return null
-        }
-
-        val tokenExpiresAt = secureConnectionStore.read(SourceType.SPOTIFY)?.tokenExpiresAt
-        val sessionReady = rustBridge.validateAndInitSpotifySession(
-            accessToken = accessToken,
-            clientId = SpotifyClientIds.ACTIVE,
-            tokenExpiresAt = tokenExpiresAt
-        )
-        if (sessionReady != true) {
-            lastError = "Spotify session could not be initialised. ${rustBridge.lastError ?: ""}"
-            return null
-        }
-
-        return accessToken
     }
 
     private suspend fun resolveAccessToken(): String? {

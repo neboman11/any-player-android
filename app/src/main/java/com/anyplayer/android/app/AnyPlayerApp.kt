@@ -32,9 +32,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.anyplayer.android.ui.nowplaying.NowPlayingSection
+import com.anyplayer.android.ui.playlists.PlaylistSection
+import com.anyplayer.android.ui.search.SearchSection
+import com.anyplayer.android.ui.settings.SettingsSection
 
 private enum class TabSection { NOW_PLAYING, PLAYLISTS, SEARCH, SETTINGS }
 
@@ -88,7 +93,8 @@ fun AnyPlayerApp(viewModel: MainViewModel = hiltViewModel()) {
                         selected = currentTab == tab,
                         onClick = { currentTab = tab },
                         icon = { Icon(tab.icon(), contentDescription = tab.label()) },
-                        label = { Text(tab.label()) }
+                        label = { Text(tab.label()) },
+                        modifier = Modifier.testTag("tab_${tab.name}")
                     )
                 }
             }

@@ -98,7 +98,7 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "com.anyplayer.android.HiltTestRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"$spotifyClientId\"")
         ndk {
@@ -172,7 +172,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.activity:activity-compose:1.10.0")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("com.google.android.material:material:1.14.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
@@ -203,14 +202,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
 
-    implementation("com.squareup.retrofit2:retrofit:2.12.0")
-    implementation("com.squareup.retrofit2:converter-moshi:2.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-
-    implementation("androidx.car.app:app:1.7.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
@@ -218,13 +213,21 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
     testImplementation("org.robolectric:robolectric:4.12.1")
+    // Lets Media3PlaybackControllerTest construct a real (Robolectric-shadowed)
+    // ExoPlayer in a plain JVM test - no device audio/codec hardware needed.
+    testImplementation("androidx.media3:media3-test-utils:1.5.1")
+    testImplementation("androidx.media3:media3-test-utils-robolectric:1.5.1")
     // Robolectric 4.12.1 pre-instrumented SDK JAR (API 34, PREINSTRUMENTED_VERSION=6).
     // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
     // robolectric.dependency.dir can point to it for fully offline test execution.
     robolectricSdk("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("com.google.dagger:hilt-android-testing:$hiltVersion")
+    kspAndroidTest("com.google.dagger:hilt-compiler:$hiltVersion")
 }
 
 ksp {

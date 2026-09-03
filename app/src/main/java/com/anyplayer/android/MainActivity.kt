@@ -8,7 +8,7 @@ import androidx.activity.compose.setContent
 import com.anyplayer.android.ui.AnyPlayerTheme
 import androidx.media3.common.util.UnstableApi
 import com.anyplayer.android.app.AnyPlayerApp
-import com.anyplayer.android.playback.AnyPlayerMediaLibraryService
+import com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint

@@ -10,14 +10,16 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.StoredConnection
-import com.anyplayer.android.playback.resolvePlaybackArtworkUri
+import com.anyplayer.android.feature.playback.service.resolvePlaybackArtworkUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import javax.inject.Singleton
 
@@ -27,6 +29,10 @@ class Media3PlaybackController @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val audioCacheManager: AudioCacheManager
 ) {
+    companion object {
+        private const val TAG = "Media3PlaybackCtrl"
+    }
+
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(context)
@@ -50,13 +56,37 @@ class Media3PlaybackController @Inject constructor(
                 .build(),
             true
         )
+        addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val name = when (playbackState) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> "UNKNOWN($playbackState)"
+                }
+                CompatLog.d(TAG, "playbackState=$name mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition bufferedPositionMs=$bufferedPosition")
+            }
+
+            override fun onIsLoadingChanged(isLoading: Boolean) {
+                CompatLog.d(TAG, "isLoading=$isLoading mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition bufferedPositionMs=$bufferedPosition")
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                CompatLog.e(TAG, "playerError code=${error.errorCodeName} mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition", error)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                CompatLog.d(TAG, "playWhenReady=$playWhenReady reason=$reason")
+            }
+        })
     }
 
     val player: Player
         get() = playerInstance
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
-        val playableTracks = tracks.filter(::isMedia3Playable)
+        val playableTracks = tracks.filter(::isMedia3PlayableTrack)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()
             playerInstance.stop()
@@ -92,20 +122,6 @@ class Media3PlaybackController @Inject constructor(
         return mappedIndex
     }
 
-    private fun isMedia3Playable(track: Track): Boolean {
-        if (track.source == com.anyplayer.android.core.model.SourceType.SPOTIFY) {
-            return false
-        }
-        val raw = track.url?.trim().orEmpty()
-        if (raw.isEmpty()) return false
-        val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
-        val scheme = parsed.scheme?.lowercase().orEmpty()
-        return when (scheme) {
-            "http", "https", "file", "content", "android.resource" -> true
-            else -> false
-        }
-    }
-
     fun playFromIndex(index: Int) {
         if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToDefaultPosition(index.coerceIn(0, playerInstance.mediaItemCount - 1))
@@ -129,6 +145,13 @@ class Media3PlaybackController @Inject constructor(
         if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToNextMediaItem()
         playerInstance.playWhenReady = true
+    }
+
+    /** Clears a fatal playback error and re-prepares. ExoPlayer stops responding to
+     *  play()/pause()/seek once [Player.getPlayerError] is set - prepare() is the documented
+     *  way to retry, and is required before play/pause/skip will have any effect again. */
+    fun retryAfterError() {
+        playerInstance.prepare()
     }
 
     fun previous(): Boolean {
@@ -213,6 +236,29 @@ data class PlaybackSnapshot(
     val repeatMode: RepeatMode,
     val shuffledMediaIndices: List<Int>
 )
+
+/** Whether [track] can be handed to ExoPlayer directly: Spotify tracks are always
+ *  excluded (driven separately over Connect, see [SpotifyPlaybackController]), and a
+ *  local/provider track needs a non-blank URL with a scheme Media3's default data
+ *  source factories can resolve. */
+/** Source/URL-presence check shared with call sites (PlaybackQueueManager, LocalPlaybackOps)
+ *  exercised by plain-JUnit tests without Robolectric - those can't use
+ *  [isMedia3PlayableTrack]'s android.net.Uri scheme validation below, since Uri isn't
+ *  mocked outside a Robolectric run. */
+internal fun isLocallyPlayableTrack(track: Track): Boolean =
+    track.source != SourceType.SPOTIFY && !track.url.isNullOrBlank()
+
+internal fun isMedia3PlayableTrack(track: Track): Boolean {
+    if (!isLocallyPlayableTrack(track)) return false
+    val raw = track.url?.trim().orEmpty()
+    if (raw.isEmpty()) return false
+    val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
+    val scheme = parsed.scheme?.lowercase().orEmpty()
+    return when (scheme) {
+        "http", "https", "file", "content", "android.resource" -> true
+        else -> false
+    }
+}
 
 internal fun buildJellyfinRequestHeaders(
     requestUri: Uri,

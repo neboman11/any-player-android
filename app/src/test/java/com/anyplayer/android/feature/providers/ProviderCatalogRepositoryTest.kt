@@ -3,8 +3,8 @@ package com.anyplayer.android.feature.providers
 import com.anyplayer.android.core.model.Playlist
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
-import com.anyplayer.android.core.network.SpotifyClient
-import com.anyplayer.android.core.network.SpotifyPlaylistTracksPage
+import com.anyplayer.android.feature.auth.spotify.SpotifyCatalogClient
+import com.anyplayer.android.feature.auth.spotify.SpotifyPlaylistTracksPage
 import com.anyplayer.android.core.rust.RustBridge
 import com.anyplayer.android.core.storage.dao.AppCacheEntryDao
 import com.anyplayer.android.feature.auth.PROVIDER_DEFAULT_PAGE_SIZE
@@ -29,17 +29,17 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class ProviderCatalogRepositoryTest {
     private val secureConnectionStore: SecureConnectionStore = mock()
-    private val spotifyClient: SpotifyClient = mock()
+    private val spotifyCatalogClient: SpotifyCatalogClient = mock()
     private val rustBridge: RustBridge = mock()
     private val appCacheEntryDao: AppCacheEntryDao = mock()
     private val json = Json { ignoreUnknownKeys = true }
+    private val playlistCache = ProviderPlaylistCache(appCacheEntryDao = appCacheEntryDao, json = json)
 
     private val repository = ProviderCatalogRepository(
         secureConnectionStore = secureConnectionStore,
-        spotifyClient = spotifyClient,
+        spotifyCatalogClient = spotifyCatalogClient,
         rustBridge = rustBridge,
-        appCacheEntryDao = appCacheEntryDao,
-        json = json
+        playlistCache = playlistCache
     )
 
     companion object {
@@ -61,12 +61,12 @@ class ProviderCatalogRepositoryTest {
                 playbackReady = false
             )
         )
-        whenever(spotifyClient.getPlaylists("spotify-token", 0, 50)).thenReturn(listOf(spotifyPlaylist))
+        whenever(spotifyCatalogClient.getPlaylists("spotify-token", 0, 50)).thenReturn(listOf(spotifyPlaylist))
 
         val result = repository.getAllProviderPlaylists(offset = 0, limit = 100)
 
         assertEquals(listOf(spotifyPlaylist), result)
-        verify(spotifyClient).getPlaylists("spotify-token", 0, 50)
+        verify(spotifyCatalogClient).getPlaylists("spotify-token", 0, 50)
     }
 
     @Test
@@ -82,7 +82,7 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracksPage(
+            spotifyCatalogClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 0,
@@ -96,7 +96,7 @@ class ProviderCatalogRepositoryTest {
         )
 
         assertEquals(listOf(spotifyTrack), result)
-        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyCatalogClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
     }
 
     @Test
@@ -111,7 +111,7 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracksPage(
+            spotifyCatalogClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 0,
@@ -124,7 +124,7 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracksPage(
+            spotifyCatalogClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 100,
@@ -134,7 +134,7 @@ class ProviderCatalogRepositoryTest {
             SpotifyPlaylistTracksPage(tracks = emptyList(), total = 250)
         )
         whenever(
-            spotifyClient.getPlaylistTracksPage(
+            spotifyCatalogClient.getPlaylistTracksPage(
                 accessToken = "spotify-token",
                 playlistId = "sp-playlist",
                 offset = 200,
@@ -153,10 +153,10 @@ class ProviderCatalogRepositoryTest {
         )
 
         assertEquals(listOf("sp-track-1", "sp-track-2"), result.map { it.id })
-        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
-        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 100, 100)
-        verify(spotifyClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 200, 100)
-        verify(spotifyClient, never()).getPlaylistTracksPage("spotify-token", "sp-playlist", 1, 100)
+        verify(spotifyCatalogClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 0, 100)
+        verify(spotifyCatalogClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 100, 100)
+        verify(spotifyCatalogClient).getPlaylistTracksPage("spotify-token", "sp-playlist", 200, 100)
+        verify(spotifyCatalogClient, never()).getPlaylistTracksPage("spotify-token", "sp-playlist", 1, 100)
     }
 
     @Test
@@ -174,8 +174,8 @@ class ProviderCatalogRepositoryTest {
                 playbackReady = false
             )
         )
-        whenever(spotifyClient.searchTracks("spotify-token", "focus", 0, 50)).thenReturn(listOf(spotifyTrack))
-        whenever(spotifyClient.searchPlaylists("spotify-token", "focus", 0, 50)).thenReturn(listOf(spotifyPlaylist))
+        whenever(spotifyCatalogClient.searchTracks("spotify-token", "focus", 0, 50)).thenReturn(listOf(spotifyTrack))
+        whenever(spotifyCatalogClient.searchPlaylists("spotify-token", "focus", 0, 50)).thenReturn(listOf(spotifyPlaylist))
 
         val result = repository.search(
             query = "focus",
@@ -186,8 +186,8 @@ class ProviderCatalogRepositoryTest {
 
         assertEquals(listOf(spotifyTrack), result.tracks)
         assertEquals(listOf(spotifyPlaylist), result.playlists)
-        verify(spotifyClient).searchTracks("spotify-token", "focus", 0, 50)
-        verify(spotifyClient).searchPlaylists("spotify-token", "focus", 0, 50)
+        verify(spotifyCatalogClient).searchTracks("spotify-token", "focus", 0, 50)
+        verify(spotifyCatalogClient).searchPlaylists("spotify-token", "focus", 0, 50)
     }
 
     @Test
@@ -203,7 +203,7 @@ class ProviderCatalogRepositoryTest {
             )
         )
         whenever(
-            spotifyClient.getPlaylistTracksPage(
+            spotifyCatalogClient.getPlaylistTracksPage(
                 accessToken = eq("spotify-token"),
                 playlistId = eq("sp-playlist"),
                 offset = any(),

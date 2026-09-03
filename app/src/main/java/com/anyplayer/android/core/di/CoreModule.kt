@@ -1,6 +1,7 @@
 package com.anyplayer.android.core.di
 
 import com.anyplayer.android.BuildConfig
+import com.anyplayer.android.core.network.RateLimitRetryInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -9,10 +10,14 @@ import kotlinx.serialization.json.Json
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.moshi.MoshiConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+/** OkHttpClient wired with [RateLimitRetryInterceptor] for Spotify Web API calls only. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SpotifyHttpClient
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -46,10 +51,10 @@ object CoreModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://localhost/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create())
+    @SpotifyHttpClient
+    fun provideSpotifyOkHttpClient(okHttpClient: OkHttpClient): OkHttpClient {
+        return okHttpClient.newBuilder()
+            .addInterceptor(RateLimitRetryInterceptor())
             .build()
+    }
 }
