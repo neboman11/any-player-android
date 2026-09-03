@@ -150,26 +150,7 @@ internal class SpotifyPlaybackOps(
             val success = if (state.state == PlaybackStateType.PLAYING) {
                 spotifyPlaybackController.pause()
             } else {
-                // Try to resume first (works if track is already loaded/paused).
-                // If that fails (e.g. player is in Stopped state after app restart),
-                // fall back to reloading the queue and playing from the current track.
-                var ok = if (context.spotifyQueueRequiresReload && state.queue.isNotEmpty()) {
-                    val activeTrackIds = spotifyPlaybackTrackIds(state)
-                    val currentIndex = currentSpotifyQueueIndex(state)
-                    val started = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
-                    if (started && state.position > 0L) {
-                        spotifyPlaybackController.seekTo(state.position)
-                    }
-                    started
-                } else {
-                    spotifyPlaybackController.play()
-                }
-                if (!ok && state.queue.isNotEmpty()) {
-                    val activeTrackIds = spotifyPlaybackTrackIds(state)
-                    val currentIndex = currentSpotifyQueueIndex(state)
-                    ok = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
-                }
-                ok
+                resumeOrReloadSpotifyQueue(state)
             }
             val nextState = if (!success) PlaybackStateType.ERROR else if (state.state == PlaybackStateType.PLAYING) PlaybackStateType.PAUSED else PlaybackStateType.PLAYING
             if (success && nextState == PlaybackStateType.PLAYING) {
@@ -187,25 +168,7 @@ internal class SpotifyPlaybackOps(
         val state = context.mutableStatus.value
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
-            // Try to resume first (works if track is already loaded/paused).
-            // If that fails (e.g. player is in Stopped state after app restart),
-            // fall back to reloading the queue and playing from the current track.
-            var success = if (context.spotifyQueueRequiresReload && state.queue.isNotEmpty()) {
-                val activeTrackIds = spotifyPlaybackTrackIds(state)
-                val currentIndex = currentSpotifyQueueIndex(state)
-                val started = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
-                if (started && state.position > 0L) {
-                    spotifyPlaybackController.seekTo(state.position)
-                }
-                started
-            } else {
-                spotifyPlaybackController.play()
-            }
-            if (!success && state.queue.isNotEmpty()) {
-                val activeTrackIds = spotifyPlaybackTrackIds(state)
-                val currentIndex = currentSpotifyQueueIndex(state)
-                success = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
-            }
+            val success = resumeOrReloadSpotifyQueue(state)
             if (success) {
                 context.spotifyQueueRequiresReload = false
             }
@@ -214,6 +177,44 @@ internal class SpotifyPlaybackOps(
                 errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to resume playback")
             )
             persistStateAsync()
+        }
+    }
+
+    /** Shared "try to resume first (works if track is already loaded/paused); if that
+     *  fails (e.g. player is in Stopped state after app restart) or the queue is known
+     *  to need it, reload the queue and play from the current track" logic for [play]
+     *  and [togglePlayPause]. After a fresh [SpotifyPlaybackController.startQueue] call
+     *  the device needs a moment to actually load the target track - seeking
+     *  immediately races that load and gets silently dropped, so the track audibly
+     *  restarts from 0 instead of resuming at [PlaybackStatus.position]. */
+    private suspend fun resumeOrReloadSpotifyQueue(state: PlaybackStatus): Boolean {
+        var ok = if (context.spotifyQueueRequiresReload && state.queue.isNotEmpty()) {
+            val activeTrackIds = spotifyPlaybackTrackIds(state)
+            val currentIndex = currentSpotifyQueueIndex(state)
+            val expectedTrackId = activeTrackIds.getOrNull(currentIndex)
+            val started = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
+            if (started && state.position > 0L && expectedTrackId != null) {
+                awaitSpotifyTrackLoaded(expectedTrackId, SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS)
+                spotifyPlaybackController.seekTo(state.position)
+            }
+            started
+        } else {
+            spotifyPlaybackController.play()
+        }
+        if (!ok && state.queue.isNotEmpty()) {
+            val activeTrackIds = spotifyPlaybackTrackIds(state)
+            val currentIndex = currentSpotifyQueueIndex(state)
+            ok = spotifyPlaybackController.startQueue(activeTrackIds, currentIndex)
+        }
+        return ok
+    }
+
+    private suspend fun awaitSpotifyTrackLoaded(expectedTrackId: String, timeoutMs: Long) {
+        val deadlineMs = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadlineMs) {
+            val snap = spotifyPlaybackController.snapshot()
+            if (snap?.currentTrackId != null && trackIdsMatch(snap.currentTrackId, expectedTrackId)) return
+            delay(100)
         }
     }
 
@@ -640,7 +641,6 @@ internal class SpotifyPlaybackOps(
         val expectedTrackId = trackIds.getOrNull(startIndex)
         val started = spotifyPlaybackController.startQueue(trackIds, startIndex)
         if (!started) return false
-        context.spotifyQueueRequiresReload = false
         spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
         if (expectedTrackId != null && positionMs > 0) {
             var readyForSeek = false
@@ -658,6 +658,12 @@ internal class SpotifyPlaybackOps(
                 delay(100)
             }
         }
+        context.mutableStatus.value = context.mutableStatus.value.copy(position = positionMs)
+        // This always ends paused, so Spotify's own "what's next in this context" tracking
+        // can't be trusted yet by the time the user resumes - force that resume through
+        // resumeOrReloadSpotifyQueue's full reload path instead of a bare resume, so the
+        // device has a freshly (re-)established queue for its own auto-advance to work from.
+        context.spotifyQueueRequiresReload = true
         spotifyPlaybackController.pause()
         return true
     }
