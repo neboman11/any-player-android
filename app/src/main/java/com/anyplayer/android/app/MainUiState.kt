@@ -71,7 +71,8 @@ internal data class LocalUiState(
     val syncPlaylistsEnabled: Boolean,
     val syncProviderConfigurationEnabled: Boolean,
     val syncSettingsEnabled: Boolean,
-    val syncStatus: String
+    val syncStatus: String,
+    val syncConflictPending: Boolean
 )
 
 data class MainUiState(
@@ -134,5 +135,6 @@ data class MainUiState(
     val syncPlaylistsEnabled: Boolean = true,
     val syncProviderConfigurationEnabled: Boolean = true,
     val syncSettingsEnabled: Boolean = true,
-    val syncStatus: String = "Sync idle"
+    val syncStatus: String = "Sync idle",
+    val syncConflictPending: Boolean = false
 )

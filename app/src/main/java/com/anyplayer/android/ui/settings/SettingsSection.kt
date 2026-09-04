@@ -141,7 +141,10 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    Button(onClick = viewModel::connectToSyncServer) {
+                        Text("Connect")
+                    }
+                    OutlinedButton(
                         onClick = {
                             if (state.syncPlaylistsEnabled) {
                                 showSyncOverwriteConfirm = true
@@ -150,7 +153,7 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                             }
                         }
                     ) {
-                        Text("Pull Sync Snapshot")
+                        Text("Force Pull from Server")
                     }
                 }
                 if (state.syncStatus.isNotBlank()) {
@@ -435,6 +438,30 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                 dismissButton = {
                     OutlinedButton(onClick = { showSyncOverwriteConfirm = false }) {
                         Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        if (state.syncConflictPending) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissSyncConflict,
+                title = { Text("Sync server already has data") },
+                text = {
+                    Text(
+                        "This server already has synced data for at least one enabled domain. " +
+                            "Keep this device's data (overwrites the server) or take the server's " +
+                            "data (overwrites this device)?"
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { viewModel.resolveSyncConflict(useLocal = true) }) {
+                        Text("Keep This Device")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { viewModel.resolveSyncConflict(useLocal = false) }) {
+                        Text("Use Server Data")
                     }
                 }
             )

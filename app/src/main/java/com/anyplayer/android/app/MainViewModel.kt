@@ -23,6 +23,7 @@ import com.anyplayer.android.feature.search.SearchType
 import com.anyplayer.android.feature.startup.StartupResilienceManager
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
+import com.anyplayer.android.feature.state.transfer.ConfigFileExporter
 import com.anyplayer.android.feature.state.transfer.ConfigFileImporter
 import com.anyplayer.android.feature.state.transfer.StateTransferManager
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
@@ -48,6 +49,7 @@ class MainViewModel @Inject constructor(
     private val playbackQueueManager: PlaybackQueueManager,
     private val stateTransferManager: StateTransferManager,
     private val configFileImporter: ConfigFileImporter,
+    private val configFileExporter: ConfigFileExporter,
     private val providerCatalogRepository: ProviderCatalogRepository,
     private val playlistStorageRepository: PlaylistStorageRepository,
     private val customPlaylistEngine: CustomPlaylistEngine,
@@ -119,6 +121,7 @@ class MainViewModel @Inject constructor(
         syncSnapshotClient = syncSnapshotClient,
         playbackQueueManager = playbackQueueManager,
         configFileImporter = configFileImporter,
+        configFileExporter = configFileExporter,
         customPlaylistCount = {
             customPlaylistStateHolder.awaitCustomPlaylistsLoaded()
             customPlaylistStateHolder.customPlaylists.value.size
@@ -222,8 +225,9 @@ class MainViewModel @Inject constructor(
     private val syncInputState = combine(
         syncInputPart,
         syncStateHolder.syncSettingsEnabled,
-        syncStateHolder.syncStatus
-    ) { inputPart, settingsEnabled, syncStatusValue ->
+        syncStateHolder.syncStatus,
+        syncStateHolder.syncConflictPending
+    ) { inputPart, settingsEnabled, syncStatusValue, conflictPending ->
         SyncInputs(
             serverTarget = inputPart.serverTarget,
             authToken = inputPart.authToken,
@@ -231,7 +235,8 @@ class MainViewModel @Inject constructor(
             playlistsEnabled = inputPart.playlistsEnabled,
             providerConfigEnabled = inputPart.providerConfigEnabled,
             settingsEnabled = settingsEnabled,
-            syncStatusValue = syncStatusValue
+            syncStatusValue = syncStatusValue,
+            conflictPending = conflictPending
         )
     }
 
@@ -281,7 +286,8 @@ class MainViewModel @Inject constructor(
             syncInputs.playlistsEnabled,
             syncInputs.providerConfigEnabled,
             syncInputs.settingsEnabled,
-            syncInputs.syncStatusValue
+            syncInputs.syncStatusValue,
+            syncInputs.conflictPending
         )
     }
 
@@ -449,7 +455,8 @@ class MainViewModel @Inject constructor(
                 syncPlaylistsEnabled = providerInputs.syncPlaylistsEnabled,
                 syncProviderConfigurationEnabled = providerInputs.syncProviderConfigurationEnabled,
                 syncSettingsEnabled = providerInputs.syncSettingsEnabled,
-                syncStatus = providerInputs.syncStatus
+                syncStatus = providerInputs.syncStatus,
+                syncConflictPending = providerInputs.syncConflictPending
             )
         }
     ) { startup, catalog, local ->
@@ -531,7 +538,8 @@ class MainViewModel @Inject constructor(
             syncPlaylistsEnabled = local.syncPlaylistsEnabled,
             syncProviderConfigurationEnabled = local.syncProviderConfigurationEnabled,
             syncSettingsEnabled = local.syncSettingsEnabled,
-            syncStatus = local.syncStatus
+            syncStatus = local.syncStatus,
+            syncConflictPending = local.syncConflictPending
         )
     }.stateIn(
         scope = viewModelScope,
@@ -561,6 +569,10 @@ class MainViewModel @Inject constructor(
     fun updateSyncSettingsEnabled(value: Boolean) = syncStateHolder.updateSyncSettingsEnabled(value)
 
     fun pullSyncState(confirmPlaylistOverwrite: Boolean) = syncStateHolder.pullSyncState(confirmPlaylistOverwrite)
+
+    fun connectToSyncServer() = syncStateHolder.connectToSyncServer()
+    fun resolveSyncConflict(useLocal: Boolean) = syncStateHolder.resolveSyncConflict(useLocal)
+    fun dismissSyncConflict() = syncStateHolder.dismissSyncConflict()
 
     fun updateJellyfinUrlInput(value: String) = providerConnectionStateHolder.updateJellyfinUrlInput(value)
 
@@ -818,7 +830,8 @@ class MainViewModel @Inject constructor(
         val syncPlaylistsEnabled: Boolean,
         val syncProviderConfigurationEnabled: Boolean,
         val syncSettingsEnabled: Boolean,
-        val syncStatus: String
+        val syncStatus: String,
+        val syncConflictPending: Boolean
     )
 
     private data class SyncInputs(
@@ -828,6 +841,7 @@ class MainViewModel @Inject constructor(
         val playlistsEnabled: Boolean,
         val providerConfigEnabled: Boolean,
         val settingsEnabled: Boolean,
-        val syncStatusValue: String
+        val syncStatusValue: String,
+        val conflictPending: Boolean
     )
 }
