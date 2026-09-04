@@ -488,7 +488,6 @@ class PlaybackQueueManager @Inject constructor(
         )
         if (djInterstitialPlayer.isPlayingInterstitial) {
             media3PlaybackController.skipInterstitial()
-            return
         }
         if (context.mixedMode) {
             mixedOps.previous(state)

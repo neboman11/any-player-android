@@ -6,10 +6,12 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.metadata.WikipediaFactClient
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
@@ -52,20 +54,53 @@ class DjFillerScheduler @Inject constructor(
     @Volatile
     private var enabled = false
 
+    @Volatile
     private var lastSeenTrackId: String? = null
+
+    @Volatile
     private var songsSinceLastBreak = 0
+
+    @Volatile
     private var nextBreakThreshold = rollThreshold()
 
-    @Volatile
-    private var pendingFiller: PreparedFiller? = null
+    private data class PendingFiller(
+        val filler: PreparedFiller,
+        val forTrackId: String
+    )
 
     @Volatile
-    private var pendingForTrackId: String? = null
+    private var pendingFiller: PendingFiller? = null
 
     private var generationJob: Job? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private lateinit var scope: CoroutineScope
+
+    init {
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    }
+
+    constructor(
+        djScriptGenerator: DjScriptGenerator,
+        djVoiceSynthesizer: DjVoiceSynthesizer,
+        wikipediaFactClient: WikipediaFactClient,
+        djFillerAudioCache: DjFillerAudioCache,
+        djInterstitialPlayer: DjInterstitialPlayer,
+        schedulerDispatcher: CoroutineDispatcher
+    ) : this(
+        djScriptGenerator,
+        djVoiceSynthesizer,
+        wikipediaFactClient,
+        djFillerAudioCache,
+        djInterstitialPlayer
+    ) {
+        scope = CoroutineScope(SupervisorJob() + schedulerDispatcher)
+    }
 
     private fun rollThreshold(): Int = Random.nextInt(MIN_SONGS_BETWEEN_BREAKS, MAX_SONGS_BETWEEN_BREAKS_EXCLUSIVE)
+
+    private fun resetSchedulingState() {
+        songsSinceLastBreak = 0
+        nextBreakThreshold = rollThreshold()
+    }
 
     fun setEnabled(value: Boolean) {
         enabled = value
@@ -73,7 +108,6 @@ class DjFillerScheduler @Inject constructor(
             generationJob?.cancel()
             generationJob = null
             pendingFiller = null
-            pendingForTrackId = null
         }
     }
 
@@ -105,20 +139,31 @@ class DjFillerScheduler @Inject constructor(
         if (nextTrack.isDjFiller) return
 
         generationJob = scope.launch {
-            val ready = runCatching { generate(nextTrack) }
-                .onFailure { CompatLog.e(TAG, "AI DJ generation failed", it) }
-                .getOrNull() ?: return@launch
+            val ready = runCatching { generate(nextTrack) }.getOrElse {
+                CompatLog.e(TAG, "AI DJ generation failed", it)
+                withContext(Dispatchers.Main.immediate) {
+                    resetSchedulingState()
+                }
+                return@launch
+            }
+
+            if (ready == null) {
+                withContext(Dispatchers.Main.immediate) {
+                    resetSchedulingState()
+                }
+                return@launch
+            }
 
             if (isLocalModeActive()) {
                 // Push immediately: ExoPlayer's own auto-advance will carry playback into
                 // the spliced item with zero gap once the current song ends, so there's
                 // nothing left to "consume" later - reset scheduling state right away.
-                djInterstitialPlayer.insertLocal(ready)
-                songsSinceLastBreak = 0
-                nextBreakThreshold = rollThreshold()
+                withContext(Dispatchers.Main.immediate) {
+                    djInterstitialPlayer.insertLocal(ready)
+                    resetSchedulingState()
+                }
             } else {
-                pendingFiller = ready
-                pendingForTrackId = nextTrack.id
+                pendingFiller = PendingFiller(ready, nextTrack.id)
             }
         }
     }
@@ -141,17 +186,14 @@ class DjFillerScheduler @Inject constructor(
         if (!enabled) return null
         if (songsSinceLastBreak < nextBreakThreshold) return null
 
-        songsSinceLastBreak = 0
-        nextBreakThreshold = rollThreshold()
-
-        val filler = pendingFiller
-        pendingFiller = null
-        val forId = pendingForTrackId
-        pendingForTrackId = null
-
-        if (filler == null || upcomingTrackId == null || forId != upcomingTrackId) {
+        val pending = pendingFiller
+        if (pending == null || upcomingTrackId == null || pending.forTrackId != upcomingTrackId) {
             return null
         }
-        return filler
+
+        songsSinceLastBreak = 0
+        nextBreakThreshold = rollThreshold()
+        pendingFiller = null
+        return pending.filler
     }
 }

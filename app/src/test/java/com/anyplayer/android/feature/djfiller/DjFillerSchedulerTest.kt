@@ -5,7 +5,16 @@ import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.mock
@@ -19,19 +28,28 @@ import org.mockito.kotlin.mock
  * [DjFillerScheduler.consumeReadyFillerIfDue] never blocks or throws even when
  * generation could not possibly have finished yet.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class DjFillerSchedulerTest {
 
+    private val testDispatcher = UnconfinedTestDispatcher()
     private lateinit var scheduler: DjFillerScheduler
 
     @Before
     fun setUp() {
+        Dispatchers.setMain(testDispatcher)
         scheduler = DjFillerScheduler(
             djScriptGenerator = mock(),
             djVoiceSynthesizer = mock(),
             wikipediaFactClient = mock(),
             djFillerAudioCache = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            schedulerDispatcher = testDispatcher
         )
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     private fun statusWith(currentTrackId: String, queue: List<Track>): PlaybackStatus = PlaybackStatus(
@@ -53,6 +71,22 @@ class DjFillerSchedulerTest {
         source = SourceType.JELLYFIN,
         isDjFiller = isDjFiller
     )
+
+    private fun getPrivateIntField(target: Any, fieldName: String): Int {
+        val field = target.javaClass.getDeclaredField(fieldName)
+        field.isAccessible = true
+        return field.getInt(target)
+    }
+
+    private fun invokeStartGenerationFor(status: PlaybackStatus, preBreakTrack: Track) {
+        val method = DjFillerScheduler::class.java.getDeclaredMethod(
+            "startGenerationFor",
+            PlaybackStatus::class.java,
+            Track::class.java
+        )
+        method.isAccessible = true
+        method.invoke(scheduler, status, preBreakTrack)
+    }
 
     @Test
     fun `disabled scheduler never reports a break due`() {
@@ -100,5 +134,26 @@ class DjFillerSchedulerTest {
 
         // Only one real track change was ever observed, so no break can possibly be due.
         assertNull(scheduler.consumeReadyFillerIfDue("t2"))
+    }
+
+    @Test
+    fun `failed generation resets the scheduling state`() = runTest {
+        scheduler.setEnabled(true)
+        val queue = (1..4).map { track("t$it") }
+        val status = statusWith("t1", queue)
+
+        val songsField = DjFillerScheduler::class.java.getDeclaredField("songsSinceLastBreak")
+        songsField.isAccessible = true
+        songsField.setInt(scheduler, 3)
+        val thresholdField = DjFillerScheduler::class.java.getDeclaredField("nextBreakThreshold")
+        thresholdField.isAccessible = true
+        thresholdField.setInt(scheduler, 3)
+
+        invokeStartGenerationFor(status, queue.first())
+        advanceUntilIdle()
+
+        assertEquals(0, getPrivateIntField(scheduler, "songsSinceLastBreak"))
+        val nextThreshold = getPrivateIntField(scheduler, "nextBreakThreshold")
+        assertTrue(nextThreshold in 3..5)
     }
 }
