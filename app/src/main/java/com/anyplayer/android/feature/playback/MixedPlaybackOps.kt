@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -24,7 +26,9 @@ internal class MixedPlaybackOps(
     private val context: PlaybackEngineContext,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
     private val applyNormalizedMedia3Volume: suspend (Int, SourceType) -> Unit,
-    private val persistStateAsync: () -> Unit
+    private val persistStateAsync: () -> Unit,
+    private val djFillerScheduler: DjFillerScheduler,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "MixedPlaybackOps"
@@ -287,7 +291,15 @@ internal class MixedPlaybackOps(
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nextTrack != null) {
-                    playMixedTrackById(nextTrack.id)
+                    // AI DJ hook: natural end-of-track only (not the stall/error recovery
+                    // fallbacks below) - the shared ExoPlayer is idle here (Spotify leg), so
+                    // a ready break plays standalone before handing off to the real next track.
+                    val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
+                    if (filler != null) {
+                        djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id) }
+                    } else {
+                        playMixedTrackById(nextTrack.id)
+                    }
                     return
                 }
             }
@@ -350,7 +362,14 @@ internal class MixedPlaybackOps(
                     context.recovery.resetMixedMediaEndStallState()
                     val nextTrack = sequence.getOrNull(currentIndex + 1)
                     if (nextTrack != null) {
-                        playMixedTrackById(nextTrack.id)
+                        // AI DJ hook: natural end-of-track only, mirroring the Spotify-leg
+                        // hook above.
+                        val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
+                        if (filler != null) {
+                            djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id) }
+                        } else {
+                            playMixedTrackById(nextTrack.id)
+                        }
                         return
                     }
                 }

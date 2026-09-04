@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -53,7 +55,9 @@ class SpotifyPlaybackOpsTest {
             audioCacheManager = audioCache,
             context = context,
             isNearTrackEnd = { _, _, _ -> false },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 

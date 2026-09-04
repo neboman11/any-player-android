@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -25,7 +27,9 @@ internal class SpotifyPlaybackOps(
     private val audioCacheManager: AudioCacheManager,
     private val context: PlaybackEngineContext,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
-    private val persistStateAsync: () -> Unit
+    private val persistStateAsync: () -> Unit,
+    private val djFillerScheduler: DjFillerScheduler,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "SpotifyPlaybackOps"
@@ -408,28 +412,22 @@ internal class SpotifyPlaybackOps(
             context.recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
             if (!context.recovery.spotifyAutoAdvanceInFlight) {
                 context.recovery.spotifyAutoAdvanceInFlight = true
-                context.scope.launch {
-                    val success = spotifyPlaybackController.next()
-                    context.recovery.spotifyAutoAdvanceInFlight = false
-                    if (success) {
-                        val advancedTrackIndex = awaitSpotifyAdvance(
-                            previousTrackId = previousTrackId,
-                            state = context.mutableStatus.value,
-                            timeoutMs = SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
-                        )
-                        if (advancedTrackIndex != null) {
-                            context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
-                            context.addToQueueInsertionOffset = 0
-                        } else {
-                            CompatLog.w(TAG, "Immediate spotifyNext() returned success without advancing; falling back to startQueue")
-                            fallbackAdvanceSpotifyQueue(previousTrackId, context.mutableStatus.value)
-                            context.addToQueueInsertionOffset = 0
-                        }
-                    } else {
-                        CompatLog.w(TAG, "Immediate spotifyNext() failed; falling back to startQueue")
-                        fallbackAdvanceSpotifyQueue(previousTrackId, state)
-                        context.addToQueueInsertionOffset = 0
+
+                // AI DJ hook: the shared Media3 ExoPlayer is guaranteed idle whenever a
+                // Spotify track is current, so a ready break plays there standalone before
+                // we resume the normal next()-driven advance. If no break is due,
+                // upcomingTrackId simply won't match anything pending and this is a no-op -
+                // behavior is byte-for-byte unchanged from before this hook existed.
+                val activeQueue = spotifyPlaybackQueue(state)
+                val currentIndex = currentSpotifyQueueIndex(state)
+                val upcomingTrackId = activeQueue.getOrNull(currentIndex + 1)?.id
+                val filler = djFillerScheduler.consumeReadyFillerIfDue(upcomingTrackId)
+                if (filler != null) {
+                    djInterstitialPlayer.playStandalone(filler) {
+                        context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
                     }
+                } else {
+                    context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
                 }
                 return
             }
@@ -559,6 +557,33 @@ internal class SpotifyPlaybackOps(
             context.recovery.spotifyRecoveryInFlight = false
         }
         return true
+    }
+
+    /** The immediate `next()`-driven auto-advance path, extracted out of [sync] so the AI
+     *  DJ hook there can either run it directly or defer it until a standalone
+     *  interstitial finishes playing on the shared (Spotify-idle) ExoPlayer. */
+    private suspend fun performSpotifyAutoAdvance(previousTrackId: String?, state: PlaybackStatus) {
+        val success = spotifyPlaybackController.next()
+        context.recovery.spotifyAutoAdvanceInFlight = false
+        if (success) {
+            val advancedTrackIndex = awaitSpotifyAdvance(
+                previousTrackId = previousTrackId,
+                state = context.mutableStatus.value,
+                timeoutMs = SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
+            )
+            if (advancedTrackIndex != null) {
+                context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
+                context.addToQueueInsertionOffset = 0
+            } else {
+                CompatLog.w(TAG, "Immediate spotifyNext() returned success without advancing; falling back to startQueue")
+                fallbackAdvanceSpotifyQueue(previousTrackId, context.mutableStatus.value)
+                context.addToQueueInsertionOffset = 0
+            }
+        } else {
+            CompatLog.w(TAG, "Immediate spotifyNext() failed; falling back to startQueue")
+            fallbackAdvanceSpotifyQueue(previousTrackId, state)
+            context.addToQueueInsertionOffset = 0
+        }
     }
 
     private suspend fun awaitSpotifyAdvance(

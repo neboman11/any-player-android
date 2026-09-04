@@ -4,7 +4,10 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
+import com.anyplayer.android.feature.state.transfer.ConfigCustomPlaylist
+import com.anyplayer.android.feature.state.transfer.ConfigFileExporter
 import com.anyplayer.android.feature.state.transfer.ConfigFileImporter
+import com.anyplayer.android.feature.state.transfer.ConfigProviderConfigs
 import com.anyplayer.android.feature.state.transfer.ImportSummary
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 import com.anyplayer.android.feature.sync.SyncPreferences
@@ -26,11 +29,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -53,6 +58,7 @@ internal class SyncStateHolder(
     private val syncSnapshotClient: SyncSnapshotClient,
     private val playbackQueueManager: PlaybackQueueManager,
     private val configFileImporter: ConfigFileImporter,
+    private val configFileExporter: ConfigFileExporter,
     private val customPlaylistCount: suspend () -> Int,
     private val applyImportSummary: (prefix: String, summary: ImportSummary) -> Unit,
     private val onSyncApplied: suspend () -> Unit
@@ -68,6 +74,11 @@ internal class SyncStateHolder(
     val syncProviderConfigurationEnabled = MutableStateFlow(true)
     val syncSettingsEnabled = MutableStateFlow(true)
     val syncStatus = MutableStateFlow("Sync idle")
+
+    /** True while [connectToSyncServer] found the server already has data for at least
+     *  one enabled domain and is waiting on [resolveSyncConflict]/[dismissSyncConflict]
+     *  to decide which side wins, rather than silently overwriting either. */
+    val syncConflictPending = MutableStateFlow(false)
 
     // AtomicLong: pullSyncState()'s REST fetch and the realtime WS loop each update this
     // from their own independently-launched coroutine, and a non-atomic read-modify-write
@@ -166,6 +177,119 @@ internal class SyncStateHolder(
             }
 
             onSyncApplied()
+        }
+    }
+
+    /** Saves the server target/token, then decides how to reconcile local vs. remote
+     *  state rather than blindly pulling (which could silently wipe local-only data):
+     *  if the server has no data yet for any enabled domain, push local state to
+     *  initialize it; otherwise surface [syncConflictPending] and wait for
+     *  [resolveSyncConflict] rather than picking a side automatically. */
+    fun connectToSyncServer() {
+        viewModelScope.launch {
+            val preferences = currentSyncPreferences()
+            if (preferences.serverTarget.isBlank()) {
+                syncStatus.value = "Sync server target is not set."
+                return@launch
+            }
+            persistSyncPreferences()
+
+            val snapshot = syncSnapshotClient.fetchSnapshot(preferences.serverTarget)
+            if (snapshot == null) {
+                syncStatus.value = "Sync server unavailable."
+                return@launch
+            }
+
+            if (serverHasData(snapshot, preferences)) {
+                syncStatus.value = "Server already has synced data - choose which side to keep."
+                syncConflictPending.value = true
+            } else {
+                pushLocalStateToServer(preferences)
+                syncStatus.value = "Connected. Pushed local data to server."
+            }
+        }
+    }
+
+    /** [useLocal] true pushes this device's state to the server (server's existing data
+     *  is overwritten); false pulls the server's state onto this device (equivalent to
+     *  [pullSyncState] with playlist overwrite pre-confirmed, since the user just
+     *  explicitly chose this). */
+    fun resolveSyncConflict(useLocal: Boolean) {
+        syncConflictPending.value = false
+        if (useLocal) {
+            viewModelScope.launch {
+                pushLocalStateToServer(currentSyncPreferences())
+                syncStatus.value = "Pushed local data to server."
+            }
+        } else {
+            pullSyncState(confirmPlaylistOverwrite = true)
+        }
+    }
+
+    fun dismissSyncConflict() {
+        syncConflictPending.value = false
+        syncStatus.value = "Sync connect cancelled."
+    }
+
+    private fun serverHasData(snapshot: JsonObject, preferences: SyncPreferences): Boolean {
+        if (preferences.syncAppState) {
+            val appState = snapshot["app_state"]?.asObjectOrNull()
+            if (appState != null && (appState.track("current_track") != null || appState.trackList("queue").isNotEmpty())) {
+                return true
+            }
+        }
+        if (preferences.syncPlaylists) {
+            val playlists = snapshot["playlists"] as? JsonArray
+            if (!playlists.isNullOrEmpty()) return true
+        }
+        if (preferences.syncProviderConfiguration) {
+            val providerConfiguration = snapshot["provider_configuration"]?.asObjectOrNull()
+            if (!providerConfiguration.isNullOrEmpty()) return true
+        }
+        if (preferences.syncSettings) {
+            val settings = snapshot["settings"]?.asObjectOrNull()
+            if (!settings.isNullOrEmpty()) return true
+        }
+        return false
+    }
+
+    private suspend fun pushLocalStateToServer(preferences: SyncPreferences) {
+        if (preferences.syncAppState) {
+            val payload = syncSnapshotClient.payloadFromPlayback(playbackQueueManager.status.value)
+            runCatching { syncSnapshotClient.pushAppState(preferences.serverTarget, payload) }
+        }
+
+        if (preferences.syncSettings) {
+            val currentSettings = playbackQueueManager.audioNormalizationSettings.value
+            val data = JsonObject(
+                mapOf(
+                    "audio_normalization_enabled" to JsonPrimitive(currentSettings.enabled),
+                    "audio_normalization_strict_mode" to JsonPrimitive(currentSettings.strictMode)
+                )
+            )
+            runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "settings", data) }
+        }
+
+        if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
+            val configFile = configFileExporter.buildConfigFile()
+
+            if (preferences.syncPlaylists) {
+                val playlistsJson = syncJson.encodeToJsonElement(
+                    ListSerializer(ConfigCustomPlaylist.serializer()),
+                    configFile.customPlaylists
+                )
+                runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson) }
+            }
+
+            if (preferences.syncProviderConfiguration) {
+                val providerJson = syncJson.encodeToJsonElement(
+                    ConfigProviderConfigs.serializer(),
+                    configFile.providerConfigs
+                )
+                runCatching {
+                    syncSnapshotClient.pushNamespace(preferences.serverTarget, "provider-configuration", providerJson)
+                }
+            }
         }
     }
 

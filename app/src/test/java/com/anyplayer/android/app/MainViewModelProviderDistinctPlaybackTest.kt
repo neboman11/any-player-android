@@ -108,12 +108,15 @@ class MainViewModelProviderDistinctPlaybackTest {
             playbackQueueManager = playbackQueueManager,
             stateTransferManager = stateTransferManager,
             configFileImporter = configFileImporter,
+            configFileExporter = mock(),
             providerCatalogRepository = providerCatalogRepository,
             playlistStorageRepository = playlistStorageRepository,
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = syncSnapshotClient
+            syncSnapshotClient = syncSnapshotClient,
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 

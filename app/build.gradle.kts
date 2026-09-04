@@ -189,6 +189,10 @@ dependencies {
     implementation("androidx.media3:media3-database:1.5.1")
     implementation("androidx.media:media:1.8.0")
 
+    // On-device LLM inference for the AI DJ feature (feature/djfiller) - text-to-speech
+    // uses the platform android.speech.tts.TextToSpeech API, no extra dependency needed.
+    implementation("com.google.mediapipe:tasks-genai:0.10.24")
+
     implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
     implementation("com.google.dagger:hilt-android:$hiltVersion")
     ksp("com.google.dagger:hilt-compiler:$hiltVersion")

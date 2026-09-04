@@ -5,6 +5,7 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -47,6 +48,7 @@ class PlaybackQueueManagerTest {
     private val spotify: SpotifyPlaybackController = mock()
     private val stateStore: PlaybackStateStore = mock()
     private val audioCache: AudioCacheManager = mock()
+    private val djInterstitialPlayer: DjInterstitialPlayer = mock()
     private val json = Json { ignoreUnknownKeys = true }
 
     private lateinit var manager: PlaybackQueueManager
@@ -77,7 +79,7 @@ class PlaybackQueueManagerTest {
             )
         )
 
-        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json)
+        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json, mock(), djInterstitialPlayer)
         // Leave providerRestoreGate uncompleted: init's restore/poll loop parks on
         // providerRestoreGate.await() and never runs syncFromPlaybackEngine() during these
         // tests, so it can't race with the assertions below.
@@ -168,6 +170,31 @@ class PlaybackQueueManagerTest {
 
         verify(media3).previous()
         assertEquals(PlaybackStateType.PLAYING, manager.status.value.state)
+    }
+
+    @Test
+    fun localMode_previous_whileInterstitialSkipsBreakThenUsesPreviousTrackLogic() {
+        whenever(media3.previous()).thenReturn(true)
+        whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
+        manager.setQueue(listOf(localTrack("a"), localTrack("b")))
+
+        manager.previous()
+
+        verify(media3).skipInterstitial()
+        verify(media3).previous()
+        assertEquals(PlaybackStateType.PLAYING, manager.status.value.state)
+    }
+
+    @Test
+    fun spotifyMode_previous_whileInterstitialEndsBreakWithoutAdvancing() {
+        whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
+        manager.setQueue(listOf(spotifyTrack("s1"), spotifyTrack("s2")), startIndex = 1)
+
+        manager.previous()
+
+        verify(media3).clearStandaloneInterstitial()
+        verifyBlocking(spotify) { startQueue(listOf("s1", "s2"), 0) }
+        assertEquals("s1", manager.status.value.currentTrack?.id)
     }
 
     @Test

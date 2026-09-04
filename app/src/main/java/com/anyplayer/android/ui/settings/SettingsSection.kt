@@ -26,6 +26,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +42,7 @@ import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 
@@ -140,7 +142,10 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    Button(onClick = viewModel::connectToSyncServer) {
+                        Text("Connect")
+                    }
+                    OutlinedButton(
                         onClick = {
                             if (state.syncPlaylistsEnabled) {
                                 showSyncOverwriteConfirm = true
@@ -149,7 +154,7 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                             }
                         }
                     ) {
-                        Text("Pull Sync Snapshot")
+                        Text("Force Pull from Server")
                     }
                 }
                 if (state.syncStatus.isNotBlank()) {
@@ -184,6 +189,48 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                         onClick = { viewModel.setAudioNormalizationStrictMode(!state.audioNormalizationStrictMode) },
                 label = { Text("Strict Normalization (Unavailable)") }
                     )
+                }
+
+                HorizontalDivider()
+                Text("AI DJ (Beta)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Every few songs, an on-device AI DJ introduces what's coming up next. " +
+                        "Text generation and speech happen entirely on this device; only a " +
+                        "short fact about the artist is looked up online.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.aiDjEnabled,
+                        onClick = { viewModel.setAiDjEnabled(!state.aiDjEnabled) },
+                        label = { Text("Enable AI DJ") }
+                    )
+                    FilterChip(
+                        selected = showDjEntriesInQueue,
+                        onClick = { viewModel.setShowDjEntriesInQueue(!showDjEntriesInQueue) },
+                        label = { Text("Show DJ entries in queue") }
+                    )
+                }
+                if (state.aiDjEnabled && state.aiDjModelDownloadState !is DjModelDownloadState.Ready) {
+                    WorkflowStep(number = 1, label = "Download AI DJ voice model") {
+                        when (val downloadState = state.aiDjModelDownloadState) {
+                            is DjModelDownloadState.Downloading -> Text(
+                                "Downloading... ${(downloadState.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            is DjModelDownloadState.Failed -> Column {
+                                Text(
+                                    downloadState.reason,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Button(onClick = viewModel::downloadDjModel) { Text("Retry Download") }
+                            }
+                            else -> Button(onClick = viewModel::downloadDjModel) { Text("Download") }
+                        }
+                    }
                 }
 
                 HorizontalDivider()
@@ -398,6 +445,30 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                 dismissButton = {
                     OutlinedButton(onClick = { showSyncOverwriteConfirm = false }) {
                         Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        if (state.syncConflictPending) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissSyncConflict,
+                title = { Text("Sync server already has data") },
+                text = {
+                    Text(
+                        "This server already has synced data for at least one enabled domain. " +
+                            "Keep this device's data (overwrites the server) or take the server's " +
+                            "data (overwrites this device)?"
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { viewModel.resolveSyncConflict(useLocal = true) }) {
+                        Text("Keep This Device")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { viewModel.resolveSyncConflict(useLocal = false) }) {
+                        Text("Use Server Data")
                     }
                 }
             )
