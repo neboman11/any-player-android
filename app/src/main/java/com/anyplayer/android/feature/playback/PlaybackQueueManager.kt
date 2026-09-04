@@ -487,7 +487,11 @@ class PlaybackQueueManager @Inject constructor(
             "previous state=${state.state} spotifyMode=${context.spotifyMode} mixedMode=${context.mixedMode} current=${state.currentTrack?.id}"
         )
         if (djInterstitialPlayer.isPlayingInterstitial) {
-            media3PlaybackController.skipInterstitial()
+            if (context.mixedMode || context.spotifyMode) {
+                media3PlaybackController.clearStandaloneInterstitial()
+            } else {
+                media3PlaybackController.skipInterstitial()
+            }
         }
         if (context.mixedMode) {
             mixedOps.previous(state)

@@ -67,6 +67,15 @@ class Media3PlaybackController @Inject constructor(
         }
     }
 
+    fun clearStandaloneInterstitial() {
+        val endedId = activeInterstitialMediaId ?: return
+        activeInterstitialMediaId = null
+        standaloneInterstitialEndedCallback = null
+        playerInstance.stop()
+        playerInstance.clearMediaItems()
+        interstitialListener?.onInterstitialEnded(endedId)
+    }
+
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(context)

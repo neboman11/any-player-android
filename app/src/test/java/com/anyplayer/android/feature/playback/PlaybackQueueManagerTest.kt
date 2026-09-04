@@ -185,6 +185,18 @@ class PlaybackQueueManagerTest {
     }
 
     @Test
+    fun spotifyMode_previous_whileInterstitialEndsBreakWithoutAdvancing() {
+        whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
+        manager.setQueue(listOf(spotifyTrack("s1"), spotifyTrack("s2")), startIndex = 1)
+
+        manager.previous()
+
+        verify(media3).clearStandaloneInterstitial()
+        verifyBlocking(spotify) { startQueue(listOf("s1", "s2"), 0) }
+        assertEquals("s1", manager.status.value.currentTrack?.id)
+    }
+
+    @Test
     fun localMode_seekTo_callsMedia3AndClampsPosition() {
         manager.setQueue(listOf(localTrack("a")))
 
