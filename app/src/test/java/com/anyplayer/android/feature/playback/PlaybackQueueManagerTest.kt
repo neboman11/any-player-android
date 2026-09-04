@@ -77,7 +77,7 @@ class PlaybackQueueManagerTest {
             )
         )
 
-        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json)
+        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json, mock(), mock())
         // Leave providerRestoreGate uncompleted: init's restore/poll loop parks on
         // providerRestoreGate.await() and never runs syncFromPlaybackEngine() during these
         // tests, so it can't race with the assertions below.

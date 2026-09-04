@@ -41,6 +41,7 @@ import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 
@@ -184,6 +185,42 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                         onClick = { viewModel.setAudioNormalizationStrictMode(!state.audioNormalizationStrictMode) },
                 label = { Text("Strict Normalization (Unavailable)") }
                     )
+                }
+
+                HorizontalDivider()
+                Text("AI DJ (Beta)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Every few songs, an on-device AI DJ introduces what's coming up next. " +
+                        "Text generation and speech happen entirely on this device; only a " +
+                        "short fact about the artist is looked up online.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.aiDjEnabled,
+                        onClick = { viewModel.setAiDjEnabled(!state.aiDjEnabled) },
+                        label = { Text("Enable AI DJ") }
+                    )
+                }
+                if (state.aiDjEnabled && state.aiDjModelDownloadState !is DjModelDownloadState.Ready) {
+                    WorkflowStep(number = 1, label = "Download AI DJ voice model") {
+                        when (val downloadState = state.aiDjModelDownloadState) {
+                            is DjModelDownloadState.Downloading -> Text(
+                                "Downloading... ${(downloadState.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            is DjModelDownloadState.Failed -> Column {
+                                Text(
+                                    downloadState.reason,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Button(onClick = viewModel::downloadDjModel) { Text("Retry Download") }
+                            }
+                            else -> Button(onClick = viewModel::downloadDjModel) { Text("Download") }
+                        }
+                    }
                 }
 
                 HorizontalDivider()

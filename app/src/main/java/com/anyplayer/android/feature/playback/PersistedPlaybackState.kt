@@ -16,5 +16,6 @@ internal data class PersistedPlaybackState(
     val volume: Int,
     val audioNormalizationEnabled: Boolean = false,
     val audioNormalizationStrictMode: Boolean = false,
+    val aiDjEnabled: Boolean = false,
     val state: PlaybackStateType
 )

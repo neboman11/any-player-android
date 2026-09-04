@@ -15,6 +15,7 @@ import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +49,8 @@ import javax.inject.Singleton
 class MediaSessionPlayerBridge @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
     private val playbackQueueManager: PlaybackQueueManager,
-    private val authRepository: ProviderAuthRepository
+    private val authRepository: ProviderAuthRepository,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) : ForwardingPlayer(media3PlaybackController.player) {
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
@@ -302,6 +304,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     private fun currentTrackOrFallback(): Track? {
+        djInterstitialPlayer.nowPlayingOverride.value?.let { return it }
         val status = currentStatus()
         return status.currentTrack ?: status.queue.firstOrNull()
     }

@@ -113,7 +113,9 @@ class MainViewModelProviderDistinctPlaybackTest {
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = syncSnapshotClient
+            syncSnapshotClient = syncSnapshotClient,
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 

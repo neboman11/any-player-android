@@ -6,6 +6,7 @@ import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.launch
 
 /**
@@ -18,7 +19,8 @@ internal class LocalPlaybackOps(
     private val context: PlaybackEngineContext,
     private val applyNormalizedMedia3Volume: suspend (Int, SourceType) -> Unit,
     private val triggerPrefetch: () -> Unit,
-    private val persistStateAsync: () -> Unit
+    private val persistStateAsync: () -> Unit,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "LocalPlaybackOps"
@@ -160,6 +162,21 @@ internal class LocalPlaybackOps(
         val snapshot = media3PlaybackController.snapshot()
         val state = context.mutableStatus.value
         if (state.queue.isEmpty()) return
+
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            // AI DJ splice (see Media3PlaybackController.insertInterstitial): the raw
+            // ExoPlayer timeline temporarily holds one extra item not represented in
+            // context.playableQueueIndices, so the index-based mapping below would
+            // resolve to the wrong track while it's current. Leave currentTrack/
+            // orderedQueue untouched - NowPlayingSection/MediaSessionPlayerBridge already
+            // prefer djInterstitialPlayer.nowPlayingOverride whenever it's non-null.
+            context.mutableStatus.value = state.copy(
+                state = snapshot.state,
+                position = snapshot.positionMs,
+                duration = snapshot.durationMs.takeIf { it > 0 } ?: state.duration
+            )
+            return
+        }
 
         val queueIndex = context.playableQueueIndices.getOrNull(snapshot.currentMediaIndex)
         val mappedTrack = queueIndex?.let { state.queue.getOrNull(it) }

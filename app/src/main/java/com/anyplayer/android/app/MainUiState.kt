@@ -2,6 +2,7 @@ package com.anyplayer.android.app
 
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.DuplicateGroup
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.RepeatMode
@@ -20,6 +21,8 @@ internal data class CatalogUiState(
     val providerStatuses: List<ProviderConnectionProfile>,
     val playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
     val audioNormalizationSettings: AudioNormalizationSettings,
+    val aiDjEnabled: Boolean,
+    val aiDjModelDownloadState: DjModelDownloadState,
     val searchResults: List<Track>,
     val searchPlaylistResults: List<com.anyplayer.android.core.model.Playlist>,
     val providerPlaylists: List<com.anyplayer.android.core.model.Playlist>,
@@ -91,6 +94,8 @@ data class MainUiState(
     val playbackDisabledMessage: String? = null,
     val audioNormalizationEnabled: Boolean = false,
     val audioNormalizationStrictMode: Boolean = false,
+    val aiDjEnabled: Boolean = false,
+    val aiDjModelDownloadState: DjModelDownloadState = DjModelDownloadState.NotDownloaded,
     val searchResults: List<Track> = emptyList(),
     val searchPlaylistResults: List<com.anyplayer.android.core.model.Playlist> = emptyList(),
     val providerPlaylists: List<com.anyplayer.android.core.model.Playlist> = emptyList(),

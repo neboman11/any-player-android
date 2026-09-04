@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -56,7 +58,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> false },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -159,7 +163,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> true },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
@@ -181,7 +187,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> true },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)

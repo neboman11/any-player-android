@@ -101,7 +101,9 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -198,7 +200,9 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(
             id = "s-provider",
@@ -258,7 +262,9 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
 
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(

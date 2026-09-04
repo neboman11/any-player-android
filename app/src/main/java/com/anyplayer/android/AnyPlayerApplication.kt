@@ -4,13 +4,19 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.anyplayer.android.feature.djfiller.DjFillerAudioCache
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 @HiltAndroidApp
 class AnyPlayerApplication : Application() {
+    @Inject
+    lateinit var djFillerAudioCache: DjFillerAudioCache
+
     override fun onCreate() {
         super.onCreate()
         createPlaybackNotificationChannel()
+        djFillerAudioCache.clearStale()
     }
 
     private fun createPlaybackNotificationChannel() {

@@ -13,6 +13,8 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
+import com.anyplayer.android.feature.djfiller.DjModelManager
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
 import com.anyplayer.android.feature.playlists.DistinctPlaylistUtils
@@ -51,8 +53,16 @@ class MainViewModel @Inject constructor(
     private val customPlaylistEngine: CustomPlaylistEngine,
     private val startupResilienceManager: StartupResilienceManager,
     private val syncPreferencesStore: SyncPreferencesStore,
-    private val syncSnapshotClient: SyncSnapshotClient
+    private val syncSnapshotClient: SyncSnapshotClient,
+    private val djModelManager: DjModelManager,
+    private val djInterstitialPlayer: com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 ) : ViewModel() {
+    /** Non-null while an AI DJ voice-over is playing between songs - see
+     *  [com.anyplayer.android.feature.djfiller.DjInterstitialPlayer]. UI surfaces
+     *  (Now Playing screen, lock screen/notification via MediaSessionPlayerBridge)
+     *  should prefer this over the real current track whenever it's non-null. */
+    val nowPlayingOverride: StateFlow<Track?> = djInterstitialPlayer.nowPlayingOverride
+
     private var lastAutoPausedTrackKey: String? = null
 
     private val startupStatus = MutableStateFlow("Restoring provider sessions...")
@@ -279,9 +289,19 @@ class MainViewModel @Inject constructor(
         val providerStatuses: List<ProviderConnectionProfile>,
         val playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
         val audioNormalizationSettings: AudioNormalizationSettings,
+        val aiDjEnabled: Boolean,
+        val aiDjModelDownloadState: DjModelDownloadState,
         val searchResults: List<Track>,
         val searchPlaylistResults: List<com.anyplayer.android.core.model.Playlist>,
         val providerPlaylists: List<com.anyplayer.android.core.model.Playlist>
+    )
+
+    private data class PlaybackCoreUiState(
+        val providerStatuses: List<ProviderConnectionProfile>,
+        val playbackStatus: com.anyplayer.android.core.model.PlaybackStatus,
+        val audioNormalizationSettings: AudioNormalizationSettings,
+        val aiDjEnabled: Boolean,
+        val aiDjModelDownloadState: DjModelDownloadState
     )
 
     private data class ProviderPlaylistSummaryCoreUiState(
@@ -295,9 +315,11 @@ class MainViewModel @Inject constructor(
     private val catalogPlaybackState = combine(
         providerStatuses,
         playbackQueueManager.status,
-        playbackQueueManager.audioNormalizationSettings
-    ) { providers, playback, audioNormalization ->
-        Triple(providers, playback, audioNormalization)
+        playbackQueueManager.audioNormalizationSettings,
+        playbackQueueManager.aiDjEnabled,
+        djModelManager.downloadState
+    ) { providers, playback, audioNormalization, aiDjEnabled, aiDjModelDownloadState ->
+        PlaybackCoreUiState(providers, playback, audioNormalization, aiDjEnabled, aiDjModelDownloadState)
     }
 
     private val catalogSearchState = combine(
@@ -313,9 +335,11 @@ class MainViewModel @Inject constructor(
         catalogSearchState
     ) { playbackState, searchState ->
         CatalogCoreUiState(
-            providerStatuses = playbackState.first,
-            playbackStatus = playbackState.second,
-            audioNormalizationSettings = playbackState.third,
+            providerStatuses = playbackState.providerStatuses,
+            playbackStatus = playbackState.playbackStatus,
+            audioNormalizationSettings = playbackState.audioNormalizationSettings,
+            aiDjEnabled = playbackState.aiDjEnabled,
+            aiDjModelDownloadState = playbackState.aiDjModelDownloadState,
             searchResults = searchState.first,
             searchPlaylistResults = searchState.second,
             providerPlaylists = searchState.third
@@ -375,6 +399,8 @@ class MainViewModel @Inject constructor(
                 providerStatuses = catalogBase.providerStatuses,
                 playbackStatus = catalogBase.playbackStatus,
                 audioNormalizationSettings = catalogBase.audioNormalizationSettings,
+                aiDjEnabled = catalogBase.aiDjEnabled,
+                aiDjModelDownloadState = catalogBase.aiDjModelDownloadState,
                 searchResults = catalogBase.searchResults,
                 searchPlaylistResults = catalogBase.searchPlaylistResults,
                 providerPlaylists = catalogBase.providerPlaylists,
@@ -465,6 +491,8 @@ class MainViewModel @Inject constructor(
             playbackDisabledMessage = playbackDisabledMessage,
             audioNormalizationEnabled = catalog.audioNormalizationSettings.enabled,
             audioNormalizationStrictMode = catalog.audioNormalizationSettings.strictMode,
+            aiDjEnabled = catalog.aiDjEnabled,
+            aiDjModelDownloadState = catalog.aiDjModelDownloadState,
             searchResults = catalog.searchResults,
             searchPlaylistResults = catalog.searchPlaylistResults,
             providerPlaylists = catalog.providerPlaylists,
@@ -624,6 +652,12 @@ class MainViewModel @Inject constructor(
             strictMode = strictMode
         )
     }
+
+    fun setAiDjEnabled(enabled: Boolean) = playbackQueueManager.setAiDjEnabled(enabled)
+
+    /** Only ever called from an explicit user tap on "Download" in Settings - enabling
+     *  AI DJ never triggers a download on its own. */
+    fun downloadDjModel() = djModelManager.startDownload()
 
     fun playFromQueue(index: Int) = playbackQueueManager.playFromIndex(index)
     fun playFromSearch(index: Int) = searchStateHolder.playFromSearch(index)
