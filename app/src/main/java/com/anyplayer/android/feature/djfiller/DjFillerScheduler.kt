@@ -4,12 +4,15 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.metadata.WikipediaFactClient
+import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -97,6 +100,13 @@ class DjFillerScheduler @Inject constructor(
 
     private fun rollThreshold(): Int = Random.nextInt(MIN_SONGS_BETWEEN_BREAKS, MAX_SONGS_BETWEEN_BREAKS_EXCLUSIVE)
 
+    private val mutablePendingQueueDisplayTrack = MutableStateFlow<Track?>(null)
+
+    /** Non-null while a break is ready but not yet reached in playback - the "up next"
+     *  queue display prepends [AI_DJ_PRESENTATION_TRACK] right after the current track
+     *  when the user has the "show DJ entries" setting on. */
+    val pendingQueueDisplayTrack: StateFlow<Track?> = mutablePendingQueueDisplayTrack
+
     private fun resetSchedulingState() {
         songsSinceLastBreak = 0
         nextBreakThreshold = rollThreshold()
@@ -108,6 +118,7 @@ class DjFillerScheduler @Inject constructor(
             generationJob?.cancel()
             generationJob = null
             pendingFiller = null
+            mutablePendingQueueDisplayTrack.value = null
         }
     }
 
@@ -116,6 +127,13 @@ class DjFillerScheduler @Inject constructor(
      *  contributes to its own scheduling. */
     fun onStatusUpdated(status: PlaybackStatus) {
         if (!enabled) return
+
+        // Local-mode splice: once ExoPlayer has actually carried playback into the
+        // pending break, it's no longer "upcoming" - stop showing it in the queue.
+        if (mutablePendingQueueDisplayTrack.value != null && djInterstitialPlayer.isPlayingInterstitial) {
+            mutablePendingQueueDisplayTrack.value = null
+        }
+
         val current = status.currentTrack ?: return
         if (current.isDjFiller) return
         if (current.id == lastSeenTrackId) return
@@ -134,13 +152,26 @@ class DjFillerScheduler @Inject constructor(
         if (generationJob?.isActive == true) return
         val sequence = sequenceOf(status)
         val currentIndex = sequence.indexOfFirst { it.id == preBreakTrack.id }
-        if (currentIndex < 0) return
-        val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
-        if (nextTrack.isDjFiller) return
+        if (currentIndex < 0) {
+            CompatLog.w(TAG, "AI DJ: pre-break track ${preBreakTrack.id} not found in queue sequence, skipping this cycle")
+            resetSchedulingState()
+            return
+        }
+        val nextTrack = sequence.getOrNull(currentIndex + 1)
+        if (nextTrack == null) {
+            CompatLog.i(TAG, "AI DJ: no next track queued after ${preBreakTrack.id}, skipping this cycle")
+            resetSchedulingState()
+            return
+        }
+        if (nextTrack.isDjFiller) {
+            resetSchedulingState()
+            return
+        }
 
+        CompatLog.i(TAG, "AI DJ: generating break introducing '${nextTrack.title}' by ${nextTrack.artist}")
         generationJob = scope.launch {
             val ready = runCatching { generate(nextTrack) }.getOrElse {
-                CompatLog.e(TAG, "AI DJ generation failed", it)
+                CompatLog.e(TAG, "AI DJ generation threw an exception", it)
                 withContext(Dispatchers.Main.immediate) {
                     resetSchedulingState()
                 }
@@ -148,10 +179,16 @@ class DjFillerScheduler @Inject constructor(
             }
 
             if (ready == null) {
+                CompatLog.w(TAG, "AI DJ: generation did not produce a filler this cycle (see preceding log line for why)")
                 withContext(Dispatchers.Main.immediate) {
                     resetSchedulingState()
                 }
                 return@launch
+            }
+
+            CompatLog.i(TAG, "AI DJ: break ready for '${nextTrack.title}'")
+            withContext(Dispatchers.Main.immediate) {
+                mutablePendingQueueDisplayTrack.value = AI_DJ_PRESENTATION_TRACK
             }
 
             if (isLocalModeActive()) {
@@ -169,12 +206,22 @@ class DjFillerScheduler @Inject constructor(
     }
 
     private suspend fun generate(nextTrack: Track): PreparedFiller? {
-        if (!djVoiceSynthesizer.isAvailable()) return null
+        if (!djVoiceSynthesizer.isAvailable()) {
+            CompatLog.w(TAG, "AI DJ: no usable on-device TTS voice, skipping this cycle")
+            return null
+        }
         val fact = wikipediaFactClient.fetchArtistFact(nextTrack.artist)
-        val script = djScriptGenerator.generateScript(nextTrack, fact) ?: return null
+        val script = djScriptGenerator.generateScript(nextTrack, fact)
+        if (script == null) {
+            CompatLog.w(TAG, "AI DJ: script generation returned null (model not downloaded/loaded, or inference failed)")
+            return null
+        }
         val outputFile = djFillerAudioCache.newOutputFile()
         val synthesized = djVoiceSynthesizer.synthesizeToFile(script, outputFile)
-        if (!synthesized) return null
+        if (!synthesized) {
+            CompatLog.w(TAG, "AI DJ: TTS synthesis failed for generated script")
+            return null
+        }
         return PreparedFiller(track = nextTrack, scriptText = script, audioFile = outputFile)
     }
 
@@ -186,14 +233,22 @@ class DjFillerScheduler @Inject constructor(
         if (!enabled) return null
         if (songsSinceLastBreak < nextBreakThreshold) return null
 
+        // Reset unconditionally, whether or not a ready filler is actually consumed below -
+        // otherwise a single cycle where generation didn't finish in time would leave
+        // songsSinceLastBreak permanently >= nextBreakThreshold, and since onStatusUpdated
+        // only (re)starts generation on an *exact* equality match, the scheduler would never
+        // trigger generation again for the rest of the session.
+        songsSinceLastBreak = 0
+        nextBreakThreshold = rollThreshold()
+        mutablePendingQueueDisplayTrack.value = null
+
         val pending = pendingFiller
+        pendingFiller = null
         if (pending == null || upcomingTrackId == null || pending.forTrackId != upcomingTrackId) {
+            CompatLog.i(TAG, "AI DJ break due but no ready filler matched upcomingTrackId=$upcomingTrackId pending=${pending?.forTrackId}")
             return null
         }
 
-        songsSinceLastBreak = 0
-        nextBreakThreshold = rollThreshold()
-        pendingFiller = null
         return pending.filler
     }
 }

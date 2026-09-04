@@ -61,7 +61,13 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val originalQueue = status.queue
 
     val currentIdx = displayQueue.indexOfFirst { it.id == currentTrackId }
-    val upcomingTracks = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
+    val djFillerPendingTrack by viewModel.djFillerPendingTrack.collectAsState()
+    val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
+    val upcomingTracks = run {
+        val base = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
+        val pending = djFillerPendingTrack
+        if (showDjEntriesInQueue && pending != null) listOf(pending) + base else base
+    }
     val pastTracks    = if (currentIdx >  0) displayQueue.take(currentIdx)     else emptyList()
 
     val isPlaying = status.state == PlaybackStateType.PLAYING

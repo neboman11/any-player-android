@@ -95,11 +95,14 @@ class PlaybackQueueManager @Inject constructor(
 
     private val mutableAudioNormalizationSettings = MutableStateFlow(AudioNormalizationSettings())
     private val mutableAiDjEnabled = MutableStateFlow(false)
+    private val mutableShowDjEntriesInQueue = MutableStateFlow(false)
 
     val status: StateFlow<PlaybackStatus> = context.mutableStatus.asStateFlow()
     val audioNormalizationSettings: StateFlow<AudioNormalizationSettings> =
         mutableAudioNormalizationSettings.asStateFlow()
     val aiDjEnabled: StateFlow<Boolean> = mutableAiDjEnabled.asStateFlow()
+    val showDjEntriesInQueue: StateFlow<Boolean> = mutableShowDjEntriesInQueue.asStateFlow()
+    val djFillerPendingTrack: StateFlow<Track?> = djFillerScheduler.pendingQueueDisplayTrack
 
     suspend fun restorePersistedStateNowIfNeeded() {
         if (context.mutableStatus.value.queue.isNotEmpty() || isRestoring) {
@@ -187,6 +190,11 @@ class PlaybackQueueManager @Inject constructor(
     fun setAiDjEnabled(enabled: Boolean) {
         mutableAiDjEnabled.value = enabled
         djFillerScheduler.setEnabled(enabled)
+        persistStateAsync()
+    }
+
+    fun setShowDjEntriesInQueue(enabled: Boolean) {
+        mutableShowDjEntriesInQueue.value = enabled
         persistStateAsync()
     }
 
@@ -548,6 +556,7 @@ class PlaybackQueueManager @Inject constructor(
             persisted.audioNormalizationStrictMode
         )
         setAiDjEnabled(persisted.aiDjEnabled)
+        setShowDjEntriesInQueue(persisted.showDjEntriesInQueue)
 
         // Set shuffle flag BEFORE setQueue so buildOrderedQueue uses the
         // persisted value instead of the default (false). This prevents
@@ -667,6 +676,7 @@ class PlaybackQueueManager @Inject constructor(
             audioNormalizationEnabled = audioNorm.enabled,
             audioNormalizationStrictMode = audioNorm.strictMode,
             aiDjEnabled = mutableAiDjEnabled.value,
+            showDjEntriesInQueue = mutableShowDjEntriesInQueue.value,
             state = state.state
         )
         playbackStateStore.write(json.encodeToString(payload))

@@ -26,6 +26,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -199,11 +200,17 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = state.aiDjEnabled,
                         onClick = { viewModel.setAiDjEnabled(!state.aiDjEnabled) },
                         label = { Text("Enable AI DJ") }
+                    )
+                    FilterChip(
+                        selected = showDjEntriesInQueue,
+                        onClick = { viewModel.setShowDjEntriesInQueue(!showDjEntriesInQueue) },
+                        label = { Text("Show DJ entries in queue") }
                     )
                 }
                 if (state.aiDjEnabled && state.aiDjModelDownloadState !is DjModelDownloadState.Ready) {

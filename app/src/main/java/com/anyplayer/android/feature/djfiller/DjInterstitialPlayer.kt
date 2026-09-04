@@ -1,8 +1,8 @@
 package com.anyplayer.android.feature.djfiller
 
 import android.net.Uri
-import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
 import com.anyplayer.android.feature.playback.InterstitialTransitionListener
 import com.anyplayer.android.feature.playback.Media3PlaybackController
@@ -23,14 +23,6 @@ class DjInterstitialPlayer @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController
 ) : InterstitialTransitionListener {
 
-    private val djPresentationTrack = Track(
-        id = "dj-filler-presentation",
-        title = "AnyPlayer DJ",
-        artist = "",
-        source = SourceType.CUSTOM,
-        isDjFiller = true
-    )
-
     private val mutableNowPlayingOverride = MutableStateFlow<Track?>(null)
     val nowPlayingOverride: StateFlow<Track?> = mutableNowPlayingOverride.asStateFlow()
 
@@ -42,7 +34,7 @@ class DjInterstitialPlayer @Inject constructor(
     }
 
     override fun onInterstitialStarted(mediaId: String) {
-        mutableNowPlayingOverride.value = djPresentationTrack
+        mutableNowPlayingOverride.value = AI_DJ_PRESENTATION_TRACK
     }
 
     override fun onInterstitialEnded(mediaId: String) {
