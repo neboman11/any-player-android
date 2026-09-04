@@ -39,6 +39,9 @@ class DjScriptGenerator @Inject constructor(
                 val options = LlmInference.LlmInferenceOptions.builder()
                     .setModelPath(modelFile.absolutePath)
                     .setMaxTokens(MAX_TOKENS)
+                    // CPU is supported on every device; GPU needs OpenCL/OpenGL ES 3.1
+                    // and won't silently fall back unless explicitly configured to.
+                    .setPreferredBackend(LlmInference.Backend.CPU)
                     .build()
                 LlmInference.createFromOptions(context, options)
             }.onFailure {

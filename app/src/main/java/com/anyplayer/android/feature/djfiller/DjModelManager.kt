@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -67,6 +68,22 @@ class DjModelManager @Inject constructor(
 
     private fun normalizeToken(raw: String): String = bearerRegex.replace(raw.trim(), "")
 
+    /** A non-2xx HTTP response is not the same failure as a real network/connection
+     *  error, and the two need different fixes from the user - lumping them into one
+     *  generic "could not reach server" message was actively misleading (a 404 here
+     *  means the server was reached fine, it just has no model configured). */
+    private fun describeFailedResponse(response: Response?, exception: Throwable?): String {
+        if (response == null) {
+            return "Could not reach the sync server. Check the Sync Server Target and your network connection." +
+                (exception?.message?.let { " ($it)" } ?: "")
+        }
+        return when (response.code) {
+            401, 403 -> "Sync server rejected the auth token. Check the Sync Auth Token setting."
+            404 -> "This sync server doesn't have an AI DJ model configured yet. Ask the server admin to set DJ_MODEL_PATH."
+            else -> "Sync server returned an error (HTTP ${response.code}) while checking for the AI DJ model."
+        }
+    }
+
     private fun authorizedRequest(url: String, token: String): Request = Request.Builder()
         .url(url)
         .apply { if (token.isNotEmpty()) header("Authorization", "Bearer $token") }
@@ -89,12 +106,14 @@ class DjModelManager @Inject constructor(
         }
         val token = normalizeToken(prefs.authToken)
 
-        val infoResponse = runCatching {
+        val infoResult = runCatching {
             okHttpClient.newCall(authorizedRequest("$base/v1/dj-model/info", token)).execute()
-        }.getOrNull()
+        }
+        val infoResponse = infoResult.getOrNull()
         if (infoResponse == null || !infoResponse.isSuccessful) {
+            val message = describeFailedResponse(infoResponse, infoResult.exceptionOrNull())
             infoResponse?.close()
-            mutableDownloadState.value = DjModelDownloadState.Failed("Could not reach sync server for model info")
+            mutableDownloadState.value = DjModelDownloadState.Failed(message)
             return
         }
         val infoBody = infoResponse.use { it.body?.string() }.orEmpty()
@@ -118,12 +137,14 @@ class DjModelManager @Inject constructor(
         // wants it, but a simple "tap Download again" retry is enough for v1.
         val partFile = File(modelDir, "$version.task.part")
 
-        val downloadResponse = runCatching {
+        val downloadResult = runCatching {
             okHttpClient.newCall(authorizedRequest("$base/v1/dj-model/download", token)).execute()
-        }.getOrNull()
+        }
+        val downloadResponse = downloadResult.getOrNull()
         if (downloadResponse == null || !downloadResponse.isSuccessful) {
+            val message = describeFailedResponse(downloadResponse, downloadResult.exceptionOrNull())
             downloadResponse?.close()
-            mutableDownloadState.value = DjModelDownloadState.Failed("Model download failed")
+            mutableDownloadState.value = DjModelDownloadState.Failed(message)
             return
         }
 
