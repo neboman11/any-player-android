@@ -66,8 +66,9 @@ class MainViewModel @Inject constructor(
      *  should prefer this over the real current track whenever it's non-null. */
     val nowPlayingOverride: StateFlow<Track?> = djInterstitialPlayer.nowPlayingOverride
 
-    /** Non-null while an AI DJ break is ready and waiting one slot ahead in the queue -
-     *  see [com.anyplayer.android.feature.djfiller.DjFillerScheduler.pendingQueueDisplayTrack]. */
+    /** Number of songs remaining before the next AI DJ break, or null when no break is pending -
+     *  see [com.anyplayer.android.feature.djfiller.DjFillerScheduler.pendingBreakSongsAway].
+     *  0 means the break is scheduled immediately after the current track. */
     val djFillerPendingBreakSongsAway: StateFlow<Int?> = playbackQueueManager.djFillerPendingBreakSongsAway
     val showDjEntriesInQueue: StateFlow<Boolean> = playbackQueueManager.showDjEntriesInQueue
     val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = playbackQueueManager.djVoiceModelDownloadState

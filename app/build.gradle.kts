@@ -3,6 +3,7 @@ import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import java.net.URI
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -26,6 +27,7 @@ val spotifyClientId = (
         ?: localProperties.getProperty("spotifyClientId")?.trim()
 ).orEmpty()
 val sherpaOnnxVersion = "1.13.7"
+val sherpaOnnxAarSha256 = "c4ef49e309f24fcee5c106b8a279481aaecaabb078cd37b2cd6e9a62cc8a73c8"
 val sherpaOnnxAarUrl =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
 val sherpaOnnxAarFile = project.file("libs/sherpa-onnx-$sherpaOnnxVersion.aar")
@@ -254,12 +256,22 @@ ksp {
 // release asset. Fetched once and cached in libs/ (gitignored) rather than committed.
 val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
     outputs.file(sherpaOnnxAarFile)
-    onlyIf { !sherpaOnnxAarFile.exists() }
     doLast {
-        sherpaOnnxAarFile.parentFile.mkdirs()
-        logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
-        URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
-            sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
+        if (!sherpaOnnxAarFile.exists()) {
+            sherpaOnnxAarFile.parentFile.mkdirs()
+            logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
+            URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
+                sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+
+        val actualSha256 = MessageDigest.getInstance("SHA-256")
+            .digest(sherpaOnnxAarFile.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        if (actualSha256 != sherpaOnnxAarSha256) {
+            throw GradleException(
+                "Downloaded sherpa-onnx AAR SHA-256 mismatch: expected $sherpaOnnxAarSha256 but got $actualSha256"
+            )
         }
     }
 }
