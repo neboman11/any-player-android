@@ -18,8 +18,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
 import java.io.File
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -39,10 +37,14 @@ class DjModelManager @Inject constructor(
 ) {
     private companion object {
         const val TAG = "DjModelManager"
+
+        // Mirrors VoiceModelDownloader's SAFE_COMPONENT: the server-supplied version is used
+        // to build a file path, so it must be rejected if it could escape modelDir (e.g. a
+        // path-traversal segment from a compromised/MITM'd sync server).
+        val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }
 
     private val modelDir = File(context.filesDir, "dj_models")
-    private val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
 
     private val mutableDownloadState = MutableStateFlow<DjModelDownloadState>(restoreExistingModel())
     val downloadState: StateFlow<DjModelDownloadState> = mutableDownloadState.asStateFlow()
@@ -62,57 +64,29 @@ class DjModelManager @Inject constructor(
         downloadJob = scope.launch { runDownload() }
     }
 
-    private fun normalizeBaseUrl(serverTarget: String): String {
-        val trimmed = serverTarget.trim().trimEnd('/')
-        return when {
-            trimmed.isBlank() -> trimmed
-            trimmed.startsWith("https://") || trimmed.startsWith("http://") -> trimmed
-            else -> "https://$trimmed"
-        }
-    }
-
-    private fun normalizeToken(raw: String): String = bearerRegex.replace(raw.trim(), "")
-
-    /** A non-2xx HTTP response is not the same failure as a real network/connection error,
-     *  and the two need different fixes from the user - lumping them into one generic
-     *  "could not reach server" message was actively misleading (a 404 here means the
-     *  server was reached fine, it just has no model configured). */
-    private fun describeFailedResponse(response: Response?, exception: Throwable?): String {
-        if (response == null) {
-            return "Could not reach the sync server. Check the Sync Server Target and your network connection." +
-                (exception?.message?.let { " ($it)" } ?: "")
-        }
-        return when (response.code) {
-            401, 403 -> "Sync server rejected the auth token. Check the Sync Auth Token setting."
-            404 -> "This sync server doesn't have an AI DJ model configured yet. Ask the server admin."
-            else -> "Sync server returned an error (HTTP ${response.code})."
-        }
-    }
-
-    private fun authorizedRequest(url: String, token: String): Request = Request.Builder()
-        .url(url)
-        .apply { if (token.isNotEmpty()) header("Authorization", "Bearer $token") }
-        .get()
-        .build()
-
     private suspend fun runDownload() {
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)
 
         val prefs = syncPreferencesStore.read()
-        val base = normalizeBaseUrl(prefs.serverTarget)
+        val base = normalizeSyncServerBaseUrl(prefs.serverTarget)
         if (base.isBlank()) {
             mutableDownloadState.value = DjModelDownloadState.Failed("Sync server is not configured")
             return
         }
-        val token = normalizeToken(prefs.authToken)
+        val token = normalizeSyncServerAuthToken(prefs.authToken)
 
         val infoResult = runCatching {
-            okHttpClient.newCall(authorizedRequest("$base/v1/dj-model/info", token)).execute()
+            okHttpClient.newCall(authorizedSyncServerRequest("$base/v1/dj-model/info", token)).execute()
         }
         val infoResponse = infoResult.getOrNull()
         if (infoResponse == null || !infoResponse.isSuccessful) {
-            mutableDownloadState.value =
-                DjModelDownloadState.Failed(describeFailedResponse(infoResponse, infoResult.exceptionOrNull()))
+            mutableDownloadState.value = DjModelDownloadState.Failed(
+                describeFailedSyncResponse(
+                    infoResponse,
+                    infoResult.exceptionOrNull(),
+                    notConfiguredMessage = "This sync server doesn't have an AI DJ model configured yet. Ask the server admin."
+                )
+            )
             infoResponse?.close()
             return
         }
@@ -123,6 +97,10 @@ class DjModelManager @Inject constructor(
             return
         }
         val version = info["version"]?.jsonPrimitive?.content ?: "unversioned"
+        if (!SAFE_COMPONENT.matches(version)) {
+            mutableDownloadState.value = DjModelDownloadState.Failed("Sync server returned an invalid model version")
+            return
+        }
         val expectedSha256 = info["sha256"]?.jsonPrimitive?.content
         val expectedSize = info["size_bytes"]?.jsonPrimitive?.longOrNull ?: 0L
 
@@ -136,37 +114,25 @@ class DjModelManager @Inject constructor(
         // `.part` suffix, no Range resume - a "tap Download again" retry is enough for v1.
         val partFile = File(modelDir, "$version.task.part")
         val downloadResult = runCatching {
-            okHttpClient.newCall(authorizedRequest("$base/v1/dj-model/download", token)).execute()
+            okHttpClient.newCall(authorizedSyncServerRequest("$base/v1/dj-model/download", token)).execute()
         }
         val downloadResponse = downloadResult.getOrNull()
         if (downloadResponse == null || !downloadResponse.isSuccessful) {
-            mutableDownloadState.value =
-                DjModelDownloadState.Failed(describeFailedResponse(downloadResponse, downloadResult.exceptionOrNull()))
+            mutableDownloadState.value = DjModelDownloadState.Failed(
+                describeFailedSyncResponse(
+                    downloadResponse,
+                    downloadResult.exceptionOrNull(),
+                    notConfiguredMessage = "This sync server doesn't have an AI DJ model configured yet. Ask the server admin."
+                )
+            )
             downloadResponse?.close()
             return
         }
 
         val digest = MessageDigest.getInstance("SHA-256")
         val writeResult = runCatching {
-            downloadResponse.use { response ->
-                val body = response.body ?: error("empty response body")
-                val totalBytes = expectedSize.takeIf { it > 0 } ?: body.contentLength()
-                var bytesRead = 0L
-                partFile.outputStream().use { out ->
-                    body.byteStream().use { input ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            out.write(buffer, 0, read)
-                            digest.update(buffer, 0, read)
-                            bytesRead += read
-                            if (totalBytes > 0) {
-                                mutableDownloadState.value = DjModelDownloadState.Downloading(bytesRead.toFloat() / totalBytes)
-                            }
-                        }
-                    }
-                }
+            downloadSyncServerResponseToFile(downloadResponse, partFile, expectedSize, digest) { fraction ->
+                mutableDownloadState.value = DjModelDownloadState.Downloading(fraction)
             }
         }
         if (writeResult.isFailure) {

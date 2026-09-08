@@ -129,6 +129,9 @@ class DjVoiceSynthesizer @Inject constructor(
         return loadMutex.withLock {
             val voiceDir = voiceModelDownloader.voiceDirOrNull() ?: return@withLock null
             if (loadedVoiceDir == voiceDir) tts?.let { return@withLock it }
+            // Switching voices abandons the previously loaded native ONNX model; release it
+            // deterministically instead of relying on the finalizer to eventually reclaim it.
+            tts?.release()
             tts = null
             loadedVoiceDir = null
             val modelFile = voiceDir.listFiles()?.firstOrNull {

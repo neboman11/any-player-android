@@ -132,6 +132,25 @@ class Media3PlaybackController @Inject constructor(
 
             override fun onPlayerError(error: PlaybackException) {
                 CompatLog.e(TAG, "playerError code=${error.errorCodeName} mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition", error)
+
+                // A corrupt/truncated filler (failed TTS run, storage I/O error) drives
+                // ExoPlayer to STATE_IDLE+error instead of STATE_ENDED, so the interstitial
+                // cleanup in onPlaybackStateChanged/onMediaItemTransition never runs and
+                // playback gets stuck on the DJ break forever. Mirror both cleanup paths here.
+                val endedId = activeInterstitialMediaId ?: return
+                val onEnded = standaloneInterstitialEndedCallback
+                if (onEnded != null) {
+                    activeInterstitialMediaId = null
+                    standaloneInterstitialEndedCallback = null
+                    clearMediaItems()
+                    interstitialListener?.onInterstitialEnded(endedId)
+                    onEnded()
+                } else {
+                    activeInterstitialMediaId = null
+                    val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
+                    index?.let { removeMediaItem(it) }
+                    interstitialListener?.onInterstitialEnded(endedId)
+                }
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {

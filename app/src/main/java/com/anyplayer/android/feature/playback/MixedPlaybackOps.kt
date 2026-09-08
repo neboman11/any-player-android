@@ -372,6 +372,37 @@ internal class MixedPlaybackOps(
             } else {
                 context.recovery.resetSpotifyMidTrackStallState()
             }
+
+            // The opposite failure mode: Spotify keeps reporting `is_playing: true` with a
+            // frozen position - e.g. a ghost/zombie Connect session left behind after the app
+            // hosting playback was killed abruptly. Mirrors SpotifyPlaybackOps.sync(); without
+            // it a Mixed-mode queue hangs on this indefinitely (pure Spotify-mode self-recovers).
+            if (spotifySnapshot.isPlaying && !nearTrackEnd &&
+                !context.recovery.manualSkipInFlight && !context.recovery.spotifyAutoAdvanceInFlight
+            ) {
+                val nowMs = System.currentTimeMillis()
+                val sameTrack = context.recovery.spotifyGhostPlayingStallTrackId == currentTrack.id
+                val samePosition = context.recovery.spotifyGhostPlayingStallPositionMs == spotifySnapshot.progressMs
+                if (!sameTrack || !samePosition) {
+                    context.recovery.spotifyGhostPlayingStallTrackId = currentTrack.id
+                    context.recovery.spotifyGhostPlayingStallPositionMs = spotifySnapshot.progressMs
+                    context.recovery.spotifyGhostPlayingStallSinceMs = nowMs
+                } else {
+                    val stalledMs = nowMs - context.recovery.spotifyGhostPlayingStallSinceMs
+                    if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 5) {
+                        CompatLog.w(TAG, "Mixed-mode Spotify reports playing but position frozen for ${stalledMs}ms (likely a ghost Connect session); attempting recovery")
+                        context.recovery.clearGhostPlayingStallWatch()
+                        spotifyOps.maybeRecoverSpotifyTrack(
+                            queueTrackIds = listOf(currentTrack.id),
+                            startIndex = 0,
+                            failureMessage = "Spotify playback stalled while reporting playing"
+                        )
+                        return
+                    }
+                }
+            } else {
+                context.recovery.clearGhostPlayingStallWatch()
+            }
         } else {
             val snapshot = media3PlaybackController.snapshot()
             val sequence = mixedPlaybackSequence(state)

@@ -175,14 +175,14 @@ class PlaybackQueueManagerTest {
     }
 
     @Test
-    fun localMode_previous_whileInterstitialSkipsBreakThenUsesPreviousTrackLogic() {
+    fun localMode_previous_whileInterstitialSeeksBackPastFillerWithoutSkipInterstitial() {
         whenever(media3.previous()).thenReturn(true)
         whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
         manager.setQueue(listOf(localTrack("a"), localTrack("b")))
 
         manager.previous()
 
-        verify(media3).skipInterstitial()
+        verify(media3, never()).skipInterstitial()
         verify(media3).previous()
         assertEquals(PlaybackStateType.PLAYING, manager.status.value.state)
     }

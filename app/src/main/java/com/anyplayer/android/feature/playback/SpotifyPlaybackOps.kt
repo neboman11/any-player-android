@@ -7,6 +7,7 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -154,6 +155,16 @@ internal class SpotifyPlaybackOps(
     }
 
     fun togglePlayPause() {
+        // A standalone DJ interstitial (Spotify/Mixed break) plays on the shared
+        // ExoPlayer, not the Spotify session - route transport controls there while
+        // it's active instead of controlling the idle Spotify playback.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.togglePlayPause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                state = if (media3PlaybackController.player.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED
+            )
+            return
+        }
         val state = context.mutableStatus.value
         // An explicit play/pause command is unambiguous user intent - it can't be
         // mistaken for a stall, so it always cancels any in-progress stall watch.
@@ -177,6 +188,11 @@ internal class SpotifyPlaybackOps(
     }
 
     fun play() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.play()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
+            return
+        }
         val state = context.mutableStatus.value
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
@@ -231,6 +247,11 @@ internal class SpotifyPlaybackOps(
     }
 
     fun pause() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.pause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PAUSED)
+            return
+        }
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = spotifyPlaybackController.pause()
@@ -243,6 +264,10 @@ internal class SpotifyPlaybackOps(
     }
 
     fun seekTo(positionMs: Long) {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.seekTo(positionMs)
+            return
+        }
         context.scope.launch {
             spotifyPlaybackController.seekTo(positionMs)
             val state = context.mutableStatus.value
@@ -342,13 +367,24 @@ internal class SpotifyPlaybackOps(
             // AI DJ hook: mirrors sync()'s natural end-of-track path - a manual skip is a
             // real advance past the current track too, so a ready break should play here
             // exactly like it would on natural end-of-track, instead of silently discarding it.
-            val filler = djFillerScheduler.consumeReadyFillerIfDue(targetTrack.id)
-            if (filler != null) {
-                djInterstitialPlayer.playStandalone(filler) {
-                    context.scope.launch { performManualSkipTo(state, targetIndex, targetTrack) }
+            try {
+                val filler = djFillerScheduler.consumeReadyFillerIfDue(targetTrack.id)
+                if (filler != null) {
+                    djInterstitialPlayer.playStandalone(filler) {
+                        context.scope.launch { performManualSkipTo(state, targetIndex, targetTrack) }
+                    }
+                } else {
+                    performManualSkipTo(state, targetIndex, targetTrack)
                 }
-            } else {
-                performManualSkipTo(state, targetIndex, targetTrack)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Unlike performManualSkipTo (which resets manualSkipInFlight in its own
+                // finally), a throw from the filler dispatch itself happens before that
+                // block runs - reset here or the flag stays stuck, permanently blocking
+                // auto-advance/stall recovery until app restart.
+                CompatLog.w(TAG, "Spotify next() filler dispatch failed", e)
+                context.recovery.manualSkipInFlight = false
             }
         }
     }

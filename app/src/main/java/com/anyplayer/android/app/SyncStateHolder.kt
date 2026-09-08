@@ -271,9 +271,15 @@ internal class SyncStateHolder(
         }
 
         if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
-            val configFile = configFileExporter.buildConfigFile()
+            // buildConfigFile() parses stored timestamps (Instant.parse); a row in a
+            // non-ISO-8601 format (legacy data, a bad migration) would otherwise throw
+            // uncaught here and crash the whole sync push instead of just skipping it.
+            val configFile = runCatching { configFileExporter.buildConfigFile() }.getOrElse { e ->
+                CompatLog.w(TAG, "buildConfigFile failed; skipping playlists/provider-configuration sync", e)
+                null
+            }
 
-            if (preferences.syncPlaylists) {
+            if (configFile != null && preferences.syncPlaylists) {
                 val playlistsJson = syncJson.encodeToJsonElement(
                     ListSerializer(ConfigCustomPlaylist.serializer()),
                     configFile.customPlaylists
@@ -281,7 +287,7 @@ internal class SyncStateHolder(
                 runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson) }
             }
 
-            if (preferences.syncProviderConfiguration) {
+            if (configFile != null && preferences.syncProviderConfiguration) {
                 val providerJson = syncJson.encodeToJsonElement(
                     ConfigProviderConfigs.serializer(),
                     configFile.providerConfigs

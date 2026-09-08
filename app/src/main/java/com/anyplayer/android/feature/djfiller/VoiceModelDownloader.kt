@@ -202,21 +202,8 @@ class VoiceModelDownloader(
         }
         val digest = MessageDigest.getInstance("SHA-256")
         val downloaded = runCatching {
-            response.use { result ->
-                val body = result.body ?: error("empty response body")
-                val total = descriptor.sizeBytes.takeIf { it > 0 } ?: body.contentLength()
-                var readTotal = 0L
-                zipFile.outputStream().use { output -> body.byteStream().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        digest.update(buffer, 0, read)
-                        readTotal += read
-                        if (total > 0) mutableDownloadState.value = DjModelDownloadState.Downloading(readTotal.toFloat() / total)
-                    }
-                } }
+            downloadSyncServerResponseToFile(response, zipFile, descriptor.sizeBytes, digest) { fraction ->
+                mutableDownloadState.value = DjModelDownloadState.Downloading(fraction)
             }
         }.isSuccess
         if (!downloaded || !descriptor.sha256.equals(digest.digest().toHex(), ignoreCase = true)) {
@@ -324,29 +311,27 @@ class VoiceModelDownloader(
     private fun requireSafeComponent(value: String) = require(SAFE_COMPONENT.matches(value)) { "unsafe voice cache component" }
 
     private fun configuredBaseUrl(): HttpUrl? {
-        val value = syncPreferencesStore.read().serverTarget.trim().trimEnd('/')
-        if (value.isBlank()) {
+        val normalized = normalizeSyncServerBaseUrl(syncPreferencesStore.read().serverTarget)
+        if (normalized.isBlank()) {
             mutableDownloadState.value = DjModelDownloadState.Failed("Sync server is not configured")
             return null
         }
-        val url = (if (value.startsWith("https://") || value.startsWith("http://")) value else "https://$value")
-            .toHttpUrlOrNull()
+        val url = normalized.toHttpUrlOrNull()
         if (url == null) mutableDownloadState.value = DjModelDownloadState.Failed("Sync server target is invalid")
         return url
     }
 
-    private fun authToken(): String = syncPreferencesStore.read().authToken.trim().removePrefix("Bearer ").removePrefix("bearer ")
+    private fun authToken(): String = normalizeSyncServerAuthToken(syncPreferencesStore.read().authToken)
 
-    private fun authorizedRequest(url: HttpUrl, token: String): Request = Request.Builder().url(url).apply {
-        if (token.isNotEmpty()) header("Authorization", "Bearer $token")
-    }.get().build()
+    private fun authorizedRequest(url: HttpUrl, token: String): Request =
+        authorizedSyncServerRequest(url.toString(), token)
 
-    private fun describeFailedResponse(response: Response?, exception: Throwable?): String = when (response?.code) {
-        null -> "Could not reach sync server. Check Sync Server Target and network connection." + (exception?.message?.let { " ($it)" } ?: "")
-        401, 403 -> "Sync server rejected auth token. Check Sync Auth Token setting."
-        404 -> "This sync server doesn't have an AI DJ voice catalog configured yet."
-        else -> "Sync server returned an error (HTTP ${response.code})."
-    }
+    private fun describeFailedResponse(response: Response?, exception: Throwable?): String =
+        describeFailedSyncResponse(
+            response,
+            exception,
+            notConfiguredMessage = "This sync server doesn't have an AI DJ voice catalog configured yet."
+        )
 
     private fun updateVoiceState(
         catalog: DjVoiceCatalog? = mutableVoiceState.value.catalog,

@@ -511,9 +511,10 @@ class PlaybackQueueManager @Inject constructor(
         if (djInterstitialPlayer.isPlayingInterstitial) {
             if (context.mixedMode || context.spotifyMode) {
                 media3PlaybackController.clearStandaloneInterstitial()
-            } else {
-                media3PlaybackController.skipInterstitial()
             }
+            // Local mode: don't skipInterstitial() (that seeks forward, past the break).
+            // localOps.previous() below calls the ExoPlayer previous() directly, which
+            // naturally seeks back past the spliced filler item to the pre-break track.
         }
         if (context.mixedMode) {
             mixedOps.previous(state)

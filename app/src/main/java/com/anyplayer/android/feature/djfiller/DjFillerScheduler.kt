@@ -213,7 +213,14 @@ class DjFillerScheduler @Inject constructor(
                 // the spliced item with zero gap once the current song ends, so there's
                 // nothing left to "consume" later - reset scheduling state right away.
                 withContext(Dispatchers.Main.immediate) {
-                    djInterstitialPlayer.insertLocal(ready)
+                    // Generation can take seconds; if the user manually skipped during that
+                    // window, preBreakTrack is no longer current and insertLocal() would
+                    // splice this (now stale) break after whatever is actually playing.
+                    if (lastSeenTrackId == preBreakTrack.id) {
+                        djInterstitialPlayer.insertLocal(ready)
+                    } else {
+                        CompatLog.i(TAG, "AI DJ: pre-break track ${preBreakTrack.id} no longer current after generation, discarding stale break")
+                    }
                     resetSchedulingState()
                 }
             } else {
