@@ -24,6 +24,7 @@ import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
+import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
@@ -115,6 +116,20 @@ class MixedPlaybackOpsTest {
     // ---- Spotify-track dwell check ----
 
     @Test
+    fun sync_spotifyManualPauseGrace_clearsStallWatchWithoutRecovery() = runTest {
+        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        context.recovery.spotifyMidTrackStallTrackId = "s1"
+
+        whenever(spotify.isManualPauseExpected()).thenReturn(true)
+
+        ops.sync()
+
+        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
+    }
+
+    @Test
     fun sync_spotifyTrackSinglePollPause_doesNotForceRestart() = runTest {
         val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
@@ -124,6 +139,22 @@ class MixedPlaybackOpsTest {
 
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
         assertEquals("s1", context.recovery.spotifyMidTrackStallTrackId)
+    }
+
+    @Test
+    fun sync_spotifyAdvancedTrack_reconcilesMixedQueueCurrentTrack() = runTest {
+        val tracks = listOf(
+            track("s1", SourceType.SPOTIFY),
+            track("s2", SourceType.SPOTIFY),
+            track("local1", SourceType.JELLYFIN)
+        )
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s2", playing = true)
+
+        ops.sync()
+
+        assertEquals("s2", context.mutableStatus.value.currentTrack?.id)
+        assertEquals(1, context.queueIndexCache.spotifyCurrentQueueIndex)
     }
 
     @Test

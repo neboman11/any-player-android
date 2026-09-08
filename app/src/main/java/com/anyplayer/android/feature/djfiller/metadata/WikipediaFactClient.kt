@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Looks up a single short factual blurb about an artist to feed into the DJ script
+/** Looks up a single short factual blurb about a song to feed into the DJ script
  *  prompt, via Wikipedia's no-key REST summary endpoint. One call per DJ break, never
  *  retried: any failure (404, timeout, malformed response) just means the script
  *  generates without a fact rather than delaying or blocking the break. */
@@ -34,8 +34,8 @@ class WikipediaFactClient @Inject constructor(
         .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 
-    suspend fun fetchArtistFact(artistName: String): String? = withContext(Dispatchers.IO) {
-        val trimmed = artistName.trim()
+    suspend fun fetchArtistFact(pageTitle: String): String? = withContext(Dispatchers.IO) {
+        val trimmed = pageTitle.trim()
         if (trimmed.isEmpty()) return@withContext null
 
         val encoded = URLEncoder.encode(trimmed, "UTF-8").replace("+", "%20")
@@ -54,7 +54,7 @@ class WikipediaFactClient @Inject constructor(
                 extract?.takeIf { it.isNotEmpty() }
             }
         }.onFailure {
-            CompatLog.d(TAG, "artist fact lookup failed for '$trimmed': ${it.message}")
+            CompatLog.d(TAG, "song fact lookup failed for '$trimmed': ${it.message}")
         }.getOrNull()
     }
 }

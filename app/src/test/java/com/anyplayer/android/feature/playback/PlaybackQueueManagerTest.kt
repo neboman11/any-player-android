@@ -10,7 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -231,6 +233,46 @@ class PlaybackQueueManagerTest {
         manager.setShuffle(true)
 
         verify(media3).setShuffle(true)
+        assertTrue(manager.status.value.shuffle)
+    }
+
+    @Test
+    fun restorePersistedState_appliesShuffleToMedia3() = runTest {
+        wheneverBlocking { stateStore.read() } doReturn json.encodeToString(
+            PersistedPlaybackState(
+                queue = listOf(localTrack("a")),
+                currentQueueIndex = 0,
+                positionMs = 0L,
+                shuffle = true,
+                repeatMode = RepeatMode.OFF,
+                volume = 100,
+                state = PlaybackStateType.PAUSED
+            )
+        )
+
+        manager.restorePersistedStateNowIfNeeded()
+
+        verify(media3).setShuffle(true)
+        assertTrue(manager.status.value.shuffle)
+    }
+
+    @Test
+    fun restorePersistedState_appliesShuffleToSpotify() = runTest {
+        wheneverBlocking { stateStore.read() } doReturn json.encodeToString(
+            PersistedPlaybackState(
+                queue = listOf(spotifyTrack("s1")),
+                currentQueueIndex = 0,
+                positionMs = 0L,
+                shuffle = true,
+                repeatMode = RepeatMode.OFF,
+                volume = 100,
+                state = PlaybackStateType.PAUSED
+            )
+        )
+
+        manager.restorePersistedStateNowIfNeeded()
+
+        verifyBlocking(spotify) { setShuffle(true) }
         assertTrue(manager.status.value.shuffle)
     }
 

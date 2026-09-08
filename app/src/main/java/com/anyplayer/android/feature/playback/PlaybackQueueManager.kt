@@ -9,6 +9,8 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import com.anyplayer.android.feature.djfiller.DjVoiceState
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -102,7 +104,19 @@ class PlaybackQueueManager @Inject constructor(
         mutableAudioNormalizationSettings.asStateFlow()
     val aiDjEnabled: StateFlow<Boolean> = mutableAiDjEnabled.asStateFlow()
     val showDjEntriesInQueue: StateFlow<Boolean> = mutableShowDjEntriesInQueue.asStateFlow()
-    val djFillerPendingTrack: StateFlow<Track?> = djFillerScheduler.pendingQueueDisplayTrack
+    val djFillerPendingBreakSongsAway: StateFlow<Int?> = djFillerScheduler.pendingBreakSongsAway
+    val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = djFillerScheduler.voiceModelDownloadState
+    val djVoiceCatalogState: StateFlow<DjVoiceState> = djFillerScheduler.voiceCatalogState
+    val djVoiceGain: StateFlow<Float> = djFillerScheduler.voiceGain
+    val djVoiceGainRange: ClosedFloatingPointRange<Float> = djFillerScheduler.voiceGainRange
+
+    fun refreshDjVoiceCatalog() = djFillerScheduler.refreshVoiceCatalog()
+
+    fun selectDjVoice(id: String) = djFillerScheduler.selectVoice(id)
+
+    fun setDjVoiceGain(gain: Float) = djFillerScheduler.setVoiceGain(gain)
+
+    fun downloadDjVoiceModel() = djFillerScheduler.downloadVoiceModel()
 
     suspend fun restorePersistedStateNowIfNeeded() {
         if (context.mutableStatus.value.queue.isNotEmpty() || isRestoring) {
@@ -567,6 +581,13 @@ class PlaybackQueueManager @Inject constructor(
         val shouldAutoPlay = false
 
         setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
+
+        // setQueue restores app state but not the playback engine's shuffle flag.
+        // Apply it directly so the first sync cannot overwrite persisted state.
+        when {
+            context.spotifyMode -> spotifyPlaybackController.setShuffle(persisted.shuffle)
+            !context.mixedMode -> media3PlaybackController.setShuffle(persisted.shuffle)
+        }
 
         // Restore the persisted orderedQueue if available and valid, so the
         // shuffled order is preserved across restarts instead of re-randomizing.

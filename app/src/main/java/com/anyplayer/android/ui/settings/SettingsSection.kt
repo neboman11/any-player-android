@@ -21,11 +21,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,12 +44,47 @@ import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.feature.djfiller.DjVoiceState
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 
 private enum class DataWorkflow { NONE, EXPORT, IMPORT_STATE, IMPORT_CONFIG }
 private enum class SettingsTab { GENERAL, SPOTIFY, JELLYFIN, PLEX }
+
+internal data class DjVoiceOption(val id: String, val displayName: String)
+
+internal data class DjVoiceSettingsUiState(
+    val options: List<DjVoiceOption>,
+    val selectedVoiceName: String?,
+    val activeVoiceLabel: String,
+    val canDownload: Boolean
+)
+
+internal fun djVoiceSettingsUiState(
+    voiceState: DjVoiceState,
+    downloadState: DjModelDownloadState = DjModelDownloadState.NotDownloaded
+): DjVoiceSettingsUiState {
+    val voices = voiceState.catalog?.voices.orEmpty()
+    val selectedVoice = voices.firstOrNull { it.id == voiceState.selectedId }
+    val activeVoiceName = voiceState.activeVoice?.id?.let { activeId ->
+        voices.firstOrNull { it.id == activeId }?.name
+    }
+    return DjVoiceSettingsUiState(
+        options = voices.map { DjVoiceOption(it.id, it.name) },
+        selectedVoiceName = selectedVoice?.name,
+        activeVoiceLabel = when {
+            activeVoiceName != null -> activeVoiceName
+            voiceState.activeVoice != null -> "Unavailable until catalog refresh"
+            else -> "None"
+        },
+        canDownload = selectedVoice != null &&
+            downloadState !is DjModelDownloadState.Downloading &&
+            (downloadState == DjModelDownloadState.NotDownloaded ||
+                downloadState is DjModelDownloadState.Failed ||
+                selectedVoice.id != voiceState.activeVoice?.id)
+    )
+}
 
 @Composable
 internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
@@ -213,9 +250,17 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                         label = { Text("Show DJ entries in queue") }
                     )
                 }
-                if (state.aiDjEnabled && state.aiDjModelDownloadState !is DjModelDownloadState.Ready) {
-                    WorkflowStep(number = 1, label = "Download AI DJ voice model") {
+        if (state.aiDjEnabled) {
+            val djVoiceModelDownloadState by viewModel.djVoiceModelDownloadState.collectAsState()
+            val djVoiceCatalogState by viewModel.djVoiceCatalogState.collectAsState()
+            LaunchedEffect(Unit) { viewModel.refreshDjVoiceCatalog() }
+                    WorkflowStep(number = 1, label = "AI DJ script model") {
                         when (val downloadState = state.aiDjModelDownloadState) {
+                            is DjModelDownloadState.Ready -> Text(
+                                "Model ready (${downloadState.file.name})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             is DjModelDownloadState.Downloading -> Text(
                                 "Downloading... ${(downloadState.progress * 100).toInt()}%",
                                 style = MaterialTheme.typography.bodySmall
@@ -228,9 +273,86 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                                 )
                                 Button(onClick = viewModel::downloadDjModel) { Text("Retry Download") }
                             }
-                            else -> Button(onClick = viewModel::downloadDjModel) { Text("Download") }
+                            DjModelDownloadState.NotDownloaded -> Button(onClick = viewModel::downloadDjModel) { Text("Download") }
+                        }
+            }
+            WorkflowStep(number = 2, label = "AI DJ speech voice") {
+                val voiceUiState = djVoiceSettingsUiState(djVoiceCatalogState, djVoiceModelDownloadState)
+
+                OutlinedButton(onClick = viewModel::refreshDjVoiceCatalog) {
+                    Text("Refresh voices")
+                }
+                when {
+                    djVoiceCatalogState.catalog == null -> Text(
+                        "Voice catalog unavailable. Configure and authenticate the sync server, then refresh.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    voiceUiState.options.isEmpty() -> Text(
+                        "The sync server has no AI DJ voices available.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    else -> voiceUiState.options.forEach { voice ->
+                        FilterChip(
+                            selected = voice.id == djVoiceCatalogState.selectedId,
+                            onClick = { viewModel.selectDjVoice(voice.id) },
+                            label = { Text(voice.displayName) }
+                        )
+                    }
+                }
+                Text(
+                    "Selected target: ${voiceUiState.selectedVoiceName ?: "None"}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "Active voice: ${voiceUiState.activeVoiceLabel}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                val voiceGain by viewModel.djVoiceGain.collectAsState()
+                val voiceGainRange = viewModel.djVoiceGainRange
+                Text(
+                    "Voice volume boost: ${String.format("%.1fx", voiceGain)}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = voiceGain,
+                    valueRange = voiceGainRange,
+                    onValueChange = viewModel::setDjVoiceGain
+                )
+                when (val downloadState = djVoiceModelDownloadState) {
+                    is DjModelDownloadState.Ready -> Column {
+                        Text(
+                            "Voice ready",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (voiceUiState.canDownload) {
+                            Button(onClick = viewModel::downloadDjVoiceModel) { Text("Switch Voice") }
                         }
                     }
+                            is DjModelDownloadState.Downloading -> Text(
+                                "Downloading... ${(downloadState.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            is DjModelDownloadState.Failed -> Column {
+                                Text(
+                                    downloadState.reason,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                        Button(
+                            onClick = viewModel::downloadDjVoiceModel,
+                            enabled = voiceUiState.canDownload
+                        ) { Text("Retry Download") }
+                    }
+                    DjModelDownloadState.NotDownloaded ->
+                        Button(
+                            onClick = viewModel::downloadDjVoiceModel,
+                            enabled = voiceUiState.canDownload
+                        ) { Text("Download") }
+                }
+            }
                 }
 
                 HorizontalDivider()

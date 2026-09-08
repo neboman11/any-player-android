@@ -4,7 +4,7 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.metadata.WikipediaFactClient
-import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
@@ -100,16 +100,41 @@ class DjFillerScheduler @Inject constructor(
 
     private fun rollThreshold(): Int = Random.nextInt(MIN_SONGS_BETWEEN_BREAKS, MAX_SONGS_BETWEEN_BREAKS_EXCLUSIVE)
 
-    private val mutablePendingQueueDisplayTrack = MutableStateFlow<Track?>(null)
+    private val mutablePendingBreakSongsAway = MutableStateFlow<Int?>(null)
 
-    /** Non-null while a break is ready but not yet reached in playback - the "up next"
-     *  queue display prepends [AI_DJ_PRESENTATION_TRACK] right after the current track
-     *  when the user has the "show DJ entries" setting on. */
-    val pendingQueueDisplayTrack: StateFlow<Track?> = mutablePendingQueueDisplayTrack
+    /** How many more real songs will play before the next break, so the "up next" queue
+     *  display can always show exactly where [AI_DJ_PRESENTATION_TRACK] will land (0 = right
+     *  after the current track) - this reflects the *schedule*, not whether generation has
+     *  actually finished, so it's visible the moment a threshold is rolled rather than
+     *  popping in unpredictably once content happens to be ready. Null while disabled. */
+    val pendingBreakSongsAway: StateFlow<Int?> = mutablePendingBreakSongsAway
+
+    private fun updatePendingBreakOffset() {
+        mutablePendingBreakSongsAway.value = if (enabled) {
+            (nextBreakThreshold - songsSinceLastBreak).coerceAtLeast(0)
+        } else {
+            null
+        }
+    }
+
+    val voiceModelDownloadState: StateFlow<DjModelDownloadState> = djVoiceSynthesizer.downloadState
+    val voiceCatalogState: StateFlow<DjVoiceState> = djVoiceSynthesizer.voiceState
+    val voiceGain: StateFlow<Float> = djVoiceSynthesizer.voiceGain
+    val voiceGainRange: ClosedFloatingPointRange<Float> = djVoiceSynthesizer.voiceGainRange
+
+    fun refreshVoiceCatalog() = djVoiceSynthesizer.refreshVoiceCatalog()
+
+    fun selectVoice(id: String) = djVoiceSynthesizer.selectVoice(id)
+
+    fun setVoiceGain(gain: Float) = djVoiceSynthesizer.setVoiceGain(gain)
+
+    /** Only ever meant to be called from an explicit user button tap in Settings. */
+    fun downloadVoiceModel() = djVoiceSynthesizer.downloadSelectedVoice()
 
     private fun resetSchedulingState() {
         songsSinceLastBreak = 0
         nextBreakThreshold = rollThreshold()
+        updatePendingBreakOffset()
     }
 
     fun setEnabled(value: Boolean) {
@@ -118,8 +143,8 @@ class DjFillerScheduler @Inject constructor(
             generationJob?.cancel()
             generationJob = null
             pendingFiller = null
-            mutablePendingQueueDisplayTrack.value = null
         }
+        updatePendingBreakOffset()
     }
 
     /** Call once per real playback-status tick. Counts a new real song exactly once per
@@ -128,18 +153,13 @@ class DjFillerScheduler @Inject constructor(
     fun onStatusUpdated(status: PlaybackStatus) {
         if (!enabled) return
 
-        // Local-mode splice: once ExoPlayer has actually carried playback into the
-        // pending break, it's no longer "upcoming" - stop showing it in the queue.
-        if (mutablePendingQueueDisplayTrack.value != null && djInterstitialPlayer.isPlayingInterstitial) {
-            mutablePendingQueueDisplayTrack.value = null
-        }
-
         val current = status.currentTrack ?: return
         if (current.isDjFiller) return
         if (current.id == lastSeenTrackId) return
         lastSeenTrackId = current.id
 
         songsSinceLastBreak++
+        updatePendingBreakOffset()
         if (songsSinceLastBreak == nextBreakThreshold) {
             startGenerationFor(status, current)
         }
@@ -187,9 +207,6 @@ class DjFillerScheduler @Inject constructor(
             }
 
             CompatLog.i(TAG, "AI DJ: break ready for '${nextTrack.title}'")
-            withContext(Dispatchers.Main.immediate) {
-                mutablePendingQueueDisplayTrack.value = AI_DJ_PRESENTATION_TRACK
-            }
 
             if (isLocalModeActive()) {
                 // Push immediately: ExoPlayer's own auto-advance will carry playback into
@@ -210,7 +227,7 @@ class DjFillerScheduler @Inject constructor(
             CompatLog.w(TAG, "AI DJ: no usable on-device TTS voice, skipping this cycle")
             return null
         }
-        val fact = wikipediaFactClient.fetchArtistFact(nextTrack.artist)
+        val fact = wikipediaFactClient.fetchArtistFact("${nextTrack.title} (${nextTrack.artist} song)")
         val script = djScriptGenerator.generateScript(nextTrack, fact)
         if (script == null) {
             CompatLog.w(TAG, "AI DJ: script generation returned null (model not downloaded/loaded, or inference failed)")
@@ -237,10 +254,9 @@ class DjFillerScheduler @Inject constructor(
         // otherwise a single cycle where generation didn't finish in time would leave
         // songsSinceLastBreak permanently >= nextBreakThreshold, and since onStatusUpdated
         // only (re)starts generation on an *exact* equality match, the scheduler would never
-        // trigger generation again for the rest of the session.
-        songsSinceLastBreak = 0
-        nextBreakThreshold = rollThreshold()
-        mutablePendingQueueDisplayTrack.value = null
+        // trigger generation again for the rest of the session. This also rolls a fresh
+        // threshold and updates the "songs away" display to the *next* break immediately.
+        resetSchedulingState()
 
         val pending = pendingFiller
         pendingFiller = null

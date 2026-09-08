@@ -2,6 +2,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -24,6 +25,11 @@ val spotifyClientId = (
     (project.findProperty("spotifyClientId") as String?)?.trim()
         ?: localProperties.getProperty("spotifyClientId")?.trim()
 ).orEmpty()
+val sherpaOnnxVersion = "1.13.7"
+val sherpaOnnxAarUrl =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
+val sherpaOnnxAarFile = project.file("libs/sherpa-onnx-$sherpaOnnxVersion.aar")
+
 val rustSharedWorkspaceDir = rootProject.file("../any-player-shared-rust")
 val rustFfiArm64Target = "aarch64-linux-android"
 val rustFfiX8664Target = "x86_64-linux-android"
@@ -189,9 +195,13 @@ dependencies {
     implementation("androidx.media3:media3-database:1.5.1")
     implementation("androidx.media:media:1.8.0")
 
-    // On-device LLM inference for the AI DJ feature (feature/djfiller) - text-to-speech
-    // uses the platform android.speech.tts.TextToSpeech API, no extra dependency needed.
+    // On-device LLM inference for the AI DJ feature (feature/djfiller).
     implementation("com.google.mediapipe:tasks-genai:0.10.24")
+
+    // On-device neural TTS for the AI DJ feature - offline Piper/VITS voice synthesis
+    // via sherpa-onnx (see downloadSherpaOnnxAar below; no Maven Central artifact exists,
+    // k2-fsa publish a prebuilt AAR with all four ABIs' native libs as a GitHub release asset).
+    implementation(files("$projectDir/libs/sherpa-onnx-$sherpaOnnxVersion.aar"))
 
     implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
     implementation("com.google.dagger:hilt-android:$hiltVersion")
@@ -237,6 +247,24 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
+}
+
+// sherpa-onnx has no Maven Central artifact; k2-fsa publish a prebuilt AAR (bundling the
+// compiled Kotlin API classes plus native .so libs for all four Android ABIs) as a GitHub
+// release asset. Fetched once and cached in libs/ (gitignored) rather than committed.
+val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
+    outputs.file(sherpaOnnxAarFile)
+    onlyIf { !sherpaOnnxAarFile.exists() }
+    doLast {
+        sherpaOnnxAarFile.parentFile.mkdirs()
+        logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
+        URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
+            sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
+        }
+    }
+}
+tasks.named("preBuild").configure {
+    dependsOn(downloadSherpaOnnxAar)
 }
 
 if (!skipRustFfiBuild) {

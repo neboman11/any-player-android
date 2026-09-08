@@ -65,12 +65,14 @@ class DjScriptGenerator @Inject constructor(
 
     private fun buildPrompt(nextTrack: Track, fact: String?): String {
         val factLine = fact?.takeIf { it.isNotBlank() }
-            ?.let { "One true fact about the artist, if it fits naturally: $it" }
+            ?.let { "Use only this sourced song research: $it" }
             .orEmpty()
         return """
-            You are an upbeat, casual radio DJ speaking live between songs. In 2 short
-            sentences, introduce the next song naturally, the way a real DJ would say it
-            out loud. Do not use quotation marks, hashtags, or emoji.
+            You are a concise radio DJ speaking live between songs. In 2 short sentences,
+            introduce the next song and share one interesting factual piece of its history
+            or trivia. Use only the supplied song research; never invent history or trivia.
+            If no research is supplied, simply announce the song and artist. Do not describe the song's vibe.
+            Do not use quotation marks, hashtags, or emoji.
             Song: "${nextTrack.title}" by ${nextTrack.artist}.
             $factLine
         """.trimIndent()

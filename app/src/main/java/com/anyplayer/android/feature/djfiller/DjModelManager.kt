@@ -25,7 +25,7 @@ import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Downloads the AI DJ on-device model from the user's own sync server
+/** Downloads the AI DJ on-device LLM model from the user's own sync server
  *  (`/v1/dj-model/info` + `/v1/dj-model/download`, see any-player-sync-server) into
  *  app-private storage. [startDownload] is only ever meant to be called from an
  *  explicit user button tap in Settings - enabling the "AI DJ" toggle never triggers
@@ -57,6 +57,11 @@ class DjModelManager @Inject constructor(
 
     fun modelFileOrNull(): File? = (mutableDownloadState.value as? DjModelDownloadState.Ready)?.file
 
+    fun startDownload() {
+        if (downloadJob?.isActive == true) return
+        downloadJob = scope.launch { runDownload() }
+    }
+
     private fun normalizeBaseUrl(serverTarget: String): String {
         val trimmed = serverTarget.trim().trimEnd('/')
         return when {
@@ -68,10 +73,10 @@ class DjModelManager @Inject constructor(
 
     private fun normalizeToken(raw: String): String = bearerRegex.replace(raw.trim(), "")
 
-    /** A non-2xx HTTP response is not the same failure as a real network/connection
-     *  error, and the two need different fixes from the user - lumping them into one
-     *  generic "could not reach server" message was actively misleading (a 404 here
-     *  means the server was reached fine, it just has no model configured). */
+    /** A non-2xx HTTP response is not the same failure as a real network/connection error,
+     *  and the two need different fixes from the user - lumping them into one generic
+     *  "could not reach server" message was actively misleading (a 404 here means the
+     *  server was reached fine, it just has no model configured). */
     private fun describeFailedResponse(response: Response?, exception: Throwable?): String {
         if (response == null) {
             return "Could not reach the sync server. Check the Sync Server Target and your network connection." +
@@ -79,8 +84,8 @@ class DjModelManager @Inject constructor(
         }
         return when (response.code) {
             401, 403 -> "Sync server rejected the auth token. Check the Sync Auth Token setting."
-            404 -> "This sync server doesn't have an AI DJ model configured yet. Ask the server admin to set DJ_MODEL_PATH."
-            else -> "Sync server returned an error (HTTP ${response.code}) while checking for the AI DJ model."
+            404 -> "This sync server doesn't have an AI DJ model configured yet. Ask the server admin."
+            else -> "Sync server returned an error (HTTP ${response.code})."
         }
     }
 
@@ -89,11 +94,6 @@ class DjModelManager @Inject constructor(
         .apply { if (token.isNotEmpty()) header("Authorization", "Bearer $token") }
         .get()
         .build()
-
-    fun startDownload() {
-        if (downloadJob?.isActive == true) return
-        downloadJob = scope.launch { runDownload() }
-    }
 
     private suspend fun runDownload() {
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)
@@ -111,9 +111,9 @@ class DjModelManager @Inject constructor(
         }
         val infoResponse = infoResult.getOrNull()
         if (infoResponse == null || !infoResponse.isSuccessful) {
-            val message = describeFailedResponse(infoResponse, infoResult.exceptionOrNull())
+            mutableDownloadState.value =
+                DjModelDownloadState.Failed(describeFailedResponse(infoResponse, infoResult.exceptionOrNull()))
             infoResponse?.close()
-            mutableDownloadState.value = DjModelDownloadState.Failed(message)
             return
         }
         val infoBody = infoResponse.use { it.body?.string() }.orEmpty()
@@ -132,19 +132,17 @@ class DjModelManager @Inject constructor(
             mutableDownloadState.value = DjModelDownloadState.Ready(finalFile)
             return
         }
-        // ponytail: always restarts from byte 0 rather than resuming a partial
-        // `.part` file via Range - the server supports Range for a future client that
-        // wants it, but a simple "tap Download again" retry is enough for v1.
-        val partFile = File(modelDir, "$version.task.part")
 
+        // `.part` suffix, no Range resume - a "tap Download again" retry is enough for v1.
+        val partFile = File(modelDir, "$version.task.part")
         val downloadResult = runCatching {
             okHttpClient.newCall(authorizedRequest("$base/v1/dj-model/download", token)).execute()
         }
         val downloadResponse = downloadResult.getOrNull()
         if (downloadResponse == null || !downloadResponse.isSuccessful) {
-            val message = describeFailedResponse(downloadResponse, downloadResult.exceptionOrNull())
+            mutableDownloadState.value =
+                DjModelDownloadState.Failed(describeFailedResponse(downloadResponse, downloadResult.exceptionOrNull()))
             downloadResponse?.close()
-            mutableDownloadState.value = DjModelDownloadState.Failed(message)
             return
         }
 
@@ -164,8 +162,7 @@ class DjModelManager @Inject constructor(
                             digest.update(buffer, 0, read)
                             bytesRead += read
                             if (totalBytes > 0) {
-                                mutableDownloadState.value =
-                                    DjModelDownloadState.Downloading(bytesRead.toFloat() / totalBytes)
+                                mutableDownloadState.value = DjModelDownloadState.Downloading(bytesRead.toFloat() / totalBytes)
                             }
                         }
                     }
@@ -173,9 +170,9 @@ class DjModelManager @Inject constructor(
             }
         }
         if (writeResult.isFailure) {
-            CompatLog.e(TAG, "model download write failed", writeResult.exceptionOrNull())
+            CompatLog.e(TAG, "model download failed", writeResult.exceptionOrNull())
             partFile.delete()
-            mutableDownloadState.value = DjModelDownloadState.Failed("Model download was interrupted")
+            mutableDownloadState.value = DjModelDownloadState.Failed("Download was interrupted")
             return
         }
 
@@ -187,10 +184,9 @@ class DjModelManager @Inject constructor(
         }
 
         if (!partFile.renameTo(finalFile)) {
-            mutableDownloadState.value = DjModelDownloadState.Failed("Could not finalize downloaded model")
+            mutableDownloadState.value = DjModelDownloadState.Failed("Could not finalize downloaded model file")
             return
         }
-
         mutableDownloadState.value = DjModelDownloadState.Ready(finalFile)
     }
 }

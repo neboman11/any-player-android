@@ -14,6 +14,7 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.djfiller.DjModelManager
+import com.anyplayer.android.feature.djfiller.DjVoiceState
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
@@ -67,10 +68,18 @@ class MainViewModel @Inject constructor(
 
     /** Non-null while an AI DJ break is ready and waiting one slot ahead in the queue -
      *  see [com.anyplayer.android.feature.djfiller.DjFillerScheduler.pendingQueueDisplayTrack]. */
-    val djFillerPendingTrack: StateFlow<Track?> = playbackQueueManager.djFillerPendingTrack
+    val djFillerPendingBreakSongsAway: StateFlow<Int?> = playbackQueueManager.djFillerPendingBreakSongsAway
     val showDjEntriesInQueue: StateFlow<Boolean> = playbackQueueManager.showDjEntriesInQueue
+    val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = playbackQueueManager.djVoiceModelDownloadState
+    val djVoiceCatalogState: StateFlow<DjVoiceState> = playbackQueueManager.djVoiceCatalogState
+    val djVoiceGain: StateFlow<Float> = playbackQueueManager.djVoiceGain
+    val djVoiceGainRange: ClosedFloatingPointRange<Float> = playbackQueueManager.djVoiceGainRange
 
     fun setShowDjEntriesInQueue(enabled: Boolean) = playbackQueueManager.setShowDjEntriesInQueue(enabled)
+    fun refreshDjVoiceCatalog() = playbackQueueManager.refreshDjVoiceCatalog()
+    fun selectDjVoice(id: String) = playbackQueueManager.selectDjVoice(id)
+    fun downloadDjVoiceModel() = playbackQueueManager.downloadDjVoiceModel()
+    fun setDjVoiceGain(gain: Float) = playbackQueueManager.setDjVoiceGain(gain)
 
     private var lastAutoPausedTrackKey: String? = null
 

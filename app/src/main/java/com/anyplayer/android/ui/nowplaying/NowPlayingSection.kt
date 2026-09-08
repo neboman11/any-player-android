@@ -42,6 +42,7 @@ import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
+import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
 import com.anyplayer.android.ui.QueueTableHeader
 import com.anyplayer.android.ui.QueueTrackRow
 import com.anyplayer.android.ui.TrackRow
@@ -61,12 +62,17 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val originalQueue = status.queue
 
     val currentIdx = displayQueue.indexOfFirst { it.id == currentTrackId }
-    val djFillerPendingTrack by viewModel.djFillerPendingTrack.collectAsState()
+    val djFillerPendingBreakSongsAway by viewModel.djFillerPendingBreakSongsAway.collectAsState()
     val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
     val upcomingTracks = run {
         val base = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
-        val pending = djFillerPendingTrack
-        if (showDjEntriesInQueue && pending != null) listOf(pending) + base else base
+        val songsAway = djFillerPendingBreakSongsAway
+        if (showDjEntriesInQueue && songsAway != null) {
+            val insertAt = songsAway.coerceIn(0, base.size)
+            base.subList(0, insertAt) + AI_DJ_PRESENTATION_TRACK + base.subList(insertAt, base.size)
+        } else {
+            base
+        }
     }
     val pastTracks    = if (currentIdx >  0) displayQueue.take(currentIdx)     else emptyList()
 

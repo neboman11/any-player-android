@@ -241,7 +241,15 @@ internal class MixedPlaybackOps(
         // for a stall by sync()'s stall-detection while the async track switch is in flight.
         context.recovery.resetSpotifyRecoveryState()
         context.recovery.resetSpotifyMidTrackStallState()
-        playMixedTrackById(nextTrack.id, manualSkip = true)
+        // AI DJ hook: a manual skip is a real advance past the current track too, so a
+        // ready break should play here exactly like the natural end-of-track path in
+        // sync() - otherwise skipping past the pre-break song silently discards the break.
+        val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
+        if (filler != null) {
+            djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id, manualSkip = true) }
+        } else {
+            playMixedTrackById(nextTrack.id, manualSkip = true)
+        }
     }
 
     fun previous(state: PlaybackStatus) {
@@ -258,8 +266,13 @@ internal class MixedPlaybackOps(
 
     suspend fun sync() {
         val state = context.mutableStatus.value
-        val currentTrack = state.currentTrack ?: return
+        var currentTrack = state.currentTrack ?: return
         if (currentTrack.source == SourceType.SPOTIFY) {
+            if (spotifyPlaybackController.isManualPauseExpected()) {
+                context.recovery.clearMidTrackStallWatch()
+                context.recovery.clearGhostPlayingStallWatch()
+                return
+            }
             val spotifySnapshot = spotifyPlaybackController.snapshot()
             if (spotifySnapshot == null) {
                 if (state.state == PlaybackStateType.PLAYING) {
@@ -272,12 +285,24 @@ internal class MixedPlaybackOps(
                 }
                 return
             }
+            val mappedTrackIndex = spotifySnapshot.currentTrackId?.let { id ->
+                context.queueIndexCache.findQueueIndexNear(
+                    id,
+                    context.queueIndexCache.spotifyCurrentQueueIndex,
+                    state.queue
+                ).takeIf { it >= 0 }
+            }
+            if (mappedTrackIndex != null) {
+                context.queueIndexCache.spotifyCurrentQueueIndex = mappedTrackIndex
+                currentTrack = state.queue[mappedTrackIndex]
+            }
             val duration = currentTrack.durationMs ?: state.duration
             val nearTrackEnd = isNearTrackEnd(spotifySnapshot.progressMs, duration, 1500L)
             context.mutableStatus.value = state.copy(
                 state = if (spotifySnapshot.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
                 position = spotifySnapshot.progressMs,
                 duration = duration,
+                currentTrack = currentTrack,
                 volume = state.volume,
                 shuffle = state.shuffle,
                 repeatMode = spotifySnapshot.repeatMode,

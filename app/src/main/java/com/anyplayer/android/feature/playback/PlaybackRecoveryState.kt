@@ -30,6 +30,15 @@ internal class PlaybackRecoveryState {
     var spotifyMidTrackStallPositionMs: Long = -1L
     var spotifyMidTrackStallSinceMs: Long = 0L
 
+    /** Dwell-time bookkeeping for the opposite case: Spotify's own server keeps reporting
+     *  `is_playing: true` with a frozen position - e.g. a ghost/zombie Connect session left
+     *  behind after the app hosting playback was killed abruptly rather than cleanly paused.
+     *  The mid-track-stall watch above can't catch this since it only fires when the
+     *  snapshot reports NOT playing. See [SpotifyPlaybackOps.sync]. */
+    var spotifyGhostPlayingStallTrackId: String? = null
+    var spotifyGhostPlayingStallPositionMs: Long = -1L
+    var spotifyGhostPlayingStallSinceMs: Long = 0L
+
     /** Tracks retries of a Media3 (Jellyfin/local) player that entered a fatal error state -
      *  ExoPlayer stops responding to play()/seek() once playerError is set, until re-prepared. */
     var media3ErrorRecoveryTrackId: String? = null
@@ -51,10 +60,26 @@ internal class PlaybackRecoveryState {
         spotifyRecoveryAttempts = 0
     }
 
-    fun resetSpotifyMidTrackStallState() {
+    fun clearMidTrackStallWatch() {
         spotifyMidTrackStallTrackId = null
         spotifyMidTrackStallPositionMs = -1L
         spotifyMidTrackStallSinceMs = 0L
+    }
+
+    fun clearGhostPlayingStallWatch() {
+        spotifyGhostPlayingStallTrackId = null
+        spotifyGhostPlayingStallPositionMs = -1L
+        spotifyGhostPlayingStallSinceMs = 0L
+    }
+
+    /** Called at every deliberate-user-action call site (play/pause/skip/etc) to cancel
+     *  whichever stall watch might be running. [SpotifyPlaybackOps.sync]'s own per-tick
+     *  maintenance of each watch uses the private single-watch clears above instead, since
+     *  each watch's condition naturally not holding on a given tick (e.g. mid-track-stall's
+     *  `!isPlaying` being false) must NOT be treated as clearing the *other*, unrelated watch. */
+    fun resetSpotifyMidTrackStallState() {
+        clearMidTrackStallWatch()
+        clearGhostPlayingStallWatch()
     }
 
     fun resetSpotifyConnectionState() {

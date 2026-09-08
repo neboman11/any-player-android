@@ -23,6 +23,7 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
+import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
@@ -173,6 +174,22 @@ class SpotifyPlaybackOpsTest {
 
         assertEquals(1, context.queueIndexCache.spotifyCurrentQueueIndex)
         assertEquals(1L, context.recovery.lastAcknowledgedEndOfTrackCount)
+    }
+
+    @Test
+    fun sync_manualPauseGrace_clearsStallWatchesWithoutRestarting() = runTest {
+        val tracks = listOf(track("a"), track("b"))
+        seedPlayingState(tracks)
+        context.recovery.spotifyMidTrackStallTrackId = "a"
+        context.recovery.spotifyGhostPlayingStallTrackId = "a"
+
+        whenever(spotify.isManualPauseExpected()).thenReturn(true)
+
+        ops.sync()
+
+        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyGhostPlayingStallTrackId)
+        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
     }
 
     @Test
