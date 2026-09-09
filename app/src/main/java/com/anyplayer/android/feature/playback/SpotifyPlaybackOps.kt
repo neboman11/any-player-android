@@ -487,16 +487,27 @@ internal class SpotifyPlaybackOps(
                 // we resume the normal next()-driven advance. If no break is due,
                 // upcomingTrackId simply won't match anything pending and this is a no-op -
                 // behavior is byte-for-byte unchanged from before this hook existed.
-                val activeQueue = spotifyPlaybackQueue(state)
-                val currentIndex = currentSpotifyQueueIndex(state)
-                val upcomingTrackId = activeQueue.getOrNull(currentIndex + 1)?.id
-                val filler = djFillerScheduler.consumeReadyFillerIfDue(upcomingTrackId)
-                if (filler != null) {
-                    djInterstitialPlayer.playStandalone(filler) {
+                try {
+                    val activeQueue = spotifyPlaybackQueue(state)
+                    val currentIndex = currentSpotifyQueueIndex(state)
+                    val upcomingTrackId = activeQueue.getOrNull(currentIndex + 1)?.id
+                    val filler = djFillerScheduler.consumeReadyFillerIfDue(upcomingTrackId)
+                    if (filler != null) {
+                        djInterstitialPlayer.playStandalone(filler) {
+                            context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
+                        }
+                    } else {
                         context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
                     }
-                } else {
-                    context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Mirrors next()'s guard: a throw from the filler dispatch itself happens
+                    // before performSpotifyAutoAdvance's own reset runs, and this is the far
+                    // more common natural end-of-track path - reset here or auto-advance/stall
+                    // recovery silently freezes until app restart.
+                    CompatLog.w(TAG, "Spotify sync() filler dispatch failed", e)
+                    context.recovery.spotifyAutoAdvanceInFlight = false
                 }
                 return
             }

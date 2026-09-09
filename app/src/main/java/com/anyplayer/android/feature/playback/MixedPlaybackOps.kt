@@ -109,6 +109,16 @@ internal class MixedPlaybackOps(
     }
 
     fun togglePlayPause() {
+        // A standalone DJ interstitial plays on the shared ExoPlayer, not the
+        // per-source controller - route transport controls there while it's
+        // active. Mirrors SpotifyPlaybackOps.togglePlayPause.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.togglePlayPause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                state = if (media3PlaybackController.player.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED
+            )
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack
         if (currentTrack == null) return
@@ -145,6 +155,11 @@ internal class MixedPlaybackOps(
     }
 
     fun play() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.play()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.recovery.resetSpotifyMidTrackStallState()
@@ -171,6 +186,11 @@ internal class MixedPlaybackOps(
     }
 
     fun pause() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.pause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PAUSED)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.recovery.resetSpotifyMidTrackStallState()
@@ -190,6 +210,10 @@ internal class MixedPlaybackOps(
     }
 
     fun seekTo(positionMs: Long) {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.seekTo(positionMs)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.scope.launch {

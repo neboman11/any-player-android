@@ -18,6 +18,7 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playback.SpotifyConnectBridge
 import com.anyplayer.android.feature.playback.trackIdsMatch
@@ -51,6 +52,8 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     lateinit var authRepository: ProviderAuthRepository
     @Inject
     lateinit var spotifyConnectBridge: SpotifyConnectBridge
+    @Inject
+    lateinit var djInterstitialPlayer: DjInterstitialPlayer
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -283,7 +286,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
                 }
                 .distinctUntilChanged { old, new -> old.first == new.first }
                 .collect { (_, status) ->
-                    startForegroundCompat(notificationBuilder.build(status, mediaLibrarySession))
+                    startForegroundCompat(
+                        notificationBuilder.build(status, mediaLibrarySession, djInterstitialPlayer.nowPlayingOverride.value)
+                    )
                 }
         }
 

@@ -156,11 +156,28 @@ class DjFillerScheduler @Inject constructor(
         val current = status.currentTrack ?: return
         if (current.isDjFiller) return
         if (current.id == lastSeenTrackId) return
+        val previousId = lastSeenTrackId
         lastSeenTrackId = current.id
 
-        songsSinceLastBreak++
+        // A run of very short tracks (or a burst of skips) can advance through more than
+        // one real song between two ~500ms poll ticks; a flat +1 here would silently drop
+        // the skipped ones and never count them. Use the queue-position delta between the
+        // last observed track and the current one when it's resolvable (both present, in
+        // forward order); fall back to +1 for the first tick, a shuffle reorder, or a
+        // manual previous(), where position delta isn't meaningful.
+        val sequence = sequenceOf(status)
+        val advance = previousId
+            ?.let { prev -> sequence.indexOfFirst { it.id == prev } }
+            ?.takeIf { it >= 0 }
+            ?.let { prevIndex ->
+                val currentIndex = sequence.indexOfFirst { it.id == current.id }
+                (currentIndex - prevIndex).takeIf { currentIndex >= 0 && it > 0 }
+            }
+            ?: 1
+
+        songsSinceLastBreak += advance
         updatePendingBreakOffset()
-        if (songsSinceLastBreak == nextBreakThreshold) {
+        if (songsSinceLastBreak >= nextBreakThreshold) {
             startGenerationFor(status, current)
         }
     }

@@ -351,7 +351,12 @@ class PlaybackQueueManager @Inject constructor(
                     context.spotifyQueueRequiresReload = true
                 }
             }
-        } else if (!context.mixedMode) {
+        } else if (!context.mixedMode && !djInterstitialPlayer.isPlayingInterstitial) {
+            // Rebuilding the ExoPlayer timeline from the domain queue would drop the
+            // spliced-in AI DJ filler item (it's never part of that queue) and cut the
+            // break off mid-voice-over. The domain queue/orderedQueue state above is
+            // already updated; the player timeline catches up once the break ends and
+            // the next natural queue operation runs.
             val currentId = state.currentTrack?.id
             val queueIndex = currentId?.let { context.queueIndexCache.findQueueIndex(it) }?.takeIf { it >= 0 } ?: 0
             val mediaIndex = context.playableQueueIndices.indexOf(queueIndex).takeIf { it >= 0 } ?: 0
@@ -488,6 +493,11 @@ class PlaybackQueueManager @Inject constructor(
             "next state=${state.state} spotifyMode=${context.spotifyMode} mixedMode=${context.mixedMode} current=${state.currentTrack?.id}"
         )
         if (djInterstitialPlayer.isPlayingInterstitial) {
+            // Mirrors the reset every other manual skip performs (see mixedOps.next()/
+            // spotifyOps.next()) - without it, a stall watch armed for the real track just
+            // before the break started stays stale and can misfire once playback resumes.
+            context.recovery.resetSpotifyRecoveryState()
+            context.recovery.resetSpotifyMidTrackStallState()
             media3PlaybackController.skipInterstitial()
             return
         }

@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.playback
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -35,6 +37,11 @@ class Media3PlaybackController @Inject constructor(
         /** Prefix marking a synthetic AI DJ voice-over [MediaItem.mediaId], used to spot it
          *  in the raw ExoPlayer timeline without it ever entering the domain-level queue. */
         const val DJ_FILLER_MEDIA_ID_PREFIX = "dj-filler:"
+
+        // ponytail: fixed cap rather than sizing to the actual filler's audio duration
+        // (not known up front without a MediaExtractor probe). Generous enough for any
+        // real DJ break; upgrade to a duration-aware timeout if fillers grow much longer.
+        private const val STANDALONE_INTERSTITIAL_WATCHDOG_MS = 60_000L
     }
 
     /** Mutable so a DJ interstitial can be played once, at most, at a time; identifies which
@@ -43,6 +50,36 @@ class Media3PlaybackController @Inject constructor(
     private var activeInterstitialMediaId: String? = null
     private var standaloneInterstitialEndedCallback: (() -> Unit)? = null
     var interstitialListener: InterstitialTransitionListener? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var standaloneWatchdog: Runnable? = null
+
+    /** Backstop for [playInterstitialStandalone]: if playback stalls indefinitely (e.g.
+     *  buffering that never resolves) without ever reaching [Player.STATE_ENDED] or
+     *  [Player.Listener.onPlayerError], neither of those cleanup paths runs and [onEnded]
+     *  never fires - leaving the caller's in-flight/recovery flags stuck forever. Forces
+     *  the same cleanup those paths would have done. */
+    private fun armStandaloneWatchdog() {
+        cancelStandaloneWatchdog()
+        val watchdog = Runnable {
+            val endedId = activeInterstitialMediaId ?: return@Runnable
+            val onEnded = standaloneInterstitialEndedCallback ?: return@Runnable
+            CompatLog.w(TAG, "Standalone DJ interstitial stalled past ${STANDALONE_INTERSTITIAL_WATCHDOG_MS}ms; forcing cleanup")
+            activeInterstitialMediaId = null
+            standaloneInterstitialEndedCallback = null
+            playerInstance.stop()
+            playerInstance.clearMediaItems()
+            interstitialListener?.onInterstitialEnded(endedId)
+            onEnded()
+        }
+        standaloneWatchdog = watchdog
+        mainHandler.postDelayed(watchdog, STANDALONE_INTERSTITIAL_WATCHDOG_MS)
+    }
+
+    private fun cancelStandaloneWatchdog() {
+        standaloneWatchdog?.let { mainHandler.removeCallbacks(it) }
+        standaloneWatchdog = null
+    }
 
     val isPlayingInterstitial: Boolean
         get() = activeInterstitialMediaId != null
@@ -56,6 +93,7 @@ class Media3PlaybackController @Inject constructor(
         val endedId = activeInterstitialMediaId ?: return
         val onEnded = standaloneInterstitialEndedCallback
         if (onEnded != null) {
+            cancelStandaloneWatchdog()
             activeInterstitialMediaId = null
             standaloneInterstitialEndedCallback = null
             playerInstance.stop()
@@ -64,11 +102,13 @@ class Media3PlaybackController @Inject constructor(
             onEnded()
         } else {
             playerInstance.seekToNextMediaItem()
+            playerInstance.playWhenReady = true
         }
     }
 
     fun clearStandaloneInterstitial() {
         val endedId = activeInterstitialMediaId ?: return
+        cancelStandaloneWatchdog()
         activeInterstitialMediaId = null
         standaloneInterstitialEndedCallback = null
         playerInstance.stop()
@@ -117,6 +157,7 @@ class Media3PlaybackController @Inject constructor(
                     val endedId = activeInterstitialMediaId
                     val onEnded = standaloneInterstitialEndedCallback
                     if (endedId != null && onEnded != null) {
+                        cancelStandaloneWatchdog()
                         activeInterstitialMediaId = null
                         standaloneInterstitialEndedCallback = null
                         clearMediaItems()
@@ -140,6 +181,7 @@ class Media3PlaybackController @Inject constructor(
                 val endedId = activeInterstitialMediaId ?: return
                 val onEnded = standaloneInterstitialEndedCallback
                 if (onEnded != null) {
+                    cancelStandaloneWatchdog()
                     activeInterstitialMediaId = null
                     standaloneInterstitialEndedCallback = null
                     clearMediaItems()
@@ -150,6 +192,11 @@ class Media3PlaybackController @Inject constructor(
                     val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
                     index?.let { removeMediaItem(it) }
                     interstitialListener?.onInterstitialEnded(endedId)
+                    // ExoPlayer stops responding to play/pause/seek after a fatal error until
+                    // re-prepared (see retryAfterError doc) - do it here directly rather than
+                    // relying on LocalPlaybackOps.sync()'s generic error retry to happen to run
+                    // after isPlayingInterstitial flips false on a later poll tick.
+                    prepare()
                 }
             }
 
@@ -354,6 +401,7 @@ class Media3PlaybackController @Inject constructor(
         )
         playerInstance.prepare()
         playerInstance.playWhenReady = true
+        armStandaloneWatchdog()
     }
 }
 
