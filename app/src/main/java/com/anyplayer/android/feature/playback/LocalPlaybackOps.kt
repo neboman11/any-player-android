@@ -75,15 +75,10 @@ internal class LocalPlaybackOps(
         val mediaIndex = context.playableQueueIndices.indexOf(target)
         if (mediaIndex >= 0) {
             // A spliced-in AI DJ filler shifts every raw ExoPlayer timeline index at/after
-            // its position by one - the same offset sync() applies below - without it,
-            // tapping a queue row during a break plays the adjacent (wrong) track.
-            val adjustedMediaIndex = if (djInterstitialPlayer.isPlayingInterstitial) {
-                val interstitialIndex = media3PlaybackController.player.currentMediaItemIndex
-                if (mediaIndex >= interstitialIndex) mediaIndex + 1 else mediaIndex
-            } else {
-                mediaIndex
-            }
-            media3PlaybackController.playFromIndex(adjustedMediaIndex)
+            // its position by one - without accounting for it, tapping a queue row during a
+            // break would play the adjacent (wrong) track. Media3PlaybackController already
+            // owns where the splice sits in the timeline, so it resolves the shift itself.
+            media3PlaybackController.playFromIndex(media3PlaybackController.resolveTimelineIndex(mediaIndex))
         }
         context.mutableStatus.value = state.copy(
             currentTrack = state.queue[target],

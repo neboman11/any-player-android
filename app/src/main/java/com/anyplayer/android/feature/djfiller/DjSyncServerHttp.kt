@@ -1,5 +1,7 @@
 package com.anyplayer.android.feature.djfiller
 
+import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
+import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import okhttp3.Request
 import okhttp3.Response
 import java.io.File
@@ -7,19 +9,20 @@ import java.security.MessageDigest
 
 /** Shared HTTP plumbing for [DjModelManager] (single LLM model file) and
  *  [VoiceModelDownloader] (voice catalog + zip bundles) - both download from the same
- *  user-configured sync server and previously duplicated this boilerplate. */
+ *  user-configured sync server and previously duplicated this boilerplate.
+ *  [normalizeSyncServerBaseUrl]/[normalizeSyncServerAuthToken] live in core/network since
+ *  [com.anyplayer.android.feature.sync.SyncSnapshotClient] needs the identical normalization
+ *  too; re-exported here so existing call sites in this package don't need their own import. */
 
-internal fun normalizeSyncServerBaseUrl(raw: String): String {
-    val trimmed = raw.trim().trimEnd('/')
-    return when {
-        trimmed.isBlank() -> trimmed
-        trimmed.startsWith("https://") || trimmed.startsWith("http://") -> trimmed
-        else -> "https://$trimmed"
-    }
-}
+/** Both [DjModelManager] and [VoiceModelDownloader] build a file path from a server-supplied
+ *  version/id string, so it must be rejected if it could escape the target directory (e.g. a
+ *  path-traversal segment from a compromised/MITM'd sync server). */
+internal val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
-internal fun normalizeSyncServerAuthToken(raw: String): String =
-    raw.trim().replace(Regex("^Bearer\\s+", RegexOption.IGNORE_CASE), "")
+/** A lowercase/uppercase-agnostic SHA-256 hex digest, as returned by both download-info
+ *  endpoints - used to require (not just optionally check) an integrity digest before a
+ *  downloaded file is trusted. */
+internal val SHA_256 = Regex("[0-9a-fA-F]{64}")
 
 internal fun authorizedSyncServerRequest(url: String, token: String): Request = Request.Builder()
     .url(url)

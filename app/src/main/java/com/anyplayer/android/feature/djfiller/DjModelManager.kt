@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.djfiller
 
 import android.content.Context
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
+import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -37,11 +39,6 @@ class DjModelManager @Inject constructor(
 ) {
     private companion object {
         const val TAG = "DjModelManager"
-
-        // Mirrors VoiceModelDownloader's SAFE_COMPONENT: the server-supplied version is used
-        // to build a file path, so it must be rejected if it could escape modelDir (e.g. a
-        // path-traversal segment from a compromised/MITM'd sync server).
-        val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     }
 
     private val modelDir = File(context.filesDir, "dj_models")
@@ -102,6 +99,10 @@ class DjModelManager @Inject constructor(
             return
         }
         val expectedSha256 = info["sha256"]?.jsonPrimitive?.content
+        if (expectedSha256 == null || !SHA_256.matches(expectedSha256)) {
+            mutableDownloadState.value = DjModelDownloadState.Failed("Sync server did not provide a valid model integrity digest")
+            return
+        }
         val expectedSize = info["size_bytes"]?.jsonPrimitive?.longOrNull ?: 0L
 
         modelDir.mkdirs()
@@ -143,7 +144,7 @@ class DjModelManager @Inject constructor(
         }
 
         val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-        if (expectedSha256 != null && !expectedSha256.equals(actualSha256, ignoreCase = true)) {
+        if (!expectedSha256.equals(actualSha256, ignoreCase = true)) {
             partFile.delete()
             mutableDownloadState.value = DjModelDownloadState.Failed("Downloaded model failed integrity verification")
             return

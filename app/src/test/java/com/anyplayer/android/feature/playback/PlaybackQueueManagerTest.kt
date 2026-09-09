@@ -68,6 +68,9 @@ class PlaybackQueueManagerTest {
         wheneverBlocking { spotify.setShuffle(any()) } doReturn true
         wheneverBlocking { spotify.setRepeatMode(any()) } doReturn true
         whenever(media3.setQueue(any(), any(), any())).thenReturn(0)
+        // resolveTimelineIndex() is an identity passthrough whenever no interstitial splice
+        // is active (see Media3PlaybackController).
+        whenever(media3.resolveTimelineIndex(any())).thenAnswer { it.arguments[0] }
         whenever(media3.snapshot()).thenReturn(
             PlaybackSnapshot(
                 state = PlaybackStateType.IDLE,

@@ -16,7 +16,9 @@ class AnyPlayerApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         createPlaybackNotificationChannel()
-        djFillerAudioCache.clearStale()
+        // Directory-listing-and-delete I/O; runs on cold start even for users who never
+        // touch the AI DJ feature, so it must not block the main thread before first frame.
+        Thread { djFillerAudioCache.clearStale() }.start()
     }
 
     private fun createPlaybackNotificationChannel() {

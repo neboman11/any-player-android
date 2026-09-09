@@ -28,6 +28,11 @@ class DjScriptGenerator @Inject constructor(
     }
 
     private val loadMutex = Mutex()
+
+    // ensureLoaded() reads this outside loadMutex before acquiring it (fast path once
+    // loaded) - @Volatile guarantees that unsynchronized read sees the write made inside
+    // the lock by whichever coroutine loaded it first, instead of a stale cached null.
+    @Volatile
     private var llmInference: LlmInference? = null
 
     private suspend fun ensureLoaded(): LlmInference? {

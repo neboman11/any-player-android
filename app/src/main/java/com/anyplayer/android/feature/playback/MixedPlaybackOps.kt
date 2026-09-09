@@ -268,11 +268,21 @@ internal class MixedPlaybackOps(
         // AI DJ hook: a manual skip is a real advance past the current track too, so a
         // ready break should play here exactly like the natural end-of-track path in
         // sync() - otherwise skipping past the pre-break song silently discards the break.
-        val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
-        if (filler != null) {
-            djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id, manualSkip = true) }
-        } else {
-            playMixedTrackById(nextTrack.id, manualSkip = true)
+        // If the currently playing track is Spotify, it's still actively playing at this
+        // point and must be paused before the interstitial commandeers the shared
+        // ExoPlayer or the two would play audibly on top of each other; a local current
+        // track is already on that same shared player, so no separate pause is needed.
+        val currentTrack = state.currentTrack
+        context.scope.launch {
+            djFillerScheduler.playFillerThenAdvance(
+                djInterstitialPlayer = djInterstitialPlayer,
+                upcomingTrackId = nextTrack.id,
+                pauseActiveSpotify = if (currentTrack?.source == SourceType.SPOTIFY) {
+                    { spotifyPlaybackController.pause() }
+                } else null
+            ) {
+                playMixedTrackById(nextTrack.id, manualSkip = true)
+            }
         }
     }
 
@@ -343,10 +353,10 @@ internal class MixedPlaybackOps(
                     // AI DJ hook: natural end-of-track only (not the stall/error recovery
                     // fallbacks below) - the shared ExoPlayer is idle here (Spotify leg), so
                     // a ready break plays standalone before handing off to the real next track.
-                    val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
-                    if (filler != null) {
-                        djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id) }
-                    } else {
+                    djFillerScheduler.playFillerThenAdvance(
+                        djInterstitialPlayer = djInterstitialPlayer,
+                        upcomingTrackId = nextTrack.id
+                    ) {
                         playMixedTrackById(nextTrack.id)
                     }
                     return
@@ -444,10 +454,10 @@ internal class MixedPlaybackOps(
                     if (nextTrack != null) {
                         // AI DJ hook: natural end-of-track only, mirroring the Spotify-leg
                         // hook above.
-                        val filler = djFillerScheduler.consumeReadyFillerIfDue(nextTrack.id)
-                        if (filler != null) {
-                            djInterstitialPlayer.playStandalone(filler) { playMixedTrackById(nextTrack.id) }
-                        } else {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
                             playMixedTrackById(nextTrack.id)
                         }
                         return

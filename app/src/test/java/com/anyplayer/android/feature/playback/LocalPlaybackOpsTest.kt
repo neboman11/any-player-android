@@ -42,6 +42,10 @@ class LocalPlaybackOpsTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        // resolveTimelineIndex() is an identity passthrough whenever no interstitial splice
+        // is active (see Media3PlaybackController) - stubbed here so tests that don't touch
+        // the AI DJ splice path don't need to know about it.
+        whenever(media3.resolveTimelineIndex(any())).thenAnswer { it.arguments[0] }
         context = PlaybackEngineContext(spotify)
         ops = LocalPlaybackOps(
             media3PlaybackController = media3,

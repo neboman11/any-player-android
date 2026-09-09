@@ -1,6 +1,8 @@
 package com.anyplayer.android.feature.djfiller
 
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
+import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,8 +90,6 @@ class VoiceModelDownloader(
         const val TAG = "VoiceModelDownloader"
         const val ACTIVE_VOICE_FILE = "active-voice.json"
         const val LEGACY_ACTIVE_VERSION_FILE = "active-version"
-        val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-        val SHA_256 = Regex("[0-9a-fA-F]{64}")
         val ACTIVE_MARKER = Regex("\\{\\\"id\\\":\\\"([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\\",\\\"version\\\":\\\"([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\\"\\}")
     }
 

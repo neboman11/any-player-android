@@ -62,15 +62,12 @@ class Media3PlaybackController @Inject constructor(
     private fun armStandaloneWatchdog() {
         cancelStandaloneWatchdog()
         val watchdog = Runnable {
-            val endedId = activeInterstitialMediaId ?: return@Runnable
-            val onEnded = standaloneInterstitialEndedCallback ?: return@Runnable
-            CompatLog.w(TAG, "Standalone DJ interstitial stalled past ${STANDALONE_INTERSTITIAL_WATCHDOG_MS}ms; forcing cleanup")
-            activeInterstitialMediaId = null
-            standaloneInterstitialEndedCallback = null
-            playerInstance.stop()
-            playerInstance.clearMediaItems()
-            interstitialListener?.onInterstitialEnded(endedId)
-            onEnded()
+            val onEnded = standaloneInterstitialEndedCallback
+            if (onEnded != null && activeInterstitialMediaId != null) {
+                CompatLog.w(TAG, "Standalone DJ interstitial stalled past ${STANDALONE_INTERSTITIAL_WATCHDOG_MS}ms; forcing cleanup")
+                endStandaloneInterstitial(stopPlayer = true)
+                onEnded()
+            }
         }
         standaloneWatchdog = watchdog
         mainHandler.postDelayed(watchdog, STANDALONE_INTERSTITIAL_WATCHDOG_MS)
@@ -79,6 +76,25 @@ class Media3PlaybackController @Inject constructor(
     private fun cancelStandaloneWatchdog() {
         standaloneWatchdog?.let { mainHandler.removeCallbacks(it) }
         standaloneWatchdog = null
+    }
+
+    /** Single owner for standalone-interstitial teardown - previously hand-copied at every
+     *  call site ([skipInterstitial], [clearStandaloneInterstitial], the STATE_ENDED/
+     *  onPlayerError listener branches below, and the watchdog above), which is how those
+     *  copies drifted to call [ExoPlayer.stop] inconsistently. [stopPlayer] is false for the
+     *  listener call sites, where the player already reached STATE_ENDED/error on its own
+     *  and an explicit stop() would be redundant; every other caller passes true to halt
+     *  playback that's still actively in progress. Returns the ended media id, or null if
+     *  nothing was playing. */
+    private fun endStandaloneInterstitial(stopPlayer: Boolean): String? {
+        val endedId = activeInterstitialMediaId ?: return null
+        cancelStandaloneWatchdog()
+        activeInterstitialMediaId = null
+        standaloneInterstitialEndedCallback = null
+        if (stopPlayer) playerInstance.stop()
+        playerInstance.clearMediaItems()
+        interstitialListener?.onInterstitialEnded(endedId)
+        return endedId
     }
 
     val isPlayingInterstitial: Boolean
@@ -90,15 +106,10 @@ class Media3PlaybackController @Inject constructor(
      *  local-mode splice just needs ExoPlayer's normal seek-to-next, which naturally
      *  carries past it exactly like any other timeline item. */
     fun skipInterstitial() {
-        val endedId = activeInterstitialMediaId ?: return
+        if (activeInterstitialMediaId == null) return
         val onEnded = standaloneInterstitialEndedCallback
         if (onEnded != null) {
-            cancelStandaloneWatchdog()
-            activeInterstitialMediaId = null
-            standaloneInterstitialEndedCallback = null
-            playerInstance.stop()
-            playerInstance.clearMediaItems()
-            interstitialListener?.onInterstitialEnded(endedId)
+            endStandaloneInterstitial(stopPlayer = true)
             onEnded()
         } else {
             playerInstance.seekToNextMediaItem()
@@ -107,13 +118,7 @@ class Media3PlaybackController @Inject constructor(
     }
 
     fun clearStandaloneInterstitial() {
-        val endedId = activeInterstitialMediaId ?: return
-        cancelStandaloneWatchdog()
-        activeInterstitialMediaId = null
-        standaloneInterstitialEndedCallback = null
-        playerInstance.stop()
-        playerInstance.clearMediaItems()
-        interstitialListener?.onInterstitialEnded(endedId)
+        endStandaloneInterstitial(stopPlayer = true)
     }
 
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
@@ -154,14 +159,8 @@ class Media3PlaybackController @Inject constructor(
                 // playInterstitialStandalone) uses a single-item timeline with no next
                 // item to transition into, so its completion is only observable here.
                 if (playbackState == Player.STATE_ENDED) {
-                    val endedId = activeInterstitialMediaId
                     val onEnded = standaloneInterstitialEndedCallback
-                    if (endedId != null && onEnded != null) {
-                        cancelStandaloneWatchdog()
-                        activeInterstitialMediaId = null
-                        standaloneInterstitialEndedCallback = null
-                        clearMediaItems()
-                        interstitialListener?.onInterstitialEnded(endedId)
+                    if (onEnded != null && endStandaloneInterstitial(stopPlayer = false) != null) {
                         onEnded()
                     }
                 }
@@ -181,11 +180,7 @@ class Media3PlaybackController @Inject constructor(
                 val endedId = activeInterstitialMediaId ?: return
                 val onEnded = standaloneInterstitialEndedCallback
                 if (onEnded != null) {
-                    cancelStandaloneWatchdog()
-                    activeInterstitialMediaId = null
-                    standaloneInterstitialEndedCallback = null
-                    clearMediaItems()
-                    interstitialListener?.onInterstitialEnded(endedId)
+                    endStandaloneInterstitial(stopPlayer = false)
                     onEnded()
                 } else {
                     activeInterstitialMediaId = null
@@ -266,6 +261,18 @@ class Media3PlaybackController @Inject constructor(
         if (playerInstance.mediaItemCount == 0) return
         playerInstance.seekToDefaultPosition(index.coerceIn(0, playerInstance.mediaItemCount - 1))
         playerInstance.playWhenReady = true
+    }
+
+    /** Maps a media-item index computed against the domain queue (i.e. as if no filler were
+     *  spliced in) to the raw ExoPlayer timeline index - shifting by one if a local-mode
+     *  splice (see [insertInterstitial]) is currently active at or before the target
+     *  position. Single owner for this offset, since this class already tracks
+     *  [activeInterstitialMediaId] and where the splice sits in the timeline - callers used
+     *  to re-derive the same +1 rule by hand. */
+    fun resolveTimelineIndex(queueMediaIndex: Int): Int {
+        if (activeInterstitialMediaId == null) return queueMediaIndex
+        val interstitialIndex = playerInstance.currentMediaItemIndex
+        return if (queueMediaIndex >= interstitialIndex) queueMediaIndex + 1 else queueMediaIndex
     }
 
     fun play() {

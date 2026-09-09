@@ -367,14 +367,17 @@ internal class SpotifyPlaybackOps(
             // AI DJ hook: mirrors sync()'s natural end-of-track path - a manual skip is a
             // real advance past the current track too, so a ready break should play here
             // exactly like it would on natural end-of-track, instead of silently discarding it.
+            // Spotify is still actively playing the pre-skip track at this point (unlike the
+            // natural end-of-track path in sync(), where Spotify has already stopped), so it
+            // must be paused before the interstitial commandeers the shared ExoPlayer or the
+            // two would play audibly on top of each other.
             try {
-                val filler = djFillerScheduler.consumeReadyFillerIfDue(targetTrack.id)
-                if (filler != null) {
-                    djInterstitialPlayer.playStandalone(filler) {
-                        context.scope.launch { performManualSkipTo(state, targetIndex, targetTrack) }
-                    }
-                } else {
-                    performManualSkipTo(state, targetIndex, targetTrack)
+                djFillerScheduler.playFillerThenAdvance(
+                    djInterstitialPlayer = djInterstitialPlayer,
+                    upcomingTrackId = targetTrack.id,
+                    pauseActiveSpotify = { spotifyPlaybackController.pause() }
+                ) {
+                    context.scope.launch { performManualSkipTo(state, targetIndex, targetTrack) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -491,12 +494,10 @@ internal class SpotifyPlaybackOps(
                     val activeQueue = spotifyPlaybackQueue(state)
                     val currentIndex = currentSpotifyQueueIndex(state)
                     val upcomingTrackId = activeQueue.getOrNull(currentIndex + 1)?.id
-                    val filler = djFillerScheduler.consumeReadyFillerIfDue(upcomingTrackId)
-                    if (filler != null) {
-                        djInterstitialPlayer.playStandalone(filler) {
-                            context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
-                        }
-                    } else {
+                    djFillerScheduler.playFillerThenAdvance(
+                        djInterstitialPlayer = djInterstitialPlayer,
+                        upcomingTrackId = upcomingTrackId
+                    ) {
                         context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
                     }
                 } catch (e: CancellationException) {

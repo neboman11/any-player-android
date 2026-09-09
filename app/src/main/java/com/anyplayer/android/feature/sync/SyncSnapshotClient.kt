@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.sync
 
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
+import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
+import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
@@ -78,21 +80,9 @@ class SyncSnapshotClient @Inject constructor(
 ) {
     fun getClientId(): String = syncPreferencesStore.getOrCreateClientId()
 
-    private val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
+    private fun normalizeBaseUrl(serverTarget: String): String = normalizeSyncServerBaseUrl(serverTarget)
 
-    private fun normalizeBaseUrl(serverTarget: String): String {
-        val trimmed = serverTarget.trim().trimEnd('/')
-        return when {
-            trimmed.isBlank() -> trimmed
-            trimmed.startsWith("https://") || trimmed.startsWith("http://") -> trimmed
-            else -> "https://$trimmed"
-        }
-    }
-
-    private fun normalizeToken(raw: String): String {
-        val trimmed = raw.trim()
-        return bearerRegex.replace(trimmed, "")
-    }
+    private fun normalizeToken(raw: String): String = normalizeSyncServerAuthToken(raw)
 
     suspend fun fetchSnapshot(serverTarget: String): JsonObject? = withContext(Dispatchers.IO) {
         val base = normalizeBaseUrl(serverTarget)

@@ -253,47 +253,62 @@ internal class SyncStateHolder(
         return false
     }
 
-    private suspend fun pushLocalStateToServer(preferences: SyncPreferences) {
+    // Each namespace push is an independent HTTP round-trip with no dependency on the
+    // others' results, so they run concurrently instead of one after another - sequential
+    // pushes turned a user-facing "Connect" action into ~4x the network latency for no
+    // benefit. buildConfigFile() is parsed once and shared by the two config-file-derived
+    // pushes (playlists/provider-configuration) rather than re-parsed per push.
+    private suspend fun pushLocalStateToServer(preferences: SyncPreferences) = coroutineScope {
         if (preferences.syncAppState) {
-            val payload = syncSnapshotClient.payloadFromPlayback(playbackQueueManager.status.value)
-            runCatching { syncSnapshotClient.pushAppState(preferences.serverTarget, payload) }
+            launch {
+                val payload = syncSnapshotClient.payloadFromPlayback(playbackQueueManager.status.value)
+                runCatching { syncSnapshotClient.pushAppState(preferences.serverTarget, payload) }
+            }
         }
 
         if (preferences.syncSettings) {
-            val currentSettings = playbackQueueManager.audioNormalizationSettings.value
-            val data = JsonObject(
-                mapOf(
-                    "audio_normalization_enabled" to JsonPrimitive(currentSettings.enabled),
-                    "audio_normalization_strict_mode" to JsonPrimitive(currentSettings.strictMode)
+            launch {
+                val currentSettings = playbackQueueManager.audioNormalizationSettings.value
+                val data = JsonObject(
+                    mapOf(
+                        "audio_normalization_enabled" to JsonPrimitive(currentSettings.enabled),
+                        "audio_normalization_strict_mode" to JsonPrimitive(currentSettings.strictMode)
+                    )
                 )
-            )
-            runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "settings", data) }
+                runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "settings", data) }
+            }
         }
 
         if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
-            // buildConfigFile() parses stored timestamps (Instant.parse); a row in a
-            // non-ISO-8601 format (legacy data, a bad migration) would otherwise throw
-            // uncaught here and crash the whole sync push instead of just skipping it.
-            val configFile = runCatching { configFileExporter.buildConfigFile() }.getOrElse { e ->
-                CompatLog.w(TAG, "buildConfigFile failed; skipping playlists/provider-configuration sync", e)
-                null
-            }
+            launch {
+                // buildConfigFile() parses stored timestamps (Instant.parse); a row in a
+                // non-ISO-8601 format (legacy data, a bad migration) would otherwise throw
+                // uncaught here and crash the whole sync push instead of just skipping it.
+                val configFile = runCatching { configFileExporter.buildConfigFile() }.getOrElse { e ->
+                    CompatLog.w(TAG, "buildConfigFile failed; skipping playlists/provider-configuration sync", e)
+                    null
+                } ?: return@launch
 
-            if (configFile != null && preferences.syncPlaylists) {
-                val playlistsJson = syncJson.encodeToJsonElement(
-                    ListSerializer(ConfigCustomPlaylist.serializer()),
-                    configFile.customPlaylists
-                )
-                runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson) }
-            }
+                if (preferences.syncPlaylists) {
+                    launch {
+                        val playlistsJson = syncJson.encodeToJsonElement(
+                            ListSerializer(ConfigCustomPlaylist.serializer()),
+                            configFile.customPlaylists
+                        )
+                        runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson) }
+                    }
+                }
 
-            if (configFile != null && preferences.syncProviderConfiguration) {
-                val providerJson = syncJson.encodeToJsonElement(
-                    ConfigProviderConfigs.serializer(),
-                    configFile.providerConfigs
-                )
-                runCatching {
-                    syncSnapshotClient.pushNamespace(preferences.serverTarget, "provider-configuration", providerJson)
+                if (preferences.syncProviderConfiguration) {
+                    launch {
+                        val providerJson = syncJson.encodeToJsonElement(
+                            ConfigProviderConfigs.serializer(),
+                            configFile.providerConfigs
+                        )
+                        runCatching {
+                            syncSnapshotClient.pushNamespace(preferences.serverTarget, "provider-configuration", providerJson)
+                        }
+                    }
                 }
             }
         }
