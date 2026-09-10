@@ -96,6 +96,12 @@ class VoiceModelDownloader(
         const val TAG = "VoiceModelDownloader"
         const val ACTIVE_VOICE_FILE = "active-voice.json"
         const val LEGACY_ACTIVE_VERSION_FILE = "active-version"
+        // Content hash of a voice bundle's own files, written once right after a verified
+        // extraction/activation so later completeness checks (voiceDirOrNull(), the fast
+        // path in downloadDescriptor) can detect on-disk corruption/tampering instead of
+        // just trusting that the expected filenames are present - mirrors the re-verification
+        // DjModelManager.runDownload does against its single model file's sha256.
+        const val BUNDLE_HASH_FILE = ".bundle-sha256"
         val ACTIVE_MARKER = Regex("\\{\\\"id\\\":\\\"([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\\",\\\"version\\\":\\\"([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\\"\\}")
     }
 
@@ -160,6 +166,7 @@ class VoiceModelDownloader(
         try {
             check(bundleDirectory.isDirectory && bundleDirectory.copyRecursively(staging, overwrite = true)) { "could not stage voice bundle" }
             check(isCompleteVoiceDirectory(staging)) { "voice bundle is missing its ONNX model or tokens.txt" }
+            writeBundleHashMarker(staging)
             activateStaged(descriptor, staging)
         } finally {
             staging.deleteRecursively()
@@ -208,6 +215,18 @@ class VoiceModelDownloader(
     }
 
     private suspend fun downloadDescriptor(descriptor: DjVoiceDescriptor) {
+        // Skip the network round-trip + hash/unzip entirely when this exact (id, version) is
+        // already downloaded and verified on disk - mirrors DjModelManager.runDownload's
+        // existing-file check, just performed before hitting the network instead of after,
+        // since (unlike the model) the voice descriptor is already fully known up front.
+        val alreadyInstalled = voiceDirectory(descriptor.id, descriptor.version)
+        if (isCompleteVoiceDirectory(alreadyInstalled)) {
+            check(writeActiveVoice(ActiveVoice(descriptor.id, descriptor.version))) { "could not activate downloaded voice" }
+            mutableDownloadState.value = DjModelDownloadState.Ready(alreadyInstalled)
+            updateVoiceState(activeVoice = descriptor)
+            onVoiceActivated()
+            return
+        }
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)
         val base = configuredBaseUrl() ?: return
         val zipFile = File(voiceRootDir, ".${descriptor.id}.${descriptor.version}.zip.part")
@@ -242,6 +261,7 @@ class VoiceModelDownloader(
             mutableDownloadState.value = DjModelDownloadState.Failed("Downloaded voice bundle could not be extracted")
             return
         }
+        writeBundleHashMarker(staging)
         runCatching { activateStaged(descriptor, staging) }
             .onFailure { CompatLog.e(TAG, "failed to activate AI DJ voice", it) }
             .onSuccess { mutableDownloadState.value = DjModelDownloadState.Ready(voiceDirectory(descriptor.id, descriptor.version)) }
@@ -312,10 +332,45 @@ class VoiceModelDownloader(
         return File(voiceRootDir, ".${descriptor.id}.${descriptor.version}.tmp")
     }
 
-    private fun isCompleteVoiceDirectory(directory: File): Boolean =
-        directory.isDirectoryNoFollow() &&
-            directory.listFiles()?.any { it.extension == "onnx" && it.isRegularFileNoFollow() } == true &&
-            File(directory, "tokens.txt").isRegularFileNoFollow()
+    private fun isCompleteVoiceDirectory(directory: File): Boolean {
+        if (!directory.isDirectoryNoFollow()) return false
+        val hasOnnx = directory.listFiles()?.any { it.extension == "onnx" && it.isRegularFileNoFollow() } == true
+        val hasTokens = File(directory, "tokens.txt").isRegularFileNoFollow()
+        if (!hasOnnx || !hasTokens) return false
+        // No marker means a bundle predating this check (e.g. a legacy-migrated directory) -
+        // accept it as before rather than retroactively invalidating it. Once a marker exists,
+        // it must match the bundle's current content or the directory is treated as corrupt.
+        val expectedHash = File(directory, BUNDLE_HASH_FILE).readTextOrNull()?.trim() ?: return true
+        return expectedHash.equals(directory.bundleContentSha256(), ignoreCase = true)
+    }
+
+    private fun writeBundleHashMarker(directory: File) {
+        val hash = directory.bundleContentSha256() ?: return
+        runCatching { File(directory, BUNDLE_HASH_FILE).writeText(hash) }
+    }
+
+    /** Content hash of a flat voice bundle directory (file names + bytes, sorted for
+     *  determinism), excluding [BUNDLE_HASH_FILE] itself. Not comparable to a descriptor's
+     *  [DjVoiceDescriptor.sha256] (that's the pre-extraction zip's hash) - this only detects
+     *  drift in the bundle's own on-disk content since it was last verified. */
+    private fun File.bundleContentSha256(): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        listFiles()
+            ?.filter { it.isRegularFileNoFollow() && it.name != BUNDLE_HASH_FILE }
+            ?.sortedBy { it.name }
+            ?.forEach { file ->
+                digest.update(file.name.toByteArray())
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        digest.update(buffer, 0, read)
+                    }
+                }
+            }
+        digest.digest().toHexDigest()
+    }.getOrNull()
 
     private fun extractZip(zipFile: File, destination: File) {
         zipFile.inputStream().use { extractZipSafely(it, destination) }

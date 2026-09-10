@@ -122,13 +122,13 @@ class MixedPlaybackOpsTest {
     fun sync_spotifyManualPauseGrace_clearsStallWatchWithoutRecovery() = runTest {
         val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
-        context.recovery.spotifyMidTrackStallTrackId = "s1"
+        context.recovery.spotifyMidTrackStall.trackId = "s1"
 
         whenever(spotify.isManualPauseExpected()).thenReturn(true)
 
         ops.sync()
 
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
     }
 
@@ -141,7 +141,7 @@ class MixedPlaybackOpsTest {
         ops.sync()
 
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
-        assertEquals("s1", context.recovery.spotifyMidTrackStallTrackId)
+        assertEquals("s1", context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -167,11 +167,11 @@ class MixedPlaybackOpsTest {
         wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s1", playing = false)
 
         ops.sync()
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
         ops.sync()
 
         verifyBlocking(spotifyOps) { maybeRecoverSpotifyTrack(eq(listOf("s1")), eq(0), any()) }
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -208,7 +208,7 @@ class MixedPlaybackOpsTest {
         opsWithNearEnd.sync()
 
         assertEquals("local1", context.mutableStatus.value.currentTrack?.id)
-        assertEquals("local1", context.recovery.mixedMediaEndStallTrackId)
+        assertEquals("local1", context.recovery.mixedMediaEndStall.trackId)
     }
 
     @Test
@@ -231,7 +231,7 @@ class MixedPlaybackOpsTest {
         wheneverBlocking { media3.setQueue(any(), any(), any()) } doReturn 0
 
         opsWithNearEnd.sync()
-        context.recovery.mixedMediaEndStallSinceMs -= 1_801L
+        context.recovery.mixedMediaEndStall.sinceMs -= 1_801L
         opsWithNearEnd.sync()
 
         assertEquals("local2", context.mutableStatus.value.currentTrack?.id)
@@ -260,7 +260,7 @@ class MixedPlaybackOpsTest {
         whenever(scheduler.consumeReadyFillerIfDue("local2")).thenReturn(filler)
 
         opsWithNearEnd.sync()
-        context.recovery.mixedMediaEndStallSinceMs = System.currentTimeMillis() - 1_801L
+        context.recovery.mixedMediaEndStall.sinceMs = System.currentTimeMillis() - 1_801L
         opsWithNearEnd.sync()
 
         verify(interstitial).playStandalone(eq(filler), any())

@@ -351,7 +351,7 @@ class PlaybackQueueManager @Inject constructor(
                     context.spotifyQueueRequiresReload = true
                 }
             }
-        } else if (!context.mixedMode && !djInterstitialPlayer.isPlayingInterstitial) {
+        } else if (!context.mixedMode && !djInterstitialPlayer.isPlayingInterstitial && !media3PlaybackController.hasSplicedFiller()) {
             val currentId = state.currentTrack?.id
             val queueIndex = currentId?.let { context.queueIndexCache.findQueueIndex(it) }?.takeIf { it >= 0 } ?: 0
             val mediaIndex = context.playableQueueIndices.indexOf(queueIndex).takeIf { it >= 0 } ?: 0

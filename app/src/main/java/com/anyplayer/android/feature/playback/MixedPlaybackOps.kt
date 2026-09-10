@@ -230,6 +230,17 @@ internal class MixedPlaybackOps(
     }
 
     fun setVolume(requestedVolume: Int) {
+        // Mirrors the isPlayingInterstitial routing on togglePlayPause/play/pause/seekTo above:
+        // while a standalone DJ break is playing, the audibly active player is the shared
+        // Media3 one, not whatever per-source controller currentTrack implies.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            context.scope.launch {
+                applyNormalizedMedia3Volume(requestedVolume, SourceType.ALL)
+                context.mutableStatus.value = context.mutableStatus.value.copy(volume = requestedVolume)
+                persistStateAsync()
+            }
+            return
+        }
         val currentTrack = context.mutableStatus.value.currentTrack
         context.scope.launch {
             if (currentTrack?.source == SourceType.SPOTIFY) {
@@ -293,11 +304,12 @@ internal class MixedPlaybackOps(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // A throw from the filler dispatch itself happens before playMixedTrackAtIndex's
-                // own manualSkipInFlight reset runs - reset here or the flag stays stuck,
-                // permanently blocking auto-advance/stall recovery until app restart.
+                // A throw from the filler dispatch itself happens before onAdvance
+                // (playMixedTrackById) ever runs, so the track never actually advances -
+                // fall back to advancing directly instead of just resetting the guard flag,
+                // or playback would stall at the end of the current track until app restart.
                 CompatLog.w(TAG, "Mixed next() filler dispatch failed", e)
-                context.recovery.manualSkipInFlight = false
+                playMixedTrackById(nextTrack.id, manualSkip = true)
             }
         }
     }
@@ -381,8 +393,12 @@ internal class MixedPlaybackOps(
                     } catch (e: Exception) {
                         // sync() runs inside PlaybackQueueManager's single long-lived polling
                         // coroutine - an uncaught throw here would kill it, freezing playback
-                        // sync/DJ scheduling/persistence for the rest of the session.
+                        // sync/DJ scheduling/persistence for the rest of the session. onAdvance
+                        // may never have run, so fall back to advancing directly - lastAcknowledgedEndOfTrackCount
+                        // was already bumped above, so without this the track would otherwise
+                        // stall here permanently.
                         CompatLog.w(TAG, "Mixed sync() Spotify-leg filler dispatch failed", e)
+                        playMixedTrackById(nextTrack.id)
                     }
                     return
                 }
@@ -408,7 +424,10 @@ internal class MixedPlaybackOps(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        // Same reasoning as the natural end-of-track branch above: onAdvance
+                        // may never have run, so advance directly or playback stalls here.
                         CompatLog.w(TAG, "Mixed sync() stall-fallback filler dispatch failed", e)
+                        playMixedTrackById(nextTrack.id)
                     }
                     return
                 }
@@ -419,29 +438,24 @@ internal class MixedPlaybackOps(
             // persisted across several poll cycles, mirroring SpotifyPlaybackOps.sync()'s
             // dwell check - including why this can't gate on state.state staying PLAYING
             // across polls (the copy above already flips it to PAUSED after the first
-            // stalled poll, so a continuing watch is tracked via spotifyMidTrackStallTrackId
+            // stalled poll, so a continuing watch is tracked via spotifyMidTrackStall.trackId
             // instead).
             val continuingKnownStallWatch =
-                context.recovery.spotifyMidTrackStallTrackId == currentTrack.id && !spotifySnapshot.isPlaying
+                context.recovery.spotifyMidTrackStall.trackId == currentTrack.id && !spotifySnapshot.isPlaying &&
+                    !context.recovery.manualSkipInFlight
             if (startingNewStallWatch || continuingKnownStallWatch) {
-                val nowMs = System.currentTimeMillis()
-                val samePosition = context.recovery.spotifyMidTrackStallPositionMs == spotifySnapshot.progressMs
-                if (!continuingKnownStallWatch || !samePosition) {
-                    context.recovery.spotifyMidTrackStallTrackId = currentTrack.id
-                    context.recovery.spotifyMidTrackStallPositionMs = spotifySnapshot.progressMs
-                    context.recovery.spotifyMidTrackStallSinceMs = nowMs
-                } else {
-                    val stalledMs = nowMs - context.recovery.spotifyMidTrackStallSinceMs
-                    if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 3) {
-                        CompatLog.w(TAG, "Mixed-mode Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery")
-                        context.recovery.resetSpotifyMidTrackStallState()
-                        spotifyOps.maybeRecoverSpotifyTrack(
-                            queueTrackIds = listOf(currentTrack.id),
-                            startIndex = 0,
-                            failureMessage = "Spotify playback stalled mid-track"
-                        )
-                        return
-                    }
+                val stalledMs = context.recovery.spotifyMidTrackStall.update(
+                    System.currentTimeMillis(), currentTrack.id, spotifySnapshot.progressMs
+                )
+                if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 3) {
+                    CompatLog.w(TAG, "Mixed-mode Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery")
+                    context.recovery.resetSpotifyMidTrackStallState()
+                    spotifyOps.maybeRecoverSpotifyTrack(
+                        queueTrackIds = listOf(currentTrack.id),
+                        startIndex = 0,
+                        failureMessage = "Spotify playback stalled mid-track"
+                    )
+                    return
                 }
             } else {
                 context.recovery.resetSpotifyMidTrackStallState()
@@ -454,25 +468,18 @@ internal class MixedPlaybackOps(
             if (spotifySnapshot.isPlaying && !nearTrackEnd &&
                 !context.recovery.manualSkipInFlight && !context.recovery.spotifyAutoAdvanceInFlight
             ) {
-                val nowMs = System.currentTimeMillis()
-                val sameTrack = context.recovery.spotifyGhostPlayingStallTrackId == currentTrack.id
-                val samePosition = context.recovery.spotifyGhostPlayingStallPositionMs == spotifySnapshot.progressMs
-                if (!sameTrack || !samePosition) {
-                    context.recovery.spotifyGhostPlayingStallTrackId = currentTrack.id
-                    context.recovery.spotifyGhostPlayingStallPositionMs = spotifySnapshot.progressMs
-                    context.recovery.spotifyGhostPlayingStallSinceMs = nowMs
-                } else {
-                    val stalledMs = nowMs - context.recovery.spotifyGhostPlayingStallSinceMs
-                    if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 5) {
-                        CompatLog.w(TAG, "Mixed-mode Spotify reports playing but position frozen for ${stalledMs}ms (likely a ghost Connect session); attempting recovery")
-                        context.recovery.clearGhostPlayingStallWatch()
-                        spotifyOps.maybeRecoverSpotifyTrack(
-                            queueTrackIds = listOf(currentTrack.id),
-                            startIndex = 0,
-                            failureMessage = "Spotify playback stalled while reporting playing"
-                        )
-                        return
-                    }
+                val stalledMs = context.recovery.spotifyGhostPlayingStall.update(
+                    System.currentTimeMillis(), currentTrack.id, spotifySnapshot.progressMs
+                )
+                if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 5) {
+                    CompatLog.w(TAG, "Mixed-mode Spotify reports playing but position frozen for ${stalledMs}ms (likely a ghost Connect session); attempting recovery")
+                    context.recovery.clearGhostPlayingStallWatch()
+                    spotifyOps.maybeRecoverSpotifyTrack(
+                        queueTrackIds = listOf(currentTrack.id),
+                        startIndex = 0,
+                        failureMessage = "Spotify playback stalled while reporting playing"
+                    )
+                    return
                 }
             } else {
                 context.recovery.clearGhostPlayingStallWatch()
@@ -504,7 +511,10 @@ internal class MixedPlaybackOps(
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            // mixedAutoAdvanceTrackId was already set above so this cycle won't
+                            // be retried - advance directly or playback stalls here.
                             CompatLog.w(TAG, "Mixed sync() local-leg filler dispatch failed", e)
+                            playMixedTrackById(nextTrack.id)
                         }
                         return
                     }
@@ -512,40 +522,36 @@ internal class MixedPlaybackOps(
             }
 
             if (state.state == PlaybackStateType.PLAYING && snapshot.state == PlaybackStateType.PLAYING && nearTrackEnd) {
-                val nowMs = System.currentTimeMillis()
-                val sameTrack = context.recovery.mixedMediaEndStallTrackId == currentTrack.id
-                val samePosition = context.recovery.mixedMediaEndStallPositionMs == snapshot.positionMs
-                if (!sameTrack || !samePosition) {
-                    context.recovery.mixedMediaEndStallTrackId = currentTrack.id
-                    context.recovery.mixedMediaEndStallPositionMs = snapshot.positionMs
-                    context.recovery.mixedMediaEndStallSinceMs = nowMs
-                } else {
-                    val stalledMs = nowMs - context.recovery.mixedMediaEndStallSinceMs
-                    if (stalledMs >= 1800L && context.recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
-                        context.recovery.mixedAutoAdvanceTrackId = currentTrack.id
-                        val nextTrack = sequence.getOrNull(currentIndex + 1)
-                        if (nextTrack != null) {
-                            CompatLog.w(
-                                TAG,
-                                "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
-                            )
-                            context.recovery.resetMixedMediaEndStallState()
-                    try {
-                        djFillerScheduler.playFillerThenAdvance(
-                            djInterstitialPlayer = djInterstitialPlayer,
-                            upcomingTrackId = nextTrack.id
-                        ) {
+                val stalledMs = context.recovery.mixedMediaEndStall.update(
+                    System.currentTimeMillis(), currentTrack.id, snapshot.positionMs
+                )
+                if (stalledMs >= 1800L && context.recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
+                    context.recovery.mixedAutoAdvanceTrackId = currentTrack.id
+                    val nextTrack = sequence.getOrNull(currentIndex + 1)
+                    if (nextTrack != null) {
+                        CompatLog.w(
+                            TAG,
+                            "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
+                        )
+                        context.recovery.resetMixedMediaEndStallState()
+                        try {
+                            djFillerScheduler.playFillerThenAdvance(
+                                djInterstitialPlayer = djInterstitialPlayer,
+                                upcomingTrackId = nextTrack.id
+                            ) {
+                                playMixedTrackById(nextTrack.id)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // mixedAutoAdvanceTrackId was already set above so this cycle won't
+                            // be retried - advance directly or playback stalls here.
+                            CompatLog.w(TAG, "Mixed sync() local end-stall filler dispatch failed", e)
                             playMixedTrackById(nextTrack.id)
                         }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        CompatLog.w(TAG, "Mixed sync() local end-stall filler dispatch failed", e)
-                    }
-                    return
-                        } else {
-                            context.recovery.resetMixedMediaEndStallState()
-                        }
+                        return
+                    } else {
+                        context.recovery.resetMixedMediaEndStallState()
                     }
                 }
             } else {

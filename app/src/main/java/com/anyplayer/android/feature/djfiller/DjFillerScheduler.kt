@@ -90,6 +90,13 @@ class DjFillerScheduler @Inject constructor(
 
     private val generationVersion = AtomicLong(0L)
 
+    // Guards generationVersion + pendingFiller mutations against the TOCTOU race between a
+    // generation coroutine (runs on a Dispatchers.Default thread) finishing right as
+    // setEnabled(false) (callable from any thread) invalidates it - without this, a coroutine
+    // that passed its version check just before invalidation could still stash a stale
+    // pendingFiller afterward.
+    private val stateLock = Any()
+
     private var generationJob: Job? = null
     private lateinit var scope: CoroutineScope
 
@@ -167,8 +174,10 @@ class DjFillerScheduler @Inject constructor(
     fun setEnabled(value: Boolean) {
         enabled = value
         if (!value) {
-            invalidateGeneration()
-            discardPendingFiller()
+            synchronized(stateLock) {
+                invalidateGeneration()
+                discardPendingFiller()
+            }
         }
         updatePendingBreakOffset()
     }
@@ -294,7 +303,12 @@ class DjFillerScheduler @Inject constructor(
 
             CompatLog.i(TAG, "AI DJ: break ready for '${nextTrack.title}'")
 
-            if (generationId != generationVersion.get()) {
+            // generationVersion check + the resulting state mutation (splice, or stashing
+            // pendingFiller) must happen atomically w.r.t. setEnabled(false) and
+            // consumeReadyFillerIfDue, both of which can invalidate/consume state from
+            // another thread between the check and the mutation.
+            val stale = synchronized(stateLock) { generationId != generationVersion.get() }
+            if (stale) {
                 ready.audioFile.delete()
                 return@launch
             }
@@ -307,7 +321,8 @@ class DjFillerScheduler @Inject constructor(
                     // Generation can take seconds; if the user manually skipped during that
                     // window, preBreakTrack is no longer current and insertLocal() would
                     // splice this (now stale) break after whatever is actually playing.
-                    if (lastSeenTrackId == preBreakTrack.id && expectedNextTrackId == nextTrack.id) {
+                    val stillPending = synchronized(stateLock) { generationId == generationVersion.get() }
+                    if (stillPending && lastSeenTrackId == preBreakTrack.id && expectedNextTrackId == nextTrack.id) {
                         djInterstitialPlayer.insertLocal(ready)
                     } else {
                         CompatLog.i(TAG, "AI DJ: pre-break track ${preBreakTrack.id} no longer current after generation, discarding stale break")
@@ -316,7 +331,13 @@ class DjFillerScheduler @Inject constructor(
                     resetSchedulingState()
                 }
             } else {
-                pendingFiller = PendingFiller(ready, nextTrack.id)
+                synchronized(stateLock) {
+                    if (generationId == generationVersion.get()) {
+                        pendingFiller = PendingFiller(ready, nextTrack.id)
+                    } else {
+                        ready.audioFile.delete()
+                    }
+                }
             }
         }
     }
@@ -361,11 +382,12 @@ class DjFillerScheduler @Inject constructor(
         // only (re)starts generation on an *exact* equality match, the scheduler would never
         // trigger generation again for the rest of the session. This also rolls a fresh
         // threshold and updates the "songs away" display to the *next* break immediately.
-        invalidateGeneration()
+        val pending = synchronized(stateLock) {
+            invalidateGeneration()
+            pendingFiller.also { pendingFiller = null }
+        }
         resetSchedulingState()
 
-        val pending = pendingFiller
-        pendingFiller = null
         if (pending == null || upcomingTrackId == null || pending.forTrackId != upcomingTrackId) {
             pending?.filler?.audioFile?.delete()
             CompatLog.i(TAG, "AI DJ break due but no ready filler matched upcomingTrackId=$upcomingTrackId pending=${pending?.forTrackId}")

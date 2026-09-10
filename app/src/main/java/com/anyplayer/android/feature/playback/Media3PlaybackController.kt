@@ -288,6 +288,16 @@ class Media3PlaybackController @Inject constructor(
         return if (queueMediaIndex >= interstitialIndex) queueMediaIndex + 1 else queueMediaIndex
     }
 
+    /** True from the moment a local-mode splice ([insertInterstitial]) lands in the raw
+     *  timeline, not just once playback actually transitions into it (that's
+     *  [isPlayingInterstitial], driven by [activeInterstitialMediaId]/[onMediaItemTransition]).
+     *  Callers that rebuild the raw timeline from the domain queue (e.g.
+     *  [PlaybackQueueManager.addNextInQueue]) must check this too, or they'd silently drop a
+     *  pending-but-not-yet-playing break. */
+    fun hasSplicedFiller(): Boolean =
+        (0 until playerInstance.mediaItemCount)
+            .any { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
+
     fun play() {
         playerInstance.playWhenReady = true
         playerInstance.play()
