@@ -60,6 +60,13 @@ class DjFillerScheduler @Inject constructor(
     @Volatile
     private var lastSeenTrackId: String? = null
 
+    // Paired with lastSeenTrackId: a queue/playlist can contain the same track id more than
+    // once, so re-deriving "where was that track" via indexOfFirst on a later tick can match
+    // the wrong occurrence. Tracking the actual resolved position lets later lookups search
+    // near it instead.
+    @Volatile
+    private var lastSeenIndex: Int = -1
+
     @Volatile
     private var songsSinceLastBreak = 0
 
@@ -156,7 +163,7 @@ class DjFillerScheduler @Inject constructor(
         val current = status.currentTrack ?: return
         if (current.isDjFiller) return
         if (current.id == lastSeenTrackId) return
-        val previousId = lastSeenTrackId
+        val previousIndex = lastSeenIndex
         lastSeenTrackId = current.id
 
         // A run of very short tracks (or a burst of skips) can advance through more than
@@ -164,16 +171,17 @@ class DjFillerScheduler @Inject constructor(
         // the skipped ones and never count them. Use the queue-position delta between the
         // last observed track and the current one when it's resolvable (both present, in
         // forward order); fall back to +1 for the first tick, a shuffle reorder, or a
-        // manual previous(), where position delta isn't meaningful.
+        // manual previous(), where position delta isn't meaningful. Resolved nearest the
+        // last known index rather than indexOfFirst, since a queue/playlist can repeat the
+        // same track id more than once.
         val sequence = sequenceOf(status)
-        val advance = previousId
-            ?.let { prev -> sequence.indexOfFirst { it.id == prev } }
-            ?.takeIf { it >= 0 }
-            ?.let { prevIndex ->
-                val currentIndex = sequence.indexOfFirst { it.id == current.id }
-                (currentIndex - prevIndex).takeIf { currentIndex >= 0 && it > 0 }
-            }
-            ?: 1
+        val currentIndex = nearestIndexOf(sequence, current.id, (previousIndex + 1).coerceAtLeast(0))
+        lastSeenIndex = currentIndex
+        val advance = if (previousIndex >= 0 && currentIndex >= 0) {
+            (currentIndex - previousIndex).takeIf { it > 0 } ?: 1
+        } else {
+            1
+        }
 
         songsSinceLastBreak += advance
         updatePendingBreakOffset()
@@ -185,10 +193,33 @@ class DjFillerScheduler @Inject constructor(
     private fun sequenceOf(status: PlaybackStatus): List<Track> =
         status.orderedQueue.ifEmpty { status.queue }
 
+    /** Duplicate-id-safe replacement for `sequence.indexOfFirst { it.id == trackId }`: a
+     *  queue/playlist can contain the same track id more than once, so the first match isn't
+     *  necessarily the one actually reached - this picks whichever occurrence sits closest to
+     *  [expectedIndex] (the last known position) instead. */
+    private fun nearestIndexOf(sequence: List<Track>, trackId: String, expectedIndex: Int): Int {
+        var best = -1
+        var bestDistance = Int.MAX_VALUE
+        sequence.forEachIndexed { idx, track ->
+            if (track.id == trackId) {
+                val distance = kotlin.math.abs(idx - expectedIndex)
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    best = idx
+                }
+            }
+        }
+        return best
+    }
+
     private fun startGenerationFor(status: PlaybackStatus, preBreakTrack: Track) {
         if (generationJob?.isActive == true) return
         val sequence = sequenceOf(status)
-        val currentIndex = sequence.indexOfFirst { it.id == preBreakTrack.id }
+        // preBreakTrack.id is always the current lastSeenTrackId at this call site (only
+        // ever invoked synchronously from onStatusUpdated), so its index was already
+        // resolved duplicate-id-safely there - reuse it instead of re-searching by id.
+        val currentIndex = lastSeenIndex.takeIf { it >= 0 && sequence.getOrNull(it)?.id == preBreakTrack.id }
+            ?: nearestIndexOf(sequence, preBreakTrack.id, 0)
         if (currentIndex < 0) {
             CompatLog.w(TAG, "AI DJ: pre-break track ${preBreakTrack.id} not found in queue sequence, skipping this cycle")
             resetSchedulingState()

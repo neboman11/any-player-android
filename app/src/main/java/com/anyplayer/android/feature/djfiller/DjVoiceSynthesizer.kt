@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.File
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -184,11 +185,28 @@ class DjVoiceSynthesizer @Inject constructor(
 
     private fun ensureEspeakDataExtracted() {
         val marker = File(espeakExtractRoot, ".extracted")
-        if (marker.exists()) return
+        val assetHash = espeakDataAssetHash()
+        // Tied to the bundled asset's own content rather than just existing/not - a plain
+        // boolean marker survives an app update that ships a corrected espeak-ng-data.zip,
+        // silently keeping the stale phoneme data extracted under an older app version.
+        if (marker.isRegularFileNoFollow() && runCatching { marker.readText() }.getOrNull() == assetHash) return
         espeakExtractRoot.deleteRecursively()
         espeakExtractRoot.mkdirs()
         context.assets.open(ESPEAK_DATA_ASSET).use { extractZipSafely(it, espeakExtractRoot) }
-        marker.createNewFile()
+        marker.writeText(assetHash)
+    }
+
+    private fun espeakDataAssetHash(): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        context.assets.open(ESPEAK_DATA_ASSET).use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().toHexDigest()
     }
 
     /** Runs on-device synthesis off the calling dispatcher, writing a WAV file. Returns false

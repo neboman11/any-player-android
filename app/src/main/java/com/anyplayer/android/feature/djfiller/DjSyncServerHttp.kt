@@ -24,6 +24,11 @@ internal val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
  *  downloaded file is trusted. */
 internal val SHA_256 = Regex("[0-9a-fA-F]{64}")
 
+/** Shared byte-array-to-lowercase-hex helper for the SHA-256 digests computed across the
+ *  download/verification paths in this package (model download, voice bundle download, and
+ *  espeak-data asset hashing) - previously hand-copied at each call site. */
+internal fun ByteArray.toHexDigest(): String = joinToString("") { "%02x".format(it) }
+
 internal fun authorizedSyncServerRequest(url: String, token: String): Request = Request.Builder()
     .url(url)
     .apply { if (token.isNotEmpty()) header("Authorization", "Bearer $token") }

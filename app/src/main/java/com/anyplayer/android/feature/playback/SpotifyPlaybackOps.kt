@@ -344,34 +344,34 @@ internal class SpotifyPlaybackOps(
         context.recovery.resetSpotifyRecoveryState()
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
-            val activeQueue = spotifyPlaybackQueue(state)
-            if (activeQueue.isEmpty()) {
-                context.recovery.manualSkipInFlight = false
-                return@launch
-            }
-            val currentIndex = currentSpotifyQueueIndex(state)
-            val targetIndex = (currentIndex + 1).coerceAtMost(activeQueue.lastIndex)
-            if (targetIndex == currentIndex && currentIndex == activeQueue.lastIndex) {
-                context.recovery.manualSkipInFlight = false
-                return@launch
-            }
-            val targetTrack = activeQueue.getOrNull(targetIndex)
-            if (targetTrack == null) {
-                context.mutableStatus.value = context.mutableStatus.value.copy(
-                    errorMessage = "No track available at target index"
-                )
-                context.recovery.manualSkipInFlight = false
-                return@launch
-            }
-
-            // AI DJ hook: mirrors sync()'s natural end-of-track path - a manual skip is a
-            // real advance past the current track too, so a ready break should play here
-            // exactly like it would on natural end-of-track, instead of silently discarding it.
-            // Spotify is still actively playing the pre-skip track at this point (unlike the
-            // natural end-of-track path in sync(), where Spotify has already stopped), so it
-            // must be paused before the interstitial commandeers the shared ExoPlayer or the
-            // two would play audibly on top of each other.
             try {
+                val activeQueue = spotifyPlaybackQueue(state)
+                if (activeQueue.isEmpty()) {
+                    context.recovery.manualSkipInFlight = false
+                    return@launch
+                }
+                val currentIndex = currentSpotifyQueueIndex(state)
+                val targetIndex = (currentIndex + 1).coerceAtMost(activeQueue.lastIndex)
+                if (targetIndex == currentIndex && currentIndex == activeQueue.lastIndex) {
+                    context.recovery.manualSkipInFlight = false
+                    return@launch
+                }
+                val targetTrack = activeQueue.getOrNull(targetIndex)
+                if (targetTrack == null) {
+                    context.mutableStatus.value = context.mutableStatus.value.copy(
+                        errorMessage = "No track available at target index"
+                    )
+                    context.recovery.manualSkipInFlight = false
+                    return@launch
+                }
+
+                // AI DJ hook: mirrors sync()'s natural end-of-track path - a manual skip is a
+                // real advance past the current track too, so a ready break should play here
+                // exactly like it would on natural end-of-track, instead of silently discarding it.
+                // Spotify is still actively playing the pre-skip track at this point (unlike the
+                // natural end-of-track path in sync(), where Spotify has already stopped), so it
+                // must be paused before the interstitial commandeers the shared ExoPlayer or the
+                // two would play audibly on top of each other.
                 djFillerScheduler.playFillerThenAdvance(
                     djInterstitialPlayer = djInterstitialPlayer,
                     upcomingTrackId = targetTrack.id,
@@ -383,10 +383,11 @@ internal class SpotifyPlaybackOps(
                 throw e
             } catch (e: Exception) {
                 // Unlike performManualSkipTo (which resets manualSkipInFlight in its own
-                // finally), a throw from the filler dispatch itself happens before that
-                // block runs - reset here or the flag stays stuck, permanently blocking
-                // auto-advance/stall recovery until app restart.
-                CompatLog.w(TAG, "Spotify next() filler dispatch failed", e)
+                // finally), a throw anywhere in this block - including spotifyPlaybackQueue/
+                // currentSpotifyQueueIndex, which used to run outside this try - happens
+                // before that block runs; reset here or the flag stays stuck, permanently
+                // blocking auto-advance/stall recovery until app restart.
+                CompatLog.w(TAG, "Spotify next() dispatch failed", e)
                 context.recovery.manualSkipInFlight = false
             }
         }

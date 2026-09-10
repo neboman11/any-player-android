@@ -5,9 +5,13 @@ import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
 import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -95,7 +99,14 @@ class VoiceModelDownloader(
 
     private data class ActiveVoice(val id: String, val version: String)
 
-    private val mutableDownloadState = MutableStateFlow<DjModelDownloadState>(restoreExistingVoice())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // This class is constructed eagerly (see DjVoiceSynthesizer) from a chain reachable from
+    // MainActivity.onCreate on the main thread. The migration below can copyRecursively a
+    // whole legacy voice directory, so the initial value here must stay cheap (just a marker
+    // check, no migration) - migrateLegacyDefault() runs in the background instead and
+    // updates the flows afterward if it changes anything.
+    private val mutableDownloadState = MutableStateFlow<DjModelDownloadState>(currentVoiceState())
     val downloadState: StateFlow<DjModelDownloadState> = mutableDownloadState.asStateFlow()
 
     private var latestCatalog: DjVoiceCatalog? = null
@@ -103,6 +114,19 @@ class VoiceModelDownloader(
         DjVoiceState(selectedId = syncPreferencesStore.selectedDjVoiceId(), activeVoice = activeVoice())
     )
     val voiceState: StateFlow<DjVoiceState> = mutableVoiceState.asStateFlow()
+
+    init {
+        scope.launch {
+            migrateLegacyDefault()
+            val migrated = currentVoiceState()
+            if (mutableDownloadState.value != migrated) {
+                mutableDownloadState.value = migrated
+            }
+            if (mutableVoiceState.value.activeVoice == null) {
+                activeVoice()?.let { updateVoiceState(activeVoice = it) }
+            }
+        }
+    }
 
     fun voiceDirOrNull(): File? = activeVoiceMarker()
         ?.let { voiceDirectory(it.id, it.version) }
@@ -206,7 +230,7 @@ class VoiceModelDownloader(
                 mutableDownloadState.value = DjModelDownloadState.Downloading(fraction)
             }
         }.isSuccess
-        if (!downloaded || !descriptor.sha256.equals(digest.digest().toHex(), ignoreCase = true)) {
+        if (!downloaded || !descriptor.sha256.equals(digest.digest().toHexDigest(), ignoreCase = true)) {
             zipFile.delete()
             mutableDownloadState.value = DjModelDownloadState.Failed("Downloaded voice bundle failed integrity verification")
             return
@@ -239,10 +263,8 @@ class VoiceModelDownloader(
         onVoiceActivated()
     }
 
-    private fun restoreExistingVoice(): DjModelDownloadState {
-        migrateLegacyDefault()
-        return voiceDirOrNull()?.let(DjModelDownloadState::Ready) ?: DjModelDownloadState.NotDownloaded
-    }
+    private fun currentVoiceState(): DjModelDownloadState =
+        voiceDirOrNull()?.let(DjModelDownloadState::Ready) ?: DjModelDownloadState.NotDownloaded
 
     private fun migrateLegacyDefault() {
         val marker = File(voiceRootDir, ACTIVE_VOICE_FILE)
@@ -343,5 +365,4 @@ class VoiceModelDownloader(
     }
 
     private fun File.readTextOrNull(): String? = takeIf { it.isRegularFileNoFollow() }?.runCatching(File::readText)?.getOrNull()
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 }

@@ -143,7 +143,7 @@ class DjModelManager @Inject constructor(
             return
         }
 
-        val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+        val actualSha256 = digest.digest().toHexDigest()
         if (!expectedSha256.equals(actualSha256, ignoreCase = true)) {
             partFile.delete()
             mutableDownloadState.value = DjModelDownloadState.Failed("Downloaded model failed integrity verification")

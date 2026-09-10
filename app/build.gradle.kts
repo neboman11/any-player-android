@@ -255,6 +255,11 @@ ksp {
 // compiled Kotlin API classes plus native .so libs for all four Android ABIs) as a GitHub
 // release asset. Fetched once and cached in libs/ (gitignored) rather than committed.
 val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
+    // Gradle's UP-TO-DATE check only looks at inputs/outputs, not doLast's body - without
+    // these, editing the pinned URL/hash below is silently ignored once the AAR already
+    // exists on disk from a prior build, skipping the SHA-256 check entirely.
+    inputs.property("sherpaOnnxAarUrl", sherpaOnnxAarUrl)
+    inputs.property("sherpaOnnxAarSha256", sherpaOnnxAarSha256)
     outputs.file(sherpaOnnxAarFile)
     doLast {
         if (!sherpaOnnxAarFile.exists()) {

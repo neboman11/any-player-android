@@ -9,6 +9,7 @@ import com.anyplayer.android.feature.playback.Media3PlaybackController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,6 +30,21 @@ class DjInterstitialPlayer @Inject constructor(
     val isPlayingInterstitial: Boolean
         get() = media3PlaybackController.isPlayingInterstitial
 
+    /** One-shot hook for a caller that had to defer a domain-queue change (see
+     *  [com.anyplayer.android.feature.playback.PlaybackQueueManager.addNextInQueue]'s local
+     *  splice guard) while a break was playing - without this, that change is silently never
+     *  applied to the live ExoPlayer timeline. Consumed and cleared the moment the current
+     *  interstitial ends, so it never fires for a later, unrelated break. */
+    var onLocalInterstitialEnded: (() -> Unit)? = null
+
+    // Each break renders a new UUID-named .wav (see DjFillerAudioCache.newOutputFile) with
+    // nothing else ever deleting it - only clearStale() at app startup reclaimed space
+    // before this, so a long AI DJ session accumulated one leftover file per break with no
+    // bound. Deleted the moment its interstitial ends, tracked by mediaId since that's what
+    // every cleanup path below (including the error/watchdog ones in
+    // Media3PlaybackController) already reports.
+    private val pendingCleanupFiles = mutableMapOf<String, File>()
+
     init {
         media3PlaybackController.interstitialListener = this
     }
@@ -39,6 +55,11 @@ class DjInterstitialPlayer @Inject constructor(
 
     override fun onInterstitialEnded(mediaId: String) {
         mutableNowPlayingOverride.value = null
+        pendingCleanupFiles.remove(mediaId)?.delete()
+        onLocalInterstitialEnded?.let {
+            onLocalInterstitialEnded = null
+            it()
+        }
     }
 
     /** Local/provider-streamed mode: splice [filler] into the live ExoPlayer timeline right
@@ -46,6 +67,7 @@ class DjInterstitialPlayer @Inject constructor(
      *  into it with zero gap, same as a normal queue transition. */
     fun insertLocal(filler: PreparedFiller) {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
+        pendingCleanupFiles[mediaId] = filler.audioFile
         media3PlaybackController.insertInterstitial(Uri.fromFile(filler.audioFile), mediaId)
     }
 
@@ -54,6 +76,7 @@ class DjInterstitialPlayer @Inject constructor(
      *  (e.g. the Spotify `.next()` call that was deferred to make room for this). */
     fun playStandalone(filler: PreparedFiller, onEnded: () -> Unit) {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
+        pendingCleanupFiles[mediaId] = filler.audioFile
         media3PlaybackController.playInterstitialStandalone(Uri.fromFile(filler.audioFile), mediaId, onEnded)
     }
 }

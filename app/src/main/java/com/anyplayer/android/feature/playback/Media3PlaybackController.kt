@@ -221,6 +221,14 @@ class Media3PlaybackController @Inject constructor(
         get() = playerInstance
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
+        if (activeInterstitialMediaId != null) {
+            // A brand-new queue supersedes any in-progress AI DJ interstitial outright
+            // (unlike PlaybackQueueManager.addNextInQueue's additive splice, which defers
+            // instead) - tear down its bookkeeping/listener here or clearMediaItems() below
+            // leaves activeInterstitialMediaId/standaloneInterstitialEndedCallback leaked
+            // and the "AnyPlayer DJ" now-playing override stuck on indefinitely.
+            endStandaloneInterstitial(stopPlayer = false)
+        }
         val playableTracks = tracks.filter(::isMedia3PlayableTrack)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()

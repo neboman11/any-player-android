@@ -7,6 +7,7 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -263,8 +264,13 @@ internal class MixedPlaybackOps(
         val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
         // Mirrors SpotifyPlaybackOps.next(): an explicit skip command can't be mistaken
         // for a stall by sync()'s stall-detection while the async track switch is in flight.
+        // Must be set synchronously here, not just inside playMixedTrackAtIndex's manualSkip
+        // branch below - that only runs after playFillerThenAdvance's onAdvance fires, which
+        // is deferred until a due DJ break finishes playing, leaving sync()'s stall watches
+        // unsuppressed for the whole length of the break.
         context.recovery.resetSpotifyRecoveryState()
         context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.manualSkipInFlight = true
         // AI DJ hook: a manual skip is a real advance past the current track too, so a
         // ready break should play here exactly like the natural end-of-track path in
         // sync() - otherwise skipping past the pre-break song silently discards the break.
@@ -274,14 +280,24 @@ internal class MixedPlaybackOps(
         // track is already on that same shared player, so no separate pause is needed.
         val currentTrack = state.currentTrack
         context.scope.launch {
-            djFillerScheduler.playFillerThenAdvance(
-                djInterstitialPlayer = djInterstitialPlayer,
-                upcomingTrackId = nextTrack.id,
-                pauseActiveSpotify = if (currentTrack?.source == SourceType.SPOTIFY) {
-                    { spotifyPlaybackController.pause() }
-                } else null
-            ) {
-                playMixedTrackById(nextTrack.id, manualSkip = true)
+            try {
+                djFillerScheduler.playFillerThenAdvance(
+                    djInterstitialPlayer = djInterstitialPlayer,
+                    upcomingTrackId = nextTrack.id,
+                    pauseActiveSpotify = if (currentTrack?.source == SourceType.SPOTIFY) {
+                        { spotifyPlaybackController.pause() }
+                    } else null
+                ) {
+                    playMixedTrackById(nextTrack.id, manualSkip = true)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A throw from the filler dispatch itself happens before playMixedTrackAtIndex's
+                // own manualSkipInFlight reset runs - reset here or the flag stays stuck,
+                // permanently blocking auto-advance/stall recovery until app restart.
+                CompatLog.w(TAG, "Mixed next() filler dispatch failed", e)
+                context.recovery.manualSkipInFlight = false
             }
         }
     }
@@ -353,11 +369,20 @@ internal class MixedPlaybackOps(
                     // AI DJ hook: natural end-of-track only (not the stall/error recovery
                     // fallbacks below) - the shared ExoPlayer is idle here (Spotify leg), so
                     // a ready break plays standalone before handing off to the real next track.
-                    djFillerScheduler.playFillerThenAdvance(
-                        djInterstitialPlayer = djInterstitialPlayer,
-                        upcomingTrackId = nextTrack.id
-                    ) {
-                        playMixedTrackById(nextTrack.id)
+                    try {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
+                            playMixedTrackById(nextTrack.id)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // sync() runs inside PlaybackQueueManager's single long-lived polling
+                        // coroutine - an uncaught throw here would kill it, freezing playback
+                        // sync/DJ scheduling/persistence for the rest of the session.
+                        CompatLog.w(TAG, "Mixed sync() Spotify-leg filler dispatch failed", e)
                     }
                     return
                 }
@@ -369,7 +394,22 @@ internal class MixedPlaybackOps(
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nearTrackEnd && nextTrack != null) {
-                    playMixedTrackById(nextTrack.id)
+                    // Route through the same AI DJ hook as the natural end-of-track path
+                    // above, instead of advancing directly - otherwise an already-rendered
+                    // filler for nextTrack is silently discarded here and
+                    // DjFillerScheduler's songsSinceLastBreak desyncs from actual playback.
+                    try {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
+                            playMixedTrackById(nextTrack.id)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        CompatLog.w(TAG, "Mixed sync() stall-fallback filler dispatch failed", e)
+                    }
                     return
                 }
             }
@@ -454,11 +494,17 @@ internal class MixedPlaybackOps(
                     if (nextTrack != null) {
                         // AI DJ hook: natural end-of-track only, mirroring the Spotify-leg
                         // hook above.
-                        djFillerScheduler.playFillerThenAdvance(
-                            djInterstitialPlayer = djInterstitialPlayer,
-                            upcomingTrackId = nextTrack.id
-                        ) {
-                            playMixedTrackById(nextTrack.id)
+                        try {
+                            djFillerScheduler.playFillerThenAdvance(
+                                djInterstitialPlayer = djInterstitialPlayer,
+                                upcomingTrackId = nextTrack.id
+                            ) {
+                                playMixedTrackById(nextTrack.id)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            CompatLog.w(TAG, "Mixed sync() local-leg filler dispatch failed", e)
                         }
                         return
                     }

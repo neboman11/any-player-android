@@ -352,11 +352,6 @@ class PlaybackQueueManager @Inject constructor(
                 }
             }
         } else if (!context.mixedMode && !djInterstitialPlayer.isPlayingInterstitial) {
-            // Rebuilding the ExoPlayer timeline from the domain queue would drop the
-            // spliced-in AI DJ filler item (it's never part of that queue) and cut the
-            // break off mid-voice-over. The domain queue/orderedQueue state above is
-            // already updated; the player timeline catches up once the break ends and
-            // the next natural queue operation runs.
             val currentId = state.currentTrack?.id
             val queueIndex = currentId?.let { context.queueIndexCache.findQueueIndex(it) }?.takeIf { it >= 0 } ?: 0
             val mediaIndex = context.playableQueueIndices.indexOf(queueIndex).takeIf { it >= 0 } ?: 0
@@ -365,6 +360,24 @@ class PlaybackQueueManager @Inject constructor(
                 mediaIndex,
                 state.state == PlaybackStateType.PLAYING
             )
+        } else if (!context.mixedMode) {
+            // Rebuilding the ExoPlayer timeline from the domain queue would drop the
+            // spliced-in AI DJ filler item (it's never part of that queue) and cut the
+            // break off mid-voice-over. The domain queue/orderedQueue state above is
+            // already updated; defer the same rebuild until the break ends instead of
+            // dropping it, using whatever the queue looks like at that point.
+            djInterstitialPlayer.onLocalInterstitialEnded = {
+                val latest = context.mutableStatus.value
+                val latestQueueIndex = latest.currentTrack?.id
+                    ?.let { context.queueIndexCache.findQueueIndex(it) }
+                    ?.takeIf { it >= 0 } ?: 0
+                val latestMediaIndex = context.playableQueueIndices.indexOf(latestQueueIndex).takeIf { it >= 0 } ?: 0
+                media3PlaybackController.setQueue(
+                    latest.queue,
+                    latestMediaIndex,
+                    latest.state == PlaybackStateType.PLAYING
+                )
+            }
         }
         persistStateAsync()
     }
