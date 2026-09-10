@@ -530,8 +530,19 @@ internal class MixedPlaybackOps(
                                 "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
                             )
                             context.recovery.resetMixedMediaEndStallState()
+                    try {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
                             playMixedTrackById(nextTrack.id)
-                            return
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        CompatLog.w(TAG, "Mixed sync() local end-stall filler dispatch failed", e)
+                    }
+                    return
                         } else {
                             context.recovery.resetMixedMediaEndStallState()
                         }

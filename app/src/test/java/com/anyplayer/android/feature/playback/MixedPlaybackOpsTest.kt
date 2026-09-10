@@ -7,6 +7,8 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
 import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import com.anyplayer.android.feature.djfiller.model.PreparedFiller
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -23,6 +25,7 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyBlocking
 import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
@@ -232,6 +235,36 @@ class MixedPlaybackOpsTest {
         opsWithNearEnd.sync()
 
         assertEquals("local2", context.mutableStatus.value.currentTrack?.id)
+    }
+
+    @Test
+    fun sync_media3NearEndStall_playsReadyDjFillerBeforeAdvancing() = runTest {
+        val scheduler: DjFillerScheduler = mock()
+        val interstitial: DjInterstitialPlayer = mock()
+        val opsWithNearEnd = MixedPlaybackOps(
+            media3PlaybackController = media3,
+            spotifyPlaybackController = spotify,
+            audioCacheManager = audioCache,
+            spotifyOps = spotifyOps,
+            context = context,
+            isNearTrackEnd = { _, _, _ -> true },
+            applyNormalizedMedia3Volume = { _, _ -> },
+            persistStateAsync = {},
+            djFillerScheduler = scheduler,
+            djInterstitialPlayer = interstitial
+        )
+        val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
+        val filler = PreparedFiller(tracks[1], "intro", File("intro.wav"))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { media3.snapshot() } doReturn media3Snapshot(positionMs = 198_500L)
+        whenever(scheduler.consumeReadyFillerIfDue("local2")).thenReturn(filler)
+
+        opsWithNearEnd.sync()
+        context.recovery.mixedMediaEndStallSinceMs = System.currentTimeMillis() - 1_801L
+        opsWithNearEnd.sync()
+
+        verify(interstitial).playStandalone(eq(filler), any())
+        assertEquals("local1", context.mutableStatus.value.currentTrack?.id)
     }
 
     @Test

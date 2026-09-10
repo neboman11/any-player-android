@@ -17,13 +17,17 @@ import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 internal suspend fun DjFillerScheduler.playFillerThenAdvance(
     djInterstitialPlayer: DjInterstitialPlayer,
     upcomingTrackId: String?,
-    pauseActiveSpotify: (suspend () -> Unit)? = null,
+    pauseActiveSpotify: (suspend () -> Boolean)? = null,
     onAdvance: () -> Unit
 ) {
     val filler = consumeReadyFillerIfDue(upcomingTrackId)
     if (filler != null) {
-        pauseActiveSpotify?.invoke()
-        djInterstitialPlayer.playStandalone(filler, onAdvance)
+        if (pauseActiveSpotify?.invoke() != false) {
+            djInterstitialPlayer.playStandalone(filler, onAdvance)
+        } else {
+            filler.audioFile.delete()
+            onAdvance()
+        }
     } else {
         onAdvance()
     }

@@ -9,6 +9,9 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -25,6 +28,7 @@ import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class VoiceModelDownloaderTest {
     @Test
     fun `catalog request authenticates download route descriptor encoded`() = runTest {
@@ -35,7 +39,7 @@ class VoiceModelDownloaderTest {
         val root = Files.createTempDirectory("voice-model-test").toFile()
 
         try {
-            VoiceModelDownloader(root, client, Json, prefs).download()
+            VoiceModelDownloader(root, client, Json, prefs).downloadSelectedVoice()
 
             assertEquals("/v1/dj-voice-models", requests[0].url.encodedPath)
             assertEquals("/v1/dj-voice-models/voice.name-v1/download", requests[1].url.encodedPath)
@@ -263,7 +267,7 @@ class VoiceModelDownloaderTest {
     }
 
     @Test
-    fun `legacy default bundle migrates to catalog bound directory`() {
+    fun `legacy default bundle migration is non-blocking and test-drainable`() = runTest {
         val root = Files.createTempDirectory("voice-model-test").toFile()
         File(root, "default").apply {
             mkdirs()
@@ -271,9 +275,14 @@ class VoiceModelDownloaderTest {
             File(this, "tokens.txt").writeText("tokens")
         }
         File(root, "active-version").writeText("default")
+        val dispatcher = StandardTestDispatcher(testScheduler)
 
         try {
-            val downloader = downloader(root)
+            val downloader = downloader(root, dispatcher)
+
+            assertTrue(downloader.downloadState.value is DjModelDownloadState.NotDownloaded)
+
+            advanceUntilIdle()
 
             assertEquals("default", downloader.activeVoice()?.id)
             assertEquals("default", downloader.activeVoice()?.version)
@@ -343,11 +352,15 @@ class VoiceModelDownloaderTest {
             .build()
     }.build()
 
-    private fun downloader(root: File) = VoiceModelDownloader(
+    private fun downloader(
+        root: File,
+        ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
+    ) = VoiceModelDownloader(
         root,
         mock<OkHttpClient>(),
         Json,
-        mock<SyncPreferencesStore>()
+        mock<SyncPreferencesStore>(),
+        ioDispatcher = ioDispatcher
     )
 
     private fun descriptor(id: String, version: String) = DjVoiceDescriptor(

@@ -22,6 +22,7 @@ import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import java.io.File
 import java.security.MessageDigest
+import kotlinx.coroutines.CoroutineDispatcher
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,12 +32,30 @@ import javax.inject.Singleton
  *  explicit user button tap in Settings - enabling the "AI DJ" toggle never triggers
  *  a download on its own. */
 @Singleton
-class DjModelManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+class DjModelManager private constructor(
+    private val context: Context,
     private val okHttpClient: OkHttpClient,
     private val json: Json,
-    private val syncPreferencesStore: SyncPreferencesStore
+    private val syncPreferencesStore: SyncPreferencesStore,
+    ioDispatcher: CoroutineDispatcher,
+    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit
 ) {
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        okHttpClient: OkHttpClient,
+        json: Json,
+        syncPreferencesStore: SyncPreferencesStore
+    ) : this(context, okHttpClient, json, syncPreferencesStore, Dispatchers.IO, Unit)
+
+    internal constructor(
+        context: Context,
+        okHttpClient: OkHttpClient,
+        json: Json,
+        syncPreferencesStore: SyncPreferencesStore,
+        ioDispatcher: CoroutineDispatcher
+    ) : this(context, okHttpClient, json, syncPreferencesStore, ioDispatcher, Unit)
+
     private companion object {
         const val TAG = "DjModelManager"
     }
@@ -46,7 +65,7 @@ class DjModelManager @Inject constructor(
     private val mutableDownloadState = MutableStateFlow<DjModelDownloadState>(restoreExistingModel())
     val downloadState: StateFlow<DjModelDownloadState> = mutableDownloadState.asStateFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private var downloadJob: Job? = null
 
     private fun restoreExistingModel(): DjModelDownloadState {
@@ -108,8 +127,14 @@ class DjModelManager @Inject constructor(
         modelDir.mkdirs()
         val finalFile = File(modelDir, "$version.task")
         if (finalFile.exists()) {
-            mutableDownloadState.value = DjModelDownloadState.Ready(finalFile)
-            return
+            if (finalFile.sha256OrNull()?.equals(expectedSha256, ignoreCase = true) == true) {
+                mutableDownloadState.value = DjModelDownloadState.Ready(finalFile)
+                return
+            }
+            if (!finalFile.delete()) {
+                mutableDownloadState.value = DjModelDownloadState.Failed("Existing model failed integrity verification")
+                return
+            }
         }
 
         // `.part` suffix, no Range resume - a "tap Download again" retry is enough for v1.
@@ -156,4 +181,17 @@ class DjModelManager @Inject constructor(
         }
         mutableDownloadState.value = DjModelDownloadState.Ready(finalFile)
     }
+
+    private fun File.sha256OrNull(): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().toHexDigest()
+    }.getOrNull()
 }

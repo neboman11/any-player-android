@@ -123,9 +123,6 @@ class DjVoiceSynthesizer @Inject constructor(
         }
     }
 
-    /** Compatibility entry point for the original Settings download button. */
-    fun startVoiceDownload() = downloadSelectedVoice()
-
     private suspend fun ensureLoaded(): OfflineTts? {
         return loadMutex.withLock {
             val voiceDir = voiceModelDownloader.voiceDirOrNull() ?: return@withLock null

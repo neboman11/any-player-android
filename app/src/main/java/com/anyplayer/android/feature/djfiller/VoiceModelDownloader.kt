@@ -25,6 +25,7 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.security.MessageDigest
+import kotlinx.coroutines.CoroutineDispatcher
 import java.util.zip.ZipInputStream
 
 internal fun File.isRegularFileNoFollow(): Boolean =
@@ -88,6 +89,7 @@ class VoiceModelDownloader(
     val okHttpClient: OkHttpClient,
     private val json: Json,
     private val syncPreferencesStore: SyncPreferencesStore,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val onVoiceActivated: () -> Unit = {}
 ) {
     private companion object {
@@ -99,7 +101,7 @@ class VoiceModelDownloader(
 
     private data class ActiveVoice(val id: String, val version: String)
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     // This class is constructed eagerly (see DjVoiceSynthesizer) from a chain reachable from
     // MainActivity.onCreate on the main thread. The migration below can copyRecursively a
@@ -117,7 +119,8 @@ class VoiceModelDownloader(
 
     init {
         scope.launch {
-            migrateLegacyDefault()
+            runCatching { migrateLegacyDefault() }
+                .onFailure { CompatLog.e(TAG, "failed to migrate legacy AI DJ voice", it) }
             val migrated = currentVoiceState()
             if (mutableDownloadState.value != migrated) {
                 mutableDownloadState.value = migrated
@@ -203,9 +206,6 @@ class VoiceModelDownloader(
         }
         downloadDescriptor(descriptor)
     }
-
-    /** Compatibility entry point for the existing Settings button. */
-    suspend fun download() = downloadSelectedVoice()
 
     private suspend fun downloadDescriptor(descriptor: DjVoiceDescriptor) {
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)

@@ -19,6 +19,8 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -204,8 +206,12 @@ internal class SyncStateHolder(
                 syncStatus.value = "Server already has synced data - choose which side to keep."
                 syncConflictPending.value = true
             } else {
-                pushLocalStateToServer(preferences)
-                syncStatus.value = "Connected. Pushed local data to server."
+                val pushed = pushLocalStateToServer(preferences)
+                syncStatus.value = if (pushed) {
+                    "Connected. Pushed local data to server."
+                } else {
+                    "Connected, but some local data failed to push."
+                }
             }
         }
     }
@@ -218,8 +224,12 @@ internal class SyncStateHolder(
         syncConflictPending.value = false
         if (useLocal) {
             viewModelScope.launch {
-                pushLocalStateToServer(currentSyncPreferences())
-                syncStatus.value = "Pushed local data to server."
+                val pushed = pushLocalStateToServer(currentSyncPreferences())
+                syncStatus.value = if (pushed) {
+                    "Pushed local data to server."
+                } else {
+                    "Some local data failed to push to server."
+                }
             }
         } else {
             pullSyncState(confirmPlaylistOverwrite = true)
@@ -258,16 +268,19 @@ internal class SyncStateHolder(
     // pushes turned a user-facing "Connect" action into ~4x the network latency for no
     // benefit. buildConfigFile() is parsed once and shared by the two config-file-derived
     // pushes (playlists/provider-configuration) rather than re-parsed per push.
-    private suspend fun pushLocalStateToServer(preferences: SyncPreferences) = coroutineScope {
-        if (preferences.syncAppState) {
-            launch {
+    private suspend fun pushLocalStateToServer(preferences: SyncPreferences): Boolean = coroutineScope {
+        val pushes = buildList {
+            if (preferences.syncAppState) {
+                add(async {
                 val payload = syncSnapshotClient.payloadFromPlayback(playbackQueueManager.status.value)
-                runCatching { syncSnapshotClient.pushAppState(preferences.serverTarget, payload) }
+                    runCatching {
+                        syncSnapshotClient.pushAppState(preferences.serverTarget, payload)
+                    }.getOrDefault(false)
+                })
             }
-        }
 
-        if (preferences.syncSettings) {
-            launch {
+            if (preferences.syncSettings) {
+                add(async {
                 val currentSettings = playbackQueueManager.audioNormalizationSettings.value
                 val data = JsonObject(
                     mapOf(
@@ -275,43 +288,54 @@ internal class SyncStateHolder(
                         "audio_normalization_strict_mode" to JsonPrimitive(currentSettings.strictMode)
                     )
                 )
-                runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "settings", data) }
+                    runCatching {
+                        syncSnapshotClient.pushNamespace(preferences.serverTarget, "settings", data)
+                    }.getOrDefault(false)
+                })
             }
-        }
 
-        if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
-            launch {
+            if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
+                add(async {
                 // buildConfigFile() parses stored timestamps (Instant.parse); a row in a
                 // non-ISO-8601 format (legacy data, a bad migration) would otherwise throw
                 // uncaught here and crash the whole sync push instead of just skipping it.
                 val configFile = runCatching { configFileExporter.buildConfigFile() }.getOrElse { e ->
                     CompatLog.w(TAG, "buildConfigFile failed; skipping playlists/provider-configuration sync", e)
                     null
-                } ?: return@launch
+                    } ?: return@async false
 
-                if (preferences.syncPlaylists) {
-                    launch {
+                    val configPushes = buildList {
+                        if (preferences.syncPlaylists) {
+                            add(async {
                         val playlistsJson = syncJson.encodeToJsonElement(
                             ListSerializer(ConfigCustomPlaylist.serializer()),
                             configFile.customPlaylists
                         )
-                        runCatching { syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson) }
+                                runCatching {
+                                    syncSnapshotClient.pushNamespace(preferences.serverTarget, "playlists", playlistsJson)
+                                }.getOrDefault(false)
+                            })
                     }
-                }
 
-                if (preferences.syncProviderConfiguration) {
-                    launch {
+                        if (preferences.syncProviderConfiguration) {
+                            add(async {
                         val providerJson = syncJson.encodeToJsonElement(
                             ConfigProviderConfigs.serializer(),
                             configFile.providerConfigs
                         )
                         runCatching {
                             syncSnapshotClient.pushNamespace(preferences.serverTarget, "provider-configuration", providerJson)
+                                }.getOrDefault(false)
+                            })
                         }
                     }
-                }
+
+                    configPushes.awaitAll().all { it }
+                })
             }
         }
+
+        pushes.awaitAll().all { it }
     }
 
     fun startRealtimePlaybackSync() {
@@ -520,6 +544,8 @@ internal class SyncStateHolder(
             if (!sameCurrentTrack) {
                 playbackQueueManager.setQueue(listOf(remoteCurrentTrack) + remoteQueue, startIndex = 0, autoPlay = false)
             }
+        } else if (remoteQueue.isEmpty() && (localState.currentTrack != null || localState.queue.isNotEmpty())) {
+            playbackQueueManager.setQueue(emptyList(), startIndex = 0, autoPlay = false)
         }
 
         appState.long("position")?.let { positionMs ->

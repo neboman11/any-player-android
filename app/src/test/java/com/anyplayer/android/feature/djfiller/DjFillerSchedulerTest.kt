@@ -171,6 +171,20 @@ class DjFillerSchedulerTest {
     }
 
     @Test
+    fun `duplicate track occurrence counts when playback position resets`() {
+        scheduler.setEnabled(true)
+        setThreshold(5)
+        val queue = listOf(track("duplicate"), track("duplicate"), track("t3"))
+        val firstOccurrence = statusWith("duplicate", queue).copy(position = 1_000L)
+
+        scheduler.onStatusUpdated(firstOccurrence)
+        scheduler.onStatusUpdated(firstOccurrence.copy(position = 2_000L))
+        scheduler.onStatusUpdated(firstOccurrence.copy(currentTrack = queue[1], position = 0L))
+
+        assertEquals(3, scheduler.pendingBreakSongsAway.value)
+    }
+
+    @Test
     fun `failed generation resets the scheduling state and rolls a fresh offset`() = runTest {
         scheduler.setEnabled(true)
         setThreshold(1)
