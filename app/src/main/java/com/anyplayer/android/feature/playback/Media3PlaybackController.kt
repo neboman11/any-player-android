@@ -273,13 +273,18 @@ class Media3PlaybackController @Inject constructor(
 
     /** Maps a media-item index computed against the domain queue (i.e. as if no filler were
      *  spliced in) to the raw ExoPlayer timeline index - shifting by one if a local-mode
-     *  splice (see [insertInterstitial]) is currently active at or before the target
-     *  position. Single owner for this offset, since this class already tracks
-     *  [activeInterstitialMediaId] and where the splice sits in the timeline - callers used
-     *  to re-derive the same +1 rule by hand. */
+     *  splice (see [insertInterstitial]) sits at or before the target position. Scans the
+     *  live timeline directly rather than gating on [activeInterstitialMediaId], which is
+     *  only set once playback actually transitions into the filler
+     *  ([onMediaItemTransition]) - a splice sits in the raw timeline from the moment
+     *  [insertInterstitial] runs, well before that (generation can finish anywhere in the
+     *  pre-break song, not just at its tail), so gating on it left a window where a queue
+     *  tap resolved to the wrong (off-by-one) track. Single owner for this offset - callers
+     *  used to re-derive the same +1 rule by hand. */
     fun resolveTimelineIndex(queueMediaIndex: Int): Int {
-        if (activeInterstitialMediaId == null) return queueMediaIndex
-        val interstitialIndex = playerInstance.currentMediaItemIndex
+        val interstitialIndex = (0 until playerInstance.mediaItemCount)
+            .firstOrNull { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
+            ?: return queueMediaIndex
         return if (queueMediaIndex >= interstitialIndex) queueMediaIndex + 1 else queueMediaIndex
     }
 
