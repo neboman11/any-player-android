@@ -66,6 +66,7 @@ internal fun downloadSyncServerResponseToFile(
     response.use { result ->
         val body = result.body ?: error("empty response body")
         val totalBytes = expectedSize.takeIf { it > 0 } ?: body.contentLength()
+        val expectedBytes = expectedSize.takeIf { it > 0 }
         var bytesRead = 0L
         outputFile.outputStream().use { out ->
             body.byteStream().use { input ->
@@ -73,6 +74,9 @@ internal fun downloadSyncServerResponseToFile(
                 while (true) {
                     val read = input.read(buffer)
                     if (read == -1) break
+                    check(expectedBytes == null || bytesRead + read <= expectedBytes) {
+                        "download exceeded advertised size"
+                    }
                     out.write(buffer, 0, read)
                     digest.update(buffer, 0, read)
                     bytesRead += read
@@ -81,6 +85,9 @@ internal fun downloadSyncServerResponseToFile(
                     }
                 }
             }
+        }
+        check(expectedBytes == null || bytesRead == expectedBytes) {
+            "download did not match advertised size"
         }
     }
 }

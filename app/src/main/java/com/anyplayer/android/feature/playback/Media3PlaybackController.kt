@@ -400,8 +400,8 @@ class Media3PlaybackController @Inject constructor(
      *  auto-advance then carries playback into it (and, once left behind, [onMediaItemTransition]
      *  removes it) with the same zero-gap behavior as a normal queue transition. No-op if
      *  nothing is currently loaded (nothing to splice after). */
-    fun insertInterstitial(fileUri: Uri, mediaId: String) {
-        if (playerInstance.mediaItemCount == 0) return
+    fun insertInterstitial(fileUri: Uri, mediaId: String): Boolean {
+        if (playerInstance.mediaItemCount == 0) return false
         val insertAt = (playerInstance.currentMediaItemIndex + 1)
             .coerceAtMost(playerInstance.mediaItemCount)
         playerInstance.addMediaItem(
@@ -412,6 +412,7 @@ class Media3PlaybackController @Inject constructor(
                 .setMediaMetadata(MediaMetadata.Builder().setTitle("AnyPlayer DJ").build())
                 .build()
         )
+        return true
     }
 
     /** Spotify/Mixed-mode AI DJ playback: the shared ExoPlayer is idle whenever a Spotify

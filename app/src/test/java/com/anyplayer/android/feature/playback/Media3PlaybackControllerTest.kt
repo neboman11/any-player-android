@@ -108,6 +108,18 @@ class Media3PlaybackControllerTest {
         assertFalse(controller.player.playWhenReady)
     }
 
+    @Test
+    fun insertInterstitial_reportsWhetherItWasAdded() {
+        val controller = newController()
+
+        assertFalse(controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:empty"))
+
+        controller.setQueue(listOf(playableTrack("a")), startIndex = 0, autoPlay = false)
+
+        assertTrue(controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:added"))
+        assertEquals(2, controller.player.mediaItemCount)
+    }
+
     // ---- simple property proxies ----
 
     @Test

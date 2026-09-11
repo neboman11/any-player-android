@@ -17,6 +17,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
@@ -46,6 +47,48 @@ class VoiceModelDownloaderTest {
             assertTrue(requests.all { it.header("Authorization") == "Bearer token" })
         } finally {
             root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `download rejects a response larger than its advertised size`() {
+        val output = Files.createTempFile("voice-download", ".zip").toFile()
+        try {
+            try {
+                downloadSyncServerResponseToFile(
+                    response = responseWithBody(byteArrayOf(1, 2)),
+                    outputFile = output,
+                    expectedSize = 1,
+                    digest = MessageDigest.getInstance("SHA-256"),
+                    onProgress = {}
+                )
+                fail("expected oversized response to be rejected")
+            } catch (_: IllegalStateException) {
+                // Expected.
+            }
+        } finally {
+            output.delete()
+        }
+    }
+
+    @Test
+    fun `download rejects a response smaller than its advertised size`() {
+        val output = Files.createTempFile("voice-download", ".zip").toFile()
+        try {
+            try {
+                downloadSyncServerResponseToFile(
+                    response = responseWithBody(byteArrayOf(1)),
+                    outputFile = output,
+                    expectedSize = 2,
+                    digest = MessageDigest.getInstance("SHA-256"),
+                    onProgress = {}
+                )
+                fail("expected truncated response to be rejected")
+            } catch (_: IllegalStateException) {
+                // Expected.
+            }
+        } finally {
+            output.delete()
         }
     }
 
@@ -240,15 +283,13 @@ class VoiceModelDownloaderTest {
     }
 
     @Test
-    fun `activation callback runs only after successful marker switch`() {
+    fun `failed activation preserves the active voice`() {
         val root = Files.createTempDirectory("voice-model-test").toFile()
-        var activations = 0
         val downloader = VoiceModelDownloader(
             root,
             mock<OkHttpClient>(),
             Json,
-            mock<SyncPreferencesStore>(),
-            onVoiceActivated = { activations += 1 }
+            mock<SyncPreferencesStore>()
         )
 
         try {
@@ -260,7 +301,7 @@ class VoiceModelDownloaderTest {
                 // Expected.
             }
 
-            assertEquals(1, activations)
+            assertEquals("baritone", downloader.activeVoice()?.id)
         } finally {
             root.deleteRecursively()
         }
@@ -328,6 +369,14 @@ class VoiceModelDownloaderTest {
         whenever(it.read()).thenReturn(SyncPreferences("https://sync.example", "token"))
         whenever(it.selectedDjVoiceId()).thenReturn(selectedId)
     }
+
+    private fun responseWithBody(body: ByteArray): Response = Response.Builder()
+        .request(Request.Builder().url("https://sync.example/v1/dj-voice-models/voice/download").build())
+        .protocol(Protocol.HTTP_1_1)
+        .code(200)
+        .message("OK")
+        .body(body.toResponseBody("application/octet-stream".toMediaType()))
+        .build()
 
     private fun respondingClient(
         requests: MutableList<okhttp3.Request>,

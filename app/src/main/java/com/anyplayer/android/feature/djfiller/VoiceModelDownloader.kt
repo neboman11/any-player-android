@@ -89,8 +89,7 @@ class VoiceModelDownloader(
     val okHttpClient: OkHttpClient,
     private val json: Json,
     private val syncPreferencesStore: SyncPreferencesStore,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val onVoiceActivated: () -> Unit = {}
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     private companion object {
         const val TAG = "VoiceModelDownloader"
@@ -224,7 +223,6 @@ class VoiceModelDownloader(
             check(writeActiveVoice(ActiveVoice(descriptor.id, descriptor.version))) { "could not activate downloaded voice" }
             mutableDownloadState.value = DjModelDownloadState.Ready(alreadyInstalled)
             updateVoiceState(activeVoice = descriptor)
-            onVoiceActivated()
             return
         }
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)
@@ -280,7 +278,6 @@ class VoiceModelDownloader(
         check(writeActiveVoice(ActiveVoice(descriptor.id, descriptor.version))) { "could not activate downloaded voice" }
         mutableDownloadState.value = DjModelDownloadState.Ready(destination)
         updateVoiceState(activeVoice = descriptor)
-        onVoiceActivated()
     }
 
     private fun currentVoiceState(): DjModelDownloadState =

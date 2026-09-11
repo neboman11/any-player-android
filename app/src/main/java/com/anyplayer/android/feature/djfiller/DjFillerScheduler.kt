@@ -160,6 +160,13 @@ class DjFillerScheduler @Inject constructor(
         updatePendingBreakOffset()
     }
 
+    private fun resetSeenTrackState() {
+        lastSeenTrackId = null
+        lastSeenPositionMs = -1L
+        lastSeenIndex = -1
+        expectedNextTrackId = null
+    }
+
     private fun discardPendingFiller() {
         pendingFiller?.filler?.audioFile?.delete()
         pendingFiller = null
@@ -177,6 +184,8 @@ class DjFillerScheduler @Inject constructor(
             synchronized(stateLock) {
                 invalidateGeneration()
                 discardPendingFiller()
+                resetSchedulingState()
+                resetSeenTrackState()
             }
         }
         updatePendingBreakOffset()
@@ -322,7 +331,12 @@ class DjFillerScheduler @Inject constructor(
                     // window, preBreakTrack is no longer current and insertLocal() would
                     // splice this (now stale) break after whatever is actually playing.
                     val stillPending = synchronized(stateLock) { generationId == generationVersion.get() }
-                    if (stillPending && lastSeenTrackId == preBreakTrack.id && expectedNextTrackId == nextTrack.id) {
+                    if (
+                        stillPending &&
+                        isLocalModeActive() &&
+                        lastSeenTrackId == preBreakTrack.id &&
+                        expectedNextTrackId == nextTrack.id
+                    ) {
                         djInterstitialPlayer.insertLocal(ready)
                     } else {
                         CompatLog.i(TAG, "AI DJ: pre-break track ${preBreakTrack.id} no longer current after generation, discarding stale break")

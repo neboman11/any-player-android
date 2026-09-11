@@ -185,6 +185,26 @@ class DjFillerSchedulerTest {
     }
 
     @Test
+    fun `re-enabling starts a fresh schedule`() {
+        val queue = (1..10).map { track("t$it") }
+        scheduler.setEnabled(true)
+        setThreshold(5)
+        scheduler.onStatusUpdated(statusWith("t1", queue))
+        scheduler.onStatusUpdated(statusWith("t2", queue))
+
+        scheduler.setEnabled(false)
+
+        assertEquals(0, getPrivateIntField(scheduler, "songsSinceLastBreak"))
+        assertEquals(-1, getPrivateIntField(scheduler, "lastSeenIndex"))
+
+        setThreshold(5)
+        scheduler.setEnabled(true)
+        scheduler.onStatusUpdated(statusWith("t8", queue))
+
+        assertEquals(4, scheduler.pendingBreakSongsAway.value)
+    }
+
+    @Test
     fun `failed generation resets the scheduling state and rolls a fresh offset`() = runTest {
         scheduler.setEnabled(true)
         setThreshold(1)

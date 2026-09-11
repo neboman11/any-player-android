@@ -67,8 +67,11 @@ class DjInterstitialPlayer @Inject constructor(
      *  into it with zero gap, same as a normal queue transition. */
     fun insertLocal(filler: PreparedFiller) {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
-        pendingCleanupFiles[mediaId] = filler.audioFile
-        media3PlaybackController.insertInterstitial(Uri.fromFile(filler.audioFile), mediaId)
+        if (media3PlaybackController.insertInterstitial(Uri.fromFile(filler.audioFile), mediaId)) {
+            pendingCleanupFiles[mediaId] = filler.audioFile
+        } else {
+            filler.audioFile.delete()
+        }
     }
 
     /** Spotify/Mixed mode: the shared ExoPlayer is idle whenever a Spotify track is current,
