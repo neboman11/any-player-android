@@ -5,6 +5,9 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -24,7 +27,9 @@ internal class MixedPlaybackOps(
     private val context: PlaybackEngineContext,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
     private val applyNormalizedMedia3Volume: suspend (Int, SourceType) -> Unit,
-    private val persistStateAsync: () -> Unit
+    private val persistStateAsync: () -> Unit,
+    private val djFillerScheduler: DjFillerScheduler,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "MixedPlaybackOps"
@@ -105,6 +110,16 @@ internal class MixedPlaybackOps(
     }
 
     fun togglePlayPause() {
+        // A standalone DJ interstitial plays on the shared ExoPlayer, not the
+        // per-source controller - route transport controls there while it's
+        // active. Mirrors SpotifyPlaybackOps.togglePlayPause.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.togglePlayPause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                state = if (media3PlaybackController.player.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED
+            )
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack
         if (currentTrack == null) return
@@ -141,6 +156,11 @@ internal class MixedPlaybackOps(
     }
 
     fun play() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.play()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.recovery.resetSpotifyMidTrackStallState()
@@ -167,6 +187,11 @@ internal class MixedPlaybackOps(
     }
 
     fun pause() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.pause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PAUSED)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.recovery.resetSpotifyMidTrackStallState()
@@ -186,6 +211,10 @@ internal class MixedPlaybackOps(
     }
 
     fun seekTo(positionMs: Long) {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.seekTo(positionMs)
+            return
+        }
         val state = context.mutableStatus.value
         val currentTrack = state.currentTrack ?: return
         context.scope.launch {
@@ -201,6 +230,17 @@ internal class MixedPlaybackOps(
     }
 
     fun setVolume(requestedVolume: Int) {
+        // Mirrors the isPlayingInterstitial routing on togglePlayPause/play/pause/seekTo above:
+        // while a standalone DJ break is playing, the audibly active player is the shared
+        // Media3 one, not whatever per-source controller currentTrack implies.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            context.scope.launch {
+                applyNormalizedMedia3Volume(requestedVolume, SourceType.ALL)
+                context.mutableStatus.value = context.mutableStatus.value.copy(volume = requestedVolume)
+                persistStateAsync()
+            }
+            return
+        }
         val currentTrack = context.mutableStatus.value.currentTrack
         context.scope.launch {
             if (currentTrack?.source == SourceType.SPOTIFY) {
@@ -235,9 +275,43 @@ internal class MixedPlaybackOps(
         val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
         // Mirrors SpotifyPlaybackOps.next(): an explicit skip command can't be mistaken
         // for a stall by sync()'s stall-detection while the async track switch is in flight.
+        // Must be set synchronously here, not just inside playMixedTrackAtIndex's manualSkip
+        // branch below - that only runs after playFillerThenAdvance's onAdvance fires, which
+        // is deferred until a due DJ break finishes playing, leaving sync()'s stall watches
+        // unsuppressed for the whole length of the break.
         context.recovery.resetSpotifyRecoveryState()
         context.recovery.resetSpotifyMidTrackStallState()
-        playMixedTrackById(nextTrack.id, manualSkip = true)
+        context.recovery.manualSkipInFlight = true
+        // AI DJ hook: a manual skip is a real advance past the current track too, so a
+        // ready break should play here exactly like the natural end-of-track path in
+        // sync() - otherwise skipping past the pre-break song silently discards the break.
+        // If the currently playing track is Spotify, it's still actively playing at this
+        // point and must be paused before the interstitial commandeers the shared
+        // ExoPlayer or the two would play audibly on top of each other; a local current
+        // track is already on that same shared player, so no separate pause is needed.
+        val currentTrack = state.currentTrack
+        context.scope.launch {
+            try {
+                djFillerScheduler.playFillerThenAdvance(
+                    djInterstitialPlayer = djInterstitialPlayer,
+                    upcomingTrackId = nextTrack.id,
+                    pauseActiveSpotify = if (currentTrack?.source == SourceType.SPOTIFY) {
+                        { spotifyPlaybackController.pause() }
+                    } else null
+                ) {
+                    playMixedTrackById(nextTrack.id, manualSkip = true)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A throw from the filler dispatch itself happens before onAdvance
+                // (playMixedTrackById) ever runs, so the track never actually advances -
+                // fall back to advancing directly instead of just resetting the guard flag,
+                // or playback would stall at the end of the current track until app restart.
+                CompatLog.w(TAG, "Mixed next() filler dispatch failed", e)
+                playMixedTrackById(nextTrack.id, manualSkip = true)
+            }
+        }
     }
 
     fun previous(state: PlaybackStatus) {
@@ -254,8 +328,13 @@ internal class MixedPlaybackOps(
 
     suspend fun sync() {
         val state = context.mutableStatus.value
-        val currentTrack = state.currentTrack ?: return
+        var currentTrack = state.currentTrack ?: return
         if (currentTrack.source == SourceType.SPOTIFY) {
+            if (spotifyPlaybackController.isManualPauseExpected()) {
+                context.recovery.clearMidTrackStallWatch()
+                context.recovery.clearGhostPlayingStallWatch()
+                return
+            }
             val spotifySnapshot = spotifyPlaybackController.snapshot()
             if (spotifySnapshot == null) {
                 if (state.state == PlaybackStateType.PLAYING) {
@@ -268,12 +347,24 @@ internal class MixedPlaybackOps(
                 }
                 return
             }
+            val mappedTrackIndex = spotifySnapshot.currentTrackId?.let { id ->
+                context.queueIndexCache.findQueueIndexNear(
+                    id,
+                    context.queueIndexCache.spotifyCurrentQueueIndex,
+                    state.queue
+                ).takeIf { it >= 0 }
+            }
+            if (mappedTrackIndex != null) {
+                context.queueIndexCache.spotifyCurrentQueueIndex = mappedTrackIndex
+                currentTrack = state.queue[mappedTrackIndex]
+            }
             val duration = currentTrack.durationMs ?: state.duration
             val nearTrackEnd = isNearTrackEnd(spotifySnapshot.progressMs, duration, 1500L)
             context.mutableStatus.value = state.copy(
                 state = if (spotifySnapshot.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
                 position = spotifySnapshot.progressMs,
                 duration = duration,
+                currentTrack = currentTrack,
                 volume = state.volume,
                 shuffle = state.shuffle,
                 repeatMode = spotifySnapshot.repeatMode,
@@ -287,7 +378,28 @@ internal class MixedPlaybackOps(
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nextTrack != null) {
-                    playMixedTrackById(nextTrack.id)
+                    // AI DJ hook: natural end-of-track only (not the stall/error recovery
+                    // fallbacks below) - the shared ExoPlayer is idle here (Spotify leg), so
+                    // a ready break plays standalone before handing off to the real next track.
+                    try {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
+                            playMixedTrackById(nextTrack.id)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // sync() runs inside PlaybackQueueManager's single long-lived polling
+                        // coroutine - an uncaught throw here would kill it, freezing playback
+                        // sync/DJ scheduling/persistence for the rest of the session. onAdvance
+                        // may never have run, so fall back to advancing directly - lastAcknowledgedEndOfTrackCount
+                        // was already bumped above, so without this the track would otherwise
+                        // stall here permanently.
+                        CompatLog.w(TAG, "Mixed sync() Spotify-leg filler dispatch failed", e)
+                        playMixedTrackById(nextTrack.id)
+                    }
                     return
                 }
             }
@@ -298,7 +410,25 @@ internal class MixedPlaybackOps(
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = sequence.getOrNull(currentIndex + 1)
                 if (nearTrackEnd && nextTrack != null) {
-                    playMixedTrackById(nextTrack.id)
+                    // Route through the same AI DJ hook as the natural end-of-track path
+                    // above, instead of advancing directly - otherwise an already-rendered
+                    // filler for nextTrack is silently discarded here and
+                    // DjFillerScheduler's songsSinceLastBreak desyncs from actual playback.
+                    try {
+                        djFillerScheduler.playFillerThenAdvance(
+                            djInterstitialPlayer = djInterstitialPlayer,
+                            upcomingTrackId = nextTrack.id
+                        ) {
+                            playMixedTrackById(nextTrack.id)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Same reasoning as the natural end-of-track branch above: onAdvance
+                        // may never have run, so advance directly or playback stalls here.
+                        CompatLog.w(TAG, "Mixed sync() stall-fallback filler dispatch failed", e)
+                        playMixedTrackById(nextTrack.id)
+                    }
                     return
                 }
             }
@@ -308,32 +438,51 @@ internal class MixedPlaybackOps(
             // persisted across several poll cycles, mirroring SpotifyPlaybackOps.sync()'s
             // dwell check - including why this can't gate on state.state staying PLAYING
             // across polls (the copy above already flips it to PAUSED after the first
-            // stalled poll, so a continuing watch is tracked via spotifyMidTrackStallTrackId
+            // stalled poll, so a continuing watch is tracked via spotifyMidTrackStall.trackId
             // instead).
             val continuingKnownStallWatch =
-                context.recovery.spotifyMidTrackStallTrackId == currentTrack.id && !spotifySnapshot.isPlaying
+                context.recovery.spotifyMidTrackStall.trackId == currentTrack.id && !spotifySnapshot.isPlaying &&
+                    !context.recovery.manualSkipInFlight
             if (startingNewStallWatch || continuingKnownStallWatch) {
-                val nowMs = System.currentTimeMillis()
-                val samePosition = context.recovery.spotifyMidTrackStallPositionMs == spotifySnapshot.progressMs
-                if (!continuingKnownStallWatch || !samePosition) {
-                    context.recovery.spotifyMidTrackStallTrackId = currentTrack.id
-                    context.recovery.spotifyMidTrackStallPositionMs = spotifySnapshot.progressMs
-                    context.recovery.spotifyMidTrackStallSinceMs = nowMs
-                } else {
-                    val stalledMs = nowMs - context.recovery.spotifyMidTrackStallSinceMs
-                    if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 3) {
-                        CompatLog.w(TAG, "Mixed-mode Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery")
-                        context.recovery.resetSpotifyMidTrackStallState()
-                        spotifyOps.maybeRecoverSpotifyTrack(
-                            queueTrackIds = listOf(currentTrack.id),
-                            startIndex = 0,
-                            failureMessage = "Spotify playback stalled mid-track"
-                        )
-                        return
-                    }
+                val stalledMs = context.recovery.spotifyMidTrackStall.update(
+                    System.currentTimeMillis(), currentTrack.id, spotifySnapshot.progressMs
+                )
+                if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 3) {
+                    CompatLog.w(TAG, "Mixed-mode Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery")
+                    context.recovery.resetSpotifyMidTrackStallState()
+                    spotifyOps.maybeRecoverSpotifyTrack(
+                        queueTrackIds = listOf(currentTrack.id),
+                        startIndex = 0,
+                        failureMessage = "Spotify playback stalled mid-track"
+                    )
+                    return
                 }
             } else {
                 context.recovery.resetSpotifyMidTrackStallState()
+            }
+
+            // The opposite failure mode: Spotify keeps reporting `is_playing: true` with a
+            // frozen position - e.g. a ghost/zombie Connect session left behind after the app
+            // hosting playback was killed abruptly. Mirrors SpotifyPlaybackOps.sync(); without
+            // it a Mixed-mode queue hangs on this indefinitely (pure Spotify-mode self-recovers).
+            if (spotifySnapshot.isPlaying && !nearTrackEnd &&
+                !context.recovery.manualSkipInFlight && !context.recovery.spotifyAutoAdvanceInFlight
+            ) {
+                val stalledMs = context.recovery.spotifyGhostPlayingStall.update(
+                    System.currentTimeMillis(), currentTrack.id, spotifySnapshot.progressMs
+                )
+                if (stalledMs >= SpotifyConnectBridge.POLL_INTERVAL_MS * 5) {
+                    CompatLog.w(TAG, "Mixed-mode Spotify reports playing but position frozen for ${stalledMs}ms (likely a ghost Connect session); attempting recovery")
+                    context.recovery.clearGhostPlayingStallWatch()
+                    spotifyOps.maybeRecoverSpotifyTrack(
+                        queueTrackIds = listOf(currentTrack.id),
+                        startIndex = 0,
+                        failureMessage = "Spotify playback stalled while reporting playing"
+                    )
+                    return
+                }
+            } else {
+                context.recovery.clearGhostPlayingStallWatch()
             }
         } else {
             val snapshot = media3PlaybackController.snapshot()
@@ -350,36 +499,59 @@ internal class MixedPlaybackOps(
                     context.recovery.resetMixedMediaEndStallState()
                     val nextTrack = sequence.getOrNull(currentIndex + 1)
                     if (nextTrack != null) {
-                        playMixedTrackById(nextTrack.id)
+                        // AI DJ hook: natural end-of-track only, mirroring the Spotify-leg
+                        // hook above.
+                        try {
+                            djFillerScheduler.playFillerThenAdvance(
+                                djInterstitialPlayer = djInterstitialPlayer,
+                                upcomingTrackId = nextTrack.id
+                            ) {
+                                playMixedTrackById(nextTrack.id)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // mixedAutoAdvanceTrackId was already set above so this cycle won't
+                            // be retried - advance directly or playback stalls here.
+                            CompatLog.w(TAG, "Mixed sync() local-leg filler dispatch failed", e)
+                            playMixedTrackById(nextTrack.id)
+                        }
                         return
                     }
                 }
             }
 
             if (state.state == PlaybackStateType.PLAYING && snapshot.state == PlaybackStateType.PLAYING && nearTrackEnd) {
-                val nowMs = System.currentTimeMillis()
-                val sameTrack = context.recovery.mixedMediaEndStallTrackId == currentTrack.id
-                val samePosition = context.recovery.mixedMediaEndStallPositionMs == snapshot.positionMs
-                if (!sameTrack || !samePosition) {
-                    context.recovery.mixedMediaEndStallTrackId = currentTrack.id
-                    context.recovery.mixedMediaEndStallPositionMs = snapshot.positionMs
-                    context.recovery.mixedMediaEndStallSinceMs = nowMs
-                } else {
-                    val stalledMs = nowMs - context.recovery.mixedMediaEndStallSinceMs
-                    if (stalledMs >= 1800L && context.recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
-                        context.recovery.mixedAutoAdvanceTrackId = currentTrack.id
-                        val nextTrack = sequence.getOrNull(currentIndex + 1)
-                        if (nextTrack != null) {
-                            CompatLog.w(
-                                TAG,
-                                "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
-                            )
-                            context.recovery.resetMixedMediaEndStallState()
+                val stalledMs = context.recovery.mixedMediaEndStall.update(
+                    System.currentTimeMillis(), currentTrack.id, snapshot.positionMs
+                )
+                if (stalledMs >= 1800L && context.recovery.mixedAutoAdvanceTrackId != currentTrack.id) {
+                    context.recovery.mixedAutoAdvanceTrackId = currentTrack.id
+                    val nextTrack = sequence.getOrNull(currentIndex + 1)
+                    if (nextTrack != null) {
+                        CompatLog.w(
+                            TAG,
+                            "Detected mixed Media3 end stall; forcing next track transition after ${stalledMs}ms"
+                        )
+                        context.recovery.resetMixedMediaEndStallState()
+                        try {
+                            djFillerScheduler.playFillerThenAdvance(
+                                djInterstitialPlayer = djInterstitialPlayer,
+                                upcomingTrackId = nextTrack.id
+                            ) {
+                                playMixedTrackById(nextTrack.id)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // mixedAutoAdvanceTrackId was already set above so this cycle won't
+                            // be retried - advance directly or playback stalls here.
+                            CompatLog.w(TAG, "Mixed sync() local end-stall filler dispatch failed", e)
                             playMixedTrackById(nextTrack.id)
-                            return
-                        } else {
-                            context.recovery.resetMixedMediaEndStallState()
                         }
+                        return
+                    } else {
+                        context.recovery.resetMixedMediaEndStallState()
                     }
                 }
             } else {

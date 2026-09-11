@@ -5,6 +5,10 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import com.anyplayer.android.feature.djfiller.model.PreparedFiller
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -21,7 +25,9 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyBlocking
+import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
@@ -56,7 +62,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> false },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -111,6 +119,20 @@ class MixedPlaybackOpsTest {
     // ---- Spotify-track dwell check ----
 
     @Test
+    fun sync_spotifyManualPauseGrace_clearsStallWatchWithoutRecovery() = runTest {
+        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        context.recovery.spotifyMidTrackStall.trackId = "s1"
+
+        whenever(spotify.isManualPauseExpected()).thenReturn(true)
+
+        ops.sync()
+
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
+        verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
+    }
+
+    @Test
     fun sync_spotifyTrackSinglePollPause_doesNotForceRestart() = runTest {
         val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
@@ -119,7 +141,23 @@ class MixedPlaybackOpsTest {
         ops.sync()
 
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
-        assertEquals("s1", context.recovery.spotifyMidTrackStallTrackId)
+        assertEquals("s1", context.recovery.spotifyMidTrackStall.trackId)
+    }
+
+    @Test
+    fun sync_spotifyAdvancedTrack_reconcilesMixedQueueCurrentTrack() = runTest {
+        val tracks = listOf(
+            track("s1", SourceType.SPOTIFY),
+            track("s2", SourceType.SPOTIFY),
+            track("local1", SourceType.JELLYFIN)
+        )
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s2", playing = true)
+
+        ops.sync()
+
+        assertEquals("s2", context.mutableStatus.value.currentTrack?.id)
+        assertEquals(1, context.queueIndexCache.spotifyCurrentQueueIndex)
     }
 
     @Test
@@ -129,11 +167,11 @@ class MixedPlaybackOpsTest {
         wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s1", playing = false)
 
         ops.sync()
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
         ops.sync()
 
         verifyBlocking(spotifyOps) { maybeRecoverSpotifyTrack(eq(listOf("s1")), eq(0), any()) }
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -159,7 +197,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> true },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
@@ -168,7 +208,7 @@ class MixedPlaybackOpsTest {
         opsWithNearEnd.sync()
 
         assertEquals("local1", context.mutableStatus.value.currentTrack?.id)
-        assertEquals("local1", context.recovery.mixedMediaEndStallTrackId)
+        assertEquals("local1", context.recovery.mixedMediaEndStall.trackId)
     }
 
     @Test
@@ -181,7 +221,9 @@ class MixedPlaybackOpsTest {
             context = context,
             isNearTrackEnd = { _, _, _ -> true },
             applyNormalizedMedia3Volume = { _, _ -> },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
@@ -189,10 +231,40 @@ class MixedPlaybackOpsTest {
         wheneverBlocking { media3.setQueue(any(), any(), any()) } doReturn 0
 
         opsWithNearEnd.sync()
-        context.recovery.mixedMediaEndStallSinceMs -= 1_801L
+        context.recovery.mixedMediaEndStall.sinceMs -= 1_801L
         opsWithNearEnd.sync()
 
         assertEquals("local2", context.mutableStatus.value.currentTrack?.id)
+    }
+
+    @Test
+    fun sync_media3NearEndStall_playsReadyDjFillerBeforeAdvancing() = runTest {
+        val scheduler: DjFillerScheduler = mock()
+        val interstitial: DjInterstitialPlayer = mock()
+        val opsWithNearEnd = MixedPlaybackOps(
+            media3PlaybackController = media3,
+            spotifyPlaybackController = spotify,
+            audioCacheManager = audioCache,
+            spotifyOps = spotifyOps,
+            context = context,
+            isNearTrackEnd = { _, _, _ -> true },
+            applyNormalizedMedia3Volume = { _, _ -> },
+            persistStateAsync = {},
+            djFillerScheduler = scheduler,
+            djInterstitialPlayer = interstitial
+        )
+        val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
+        val filler = PreparedFiller(tracks[1], "intro", File("intro.wav"))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { media3.snapshot() } doReturn media3Snapshot(positionMs = 198_500L)
+        whenever(scheduler.consumeReadyFillerIfDue("local2")).thenReturn(filler)
+
+        opsWithNearEnd.sync()
+        context.recovery.mixedMediaEndStall.sinceMs = System.currentTimeMillis() - 1_801L
+        opsWithNearEnd.sync()
+
+        verify(interstitial).playStandalone(eq(filler), any())
+        assertEquals("local1", context.mutableStatus.value.currentTrack?.id)
     }
 
     @Test

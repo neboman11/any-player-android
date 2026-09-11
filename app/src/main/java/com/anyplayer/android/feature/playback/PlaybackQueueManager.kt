@@ -7,6 +7,10 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.AudioNormalizationSettings
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import com.anyplayer.android.feature.djfiller.DjVoiceState
+import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -26,7 +30,9 @@ class PlaybackQueueManager @Inject constructor(
     private val spotifyPlaybackController: SpotifyPlaybackController,
     private val playbackStateStore: PlaybackStateStore,
     private val audioCacheManager: AudioCacheManager,
-    private val json: Json
+    private val json: Json,
+    private val djFillerScheduler: DjFillerScheduler,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "PlaybackQueueManager"
@@ -48,7 +54,8 @@ class PlaybackQueueManager @Inject constructor(
         context = context,
         applyNormalizedMedia3Volume = ::applyNormalizedMedia3Volume,
         triggerPrefetch = ::triggerPrefetch,
-        persistStateAsync = ::persistStateAsync
+        persistStateAsync = ::persistStateAsync,
+        djInterstitialPlayer = djInterstitialPlayer
     )
     private val spotifyOps = SpotifyPlaybackOps(
         media3PlaybackController = media3PlaybackController,
@@ -56,7 +63,9 @@ class PlaybackQueueManager @Inject constructor(
         audioCacheManager = audioCacheManager,
         context = context,
         isNearTrackEnd = ::isNearTrackEnd,
-        persistStateAsync = ::persistStateAsync
+        persistStateAsync = ::persistStateAsync,
+        djFillerScheduler = djFillerScheduler,
+        djInterstitialPlayer = djInterstitialPlayer
     )
     private val mixedOps = MixedPlaybackOps(
         media3PlaybackController = media3PlaybackController,
@@ -66,8 +75,18 @@ class PlaybackQueueManager @Inject constructor(
         context = context,
         isNearTrackEnd = ::isNearTrackEnd,
         applyNormalizedMedia3Volume = ::applyNormalizedMedia3Volume,
-        persistStateAsync = ::persistStateAsync
+        persistStateAsync = ::persistStateAsync,
+        djFillerScheduler = djFillerScheduler,
+        djInterstitialPlayer = djInterstitialPlayer
     )
+
+    init {
+        // Local/provider-streamed mode has no per-transition hook for the scheduler to
+        // pull a ready filler from, so it needs to know up front when it must instead push
+        // a completed filler straight into the live ExoPlayer timeline (see
+        // DjFillerScheduler.configureLocalModeProvider).
+        djFillerScheduler.configureLocalModeProvider { !context.spotifyMode && !context.mixedMode }
+    }
 
     /**
      * Gate that blocks [restorePersistedState] until the provider auth layer
@@ -77,10 +96,27 @@ class PlaybackQueueManager @Inject constructor(
     private val providerRestoreGate = CompletableDeferred<Unit>()
 
     private val mutableAudioNormalizationSettings = MutableStateFlow(AudioNormalizationSettings())
+    private val mutableAiDjEnabled = MutableStateFlow(false)
+    private val mutableShowDjEntriesInQueue = MutableStateFlow(false)
 
     val status: StateFlow<PlaybackStatus> = context.mutableStatus.asStateFlow()
     val audioNormalizationSettings: StateFlow<AudioNormalizationSettings> =
         mutableAudioNormalizationSettings.asStateFlow()
+    val aiDjEnabled: StateFlow<Boolean> = mutableAiDjEnabled.asStateFlow()
+    val showDjEntriesInQueue: StateFlow<Boolean> = mutableShowDjEntriesInQueue.asStateFlow()
+    val djFillerPendingBreakSongsAway: StateFlow<Int?> = djFillerScheduler.pendingBreakSongsAway
+    val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = djFillerScheduler.voiceModelDownloadState
+    val djVoiceCatalogState: StateFlow<DjVoiceState> = djFillerScheduler.voiceCatalogState
+    val djVoiceGain: StateFlow<Float> = djFillerScheduler.voiceGain
+    val djVoiceGainRange: ClosedFloatingPointRange<Float> = djFillerScheduler.voiceGainRange
+
+    fun refreshDjVoiceCatalog() = djFillerScheduler.refreshVoiceCatalog()
+
+    fun selectDjVoice(id: String) = djFillerScheduler.selectVoice(id)
+
+    fun setDjVoiceGain(gain: Float) = djFillerScheduler.setVoiceGain(gain)
+
+    fun downloadDjVoiceModel() = djFillerScheduler.downloadVoiceModel()
 
     suspend fun restorePersistedStateNowIfNeeded() {
         if (context.mutableStatus.value.queue.isNotEmpty() || isRestoring) {
@@ -121,6 +157,7 @@ class PlaybackQueueManager @Inject constructor(
             restorePersistedState()
             while (true) {
                 syncFromPlaybackEngine()
+                djFillerScheduler.onStatusUpdated(context.mutableStatus.value)
                 persistTickCounter++
                 // Persist every 3s (6 × 500ms) instead of every 500ms
                 if (persistTickCounter >= 6) {
@@ -160,6 +197,19 @@ class PlaybackQueueManager @Inject constructor(
             }
             persistStateAsync()
         }
+    }
+
+    /** Enabling never triggers a model download on its own - that only happens when the
+     *  user explicitly taps "Download" in Settings (see DjModelManager.startDownload). */
+    fun setAiDjEnabled(enabled: Boolean) {
+        mutableAiDjEnabled.value = enabled
+        djFillerScheduler.setEnabled(enabled)
+        persistStateAsync()
+    }
+
+    fun setShowDjEntriesInQueue(enabled: Boolean) {
+        mutableShowDjEntriesInQueue.value = enabled
+        persistStateAsync()
     }
 
     /** Single owner for the "does this queue contain Spotify tracks, non-Spotify tracks, or
@@ -301,7 +351,7 @@ class PlaybackQueueManager @Inject constructor(
                     context.spotifyQueueRequiresReload = true
                 }
             }
-        } else if (!context.mixedMode) {
+        } else if (!context.mixedMode && !djInterstitialPlayer.isPlayingInterstitial && !media3PlaybackController.hasSplicedFiller()) {
             val currentId = state.currentTrack?.id
             val queueIndex = currentId?.let { context.queueIndexCache.findQueueIndex(it) }?.takeIf { it >= 0 } ?: 0
             val mediaIndex = context.playableQueueIndices.indexOf(queueIndex).takeIf { it >= 0 } ?: 0
@@ -310,6 +360,24 @@ class PlaybackQueueManager @Inject constructor(
                 mediaIndex,
                 state.state == PlaybackStateType.PLAYING
             )
+        } else if (!context.mixedMode) {
+            // Rebuilding the ExoPlayer timeline from the domain queue would drop the
+            // spliced-in AI DJ filler item (it's never part of that queue) and cut the
+            // break off mid-voice-over. The domain queue/orderedQueue state above is
+            // already updated; defer the same rebuild until the break ends instead of
+            // dropping it, using whatever the queue looks like at that point.
+            djInterstitialPlayer.onLocalInterstitialEnded = {
+                val latest = context.mutableStatus.value
+                val latestQueueIndex = latest.currentTrack?.id
+                    ?.let { context.queueIndexCache.findQueueIndex(it) }
+                    ?.takeIf { it >= 0 } ?: 0
+                val latestMediaIndex = context.playableQueueIndices.indexOf(latestQueueIndex).takeIf { it >= 0 } ?: 0
+                media3PlaybackController.setQueue(
+                    latest.queue,
+                    latestMediaIndex,
+                    latest.state == PlaybackStateType.PLAYING
+                )
+            }
         }
         persistStateAsync()
     }
@@ -437,6 +505,15 @@ class PlaybackQueueManager @Inject constructor(
             TAG,
             "next state=${state.state} spotifyMode=${context.spotifyMode} mixedMode=${context.mixedMode} current=${state.currentTrack?.id}"
         )
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            // Mirrors the reset every other manual skip performs (see mixedOps.next()/
+            // spotifyOps.next()) - without it, a stall watch armed for the real track just
+            // before the break started stays stale and can misfire once playback resumes.
+            context.recovery.resetSpotifyRecoveryState()
+            context.recovery.resetSpotifyMidTrackStallState()
+            media3PlaybackController.skipInterstitial()
+            return
+        }
         if (context.mixedMode) {
             mixedOps.next(state)
             return
@@ -454,6 +531,14 @@ class PlaybackQueueManager @Inject constructor(
             TAG,
             "previous state=${state.state} spotifyMode=${context.spotifyMode} mixedMode=${context.mixedMode} current=${state.currentTrack?.id}"
         )
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            if (context.mixedMode || context.spotifyMode) {
+                media3PlaybackController.clearStandaloneInterstitial()
+            }
+            // Local mode: don't skipInterstitial() (that seeks forward, past the break).
+            // localOps.previous() below calls the ExoPlayer previous() directly, which
+            // naturally seeks back past the spliced filler item to the pre-break track.
+        }
         if (context.mixedMode) {
             mixedOps.previous(state)
             return
@@ -508,6 +593,8 @@ class PlaybackQueueManager @Inject constructor(
             persisted.audioNormalizationEnabled,
             persisted.audioNormalizationStrictMode
         )
+        setAiDjEnabled(persisted.aiDjEnabled)
+        setShowDjEntriesInQueue(persisted.showDjEntriesInQueue)
 
         // Set shuffle flag BEFORE setQueue so buildOrderedQueue uses the
         // persisted value instead of the default (false). This prevents
@@ -518,6 +605,13 @@ class PlaybackQueueManager @Inject constructor(
         val shouldAutoPlay = false
 
         setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
+
+        // setQueue restores app state but not the playback engine's shuffle flag.
+        // Apply it directly so the first sync cannot overwrite persisted state.
+        when {
+            context.spotifyMode -> spotifyPlaybackController.setShuffle(persisted.shuffle)
+            !context.mixedMode -> media3PlaybackController.setShuffle(persisted.shuffle)
+        }
 
         // Restore the persisted orderedQueue if available and valid, so the
         // shuffled order is preserved across restarts instead of re-randomizing.
@@ -626,6 +720,8 @@ class PlaybackQueueManager @Inject constructor(
             volume = state.volume,
             audioNormalizationEnabled = audioNorm.enabled,
             audioNormalizationStrictMode = audioNorm.strictMode,
+            aiDjEnabled = mutableAiDjEnabled.value,
+            showDjEntriesInQueue = mutableShowDjEntriesInQueue.value,
             state = state.state
         )
         playbackStateStore.write(json.encodeToString(payload))

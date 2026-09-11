@@ -4,9 +4,15 @@ import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
+import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Spotify (Connect) branch of [PlaybackQueueManager]'s per-operation mode
@@ -25,7 +31,9 @@ internal class SpotifyPlaybackOps(
     private val audioCacheManager: AudioCacheManager,
     private val context: PlaybackEngineContext,
     private val isNearTrackEnd: (positionMs: Long, durationMs: Long, toleranceMs: Long) -> Boolean,
-    private val persistStateAsync: () -> Unit
+    private val persistStateAsync: () -> Unit,
+    private val djFillerScheduler: DjFillerScheduler,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) {
     companion object {
         private const val TAG = "SpotifyPlaybackOps"
@@ -42,6 +50,14 @@ internal class SpotifyPlaybackOps(
         // as a genuine stuck session filters out that single-poll race while still
         // recovering from a real stall within a bounded time.
         private val MID_TRACK_STALL_THRESHOLD_MS = SpotifyConnectBridge.POLL_INTERVAL_MS * 3
+
+        // The opposite failure mode: Spotify's own server keeps reporting `is_playing: true`
+        // with a frozen position - e.g. a ghost/zombie Connect session left behind after the
+        // app hosting playback was killed abruptly rather than cleanly paused. A longer
+        // threshold than the mid-track-stall one above, since there's no urgency (nothing
+        // ever recovers from this on its own) and it gives normal ~1s progress_ms ticks
+        // plenty of margin against a false positive from a single coincidental repeat.
+        private val GHOST_PLAYING_STALL_THRESHOLD_MS = SpotifyConnectBridge.POLL_INTERVAL_MS * 5
     }
 
     private fun spotifyPlaybackQueue(state: PlaybackStatus): List<Track> =
@@ -142,6 +158,16 @@ internal class SpotifyPlaybackOps(
     }
 
     fun togglePlayPause() {
+        // A standalone DJ interstitial (Spotify/Mixed break) plays on the shared
+        // ExoPlayer, not the Spotify session - route transport controls there while
+        // it's active instead of controlling the idle Spotify playback.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.togglePlayPause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                state = if (media3PlaybackController.player.isPlaying) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED
+            )
+            return
+        }
         val state = context.mutableStatus.value
         // An explicit play/pause command is unambiguous user intent - it can't be
         // mistaken for a stall, so it always cancels any in-progress stall watch.
@@ -165,6 +191,11 @@ internal class SpotifyPlaybackOps(
     }
 
     fun play() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.play()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PLAYING)
+            return
+        }
         val state = context.mutableStatus.value
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
@@ -219,6 +250,11 @@ internal class SpotifyPlaybackOps(
     }
 
     fun pause() {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.pause()
+            context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PAUSED)
+            return
+        }
         context.recovery.resetSpotifyMidTrackStallState()
         context.scope.launch {
             val success = spotifyPlaybackController.pause()
@@ -231,6 +267,10 @@ internal class SpotifyPlaybackOps(
     }
 
     fun seekTo(positionMs: Long) {
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            media3PlaybackController.seekTo(positionMs)
+            return
+        }
         context.scope.launch {
             spotifyPlaybackController.seekTo(positionMs)
             val state = context.mutableStatus.value
@@ -241,6 +281,20 @@ internal class SpotifyPlaybackOps(
     }
 
     fun setVolume(requestedVolume: Int) {
+        // Mirrors the isPlayingInterstitial routing on togglePlayPause/play/pause/seekTo
+        // above: while a standalone DJ break is playing, the Spotify session is idle and
+        // the shared Media3 player is what's actually audible.
+        if (djInterstitialPlayer.isPlayingInterstitial) {
+            context.scope.launch {
+                val outputVolume = withContext(Dispatchers.IO) {
+                    spotifyPlaybackController.normalizeVolumeForSource(requestedVolume, SourceType.ALL)
+                }
+                media3PlaybackController.setVolume(outputVolume)
+                context.mutableStatus.value = context.mutableStatus.value.copy(volume = requestedVolume)
+                persistStateAsync()
+            }
+            return
+        }
         context.scope.launch {
             spotifyPlaybackController.setVolume(requestedVolume)
             context.mutableStatus.value = context.mutableStatus.value.copy(volume = requestedVolume)
@@ -309,10 +363,14 @@ internal class SpotifyPlaybackOps(
         context.scope.launch {
             try {
                 val activeQueue = spotifyPlaybackQueue(state)
-                if (activeQueue.isEmpty()) return@launch
+                if (activeQueue.isEmpty()) {
+                    context.recovery.manualSkipInFlight = false
+                    return@launch
+                }
                 val currentIndex = currentSpotifyQueueIndex(state)
                 val targetIndex = (currentIndex + 1).coerceAtMost(activeQueue.lastIndex)
                 if (targetIndex == currentIndex && currentIndex == activeQueue.lastIndex) {
+                    context.recovery.manualSkipInFlight = false
                     return@launch
                 }
                 val targetTrack = activeQueue.getOrNull(targetIndex)
@@ -320,27 +378,66 @@ internal class SpotifyPlaybackOps(
                     context.mutableStatus.value = context.mutableStatus.value.copy(
                         errorMessage = "No track available at target index"
                     )
+                    context.recovery.manualSkipInFlight = false
                     return@launch
                 }
-                val success = startSpotifyAtQueueIndex(targetIndex)
-                if (!success) {
-                    context.recovery.spotifyAutoAdvanceInFlight = false
-                    CompatLog.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
-                } else {
-                    context.queueIndexCache.spotifyCurrentQueueIndex = targetIndex
+
+                // AI DJ hook: mirrors sync()'s natural end-of-track path - a manual skip is a
+                // real advance past the current track too, so a ready break should play here
+                // exactly like it would on natural end-of-track, instead of silently discarding it.
+                // Spotify is still actively playing the pre-skip track at this point (unlike the
+                // natural end-of-track path in sync(), where Spotify has already stopped), so it
+                // must be paused before the interstitial commandeers the shared ExoPlayer or the
+                // two would play audibly on top of each other.
+                djFillerScheduler.playFillerThenAdvance(
+                    djInterstitialPlayer = djInterstitialPlayer,
+                    upcomingTrackId = targetTrack.id,
+                    pauseActiveSpotify = { spotifyPlaybackController.pause() }
+                ) {
+                    context.scope.launch { performManualSkipTo(state, targetIndex, targetTrack) }
                 }
-                context.addToQueueInsertionOffset = 0
-                context.mutableStatus.value = context.mutableStatus.value.copy(
-                    currentTrack = if (success) targetTrack else state.currentTrack,
-                    state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
-                    position = if (success) 0L else state.position,
-                    duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
-                    errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
-                )
-                persistStateAsync()
-            } finally {
-                context.recovery.manualSkipInFlight = false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A throw anywhere in this block - including from the filler dispatch itself,
+                // which happens before performManualSkipTo (and its own manualSkipInFlight
+                // reset) ever runs - means the track never actually advanced. Resetting the
+                // flag alone would leave playback stalled on the pre-skip track; re-resolve
+                // the target and advance directly instead.
+                CompatLog.w(TAG, "Spotify next() dispatch failed", e)
+                val activeQueue = spotifyPlaybackQueue(state)
+                val currentIndex = currentSpotifyQueueIndex(state)
+                val targetIndex = (currentIndex + 1).coerceAtMost(activeQueue.lastIndex.coerceAtLeast(0))
+                val targetTrack = activeQueue.getOrNull(targetIndex)
+                if (targetTrack != null && targetIndex != currentIndex) {
+                    performManualSkipTo(state, targetIndex, targetTrack)
+                } else {
+                    context.recovery.manualSkipInFlight = false
+                }
             }
+        }
+    }
+
+    private suspend fun performManualSkipTo(state: PlaybackStatus, targetIndex: Int, targetTrack: Track) {
+        try {
+            val success = startSpotifyAtQueueIndex(targetIndex)
+            if (!success) {
+                context.recovery.spotifyAutoAdvanceInFlight = false
+                CompatLog.w(TAG, "Spotify next failed: ${spotifyErrorOrDefault("unknown error")}")
+            } else {
+                context.queueIndexCache.spotifyCurrentQueueIndex = targetIndex
+            }
+            context.addToQueueInsertionOffset = 0
+            context.mutableStatus.value = context.mutableStatus.value.copy(
+                currentTrack = if (success) targetTrack else state.currentTrack,
+                state = if (success) PlaybackStateType.PLAYING else PlaybackStateType.ERROR,
+                position = if (success) 0L else state.position,
+                duration = if (success) (targetTrack.durationMs ?: state.duration) else state.duration,
+                errorMessage = if (success) null else spotifyErrorOrDefault("Spotify failed to skip to next track")
+            )
+            persistStateAsync()
+        } finally {
+            context.recovery.manualSkipInFlight = false
         }
     }
 
@@ -383,6 +480,11 @@ internal class SpotifyPlaybackOps(
     }
 
     suspend fun sync() {
+        if (spotifyPlaybackController.isManualPauseExpected()) {
+            context.recovery.clearMidTrackStallWatch()
+            context.recovery.clearGhostPlayingStallWatch()
+            return
+        }
         val spotifySnapshot = spotifyPlaybackController.snapshot()
         val state = context.mutableStatus.value
         if (spotifySnapshot == null) {
@@ -408,28 +510,34 @@ internal class SpotifyPlaybackOps(
             context.recovery.lastAcknowledgedEndOfTrackCount = spotifySnapshot.endOfTrackCount
             if (!context.recovery.spotifyAutoAdvanceInFlight) {
                 context.recovery.spotifyAutoAdvanceInFlight = true
-                context.scope.launch {
-                    val success = spotifyPlaybackController.next()
-                    context.recovery.spotifyAutoAdvanceInFlight = false
-                    if (success) {
-                        val advancedTrackIndex = awaitSpotifyAdvance(
-                            previousTrackId = previousTrackId,
-                            state = context.mutableStatus.value,
-                            timeoutMs = SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
-                        )
-                        if (advancedTrackIndex != null) {
-                            context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
-                            context.addToQueueInsertionOffset = 0
-                        } else {
-                            CompatLog.w(TAG, "Immediate spotifyNext() returned success without advancing; falling back to startQueue")
-                            fallbackAdvanceSpotifyQueue(previousTrackId, context.mutableStatus.value)
-                            context.addToQueueInsertionOffset = 0
-                        }
-                    } else {
-                        CompatLog.w(TAG, "Immediate spotifyNext() failed; falling back to startQueue")
-                        fallbackAdvanceSpotifyQueue(previousTrackId, state)
-                        context.addToQueueInsertionOffset = 0
+
+                // AI DJ hook: the shared Media3 ExoPlayer is guaranteed idle whenever a
+                // Spotify track is current, so a ready break plays there standalone before
+                // we resume the normal next()-driven advance. If no break is due,
+                // upcomingTrackId simply won't match anything pending and this is a no-op -
+                // behavior is byte-for-byte unchanged from before this hook existed.
+                try {
+                    val activeQueue = spotifyPlaybackQueue(state)
+                    val currentIndex = currentSpotifyQueueIndex(state)
+                    val upcomingTrackId = activeQueue.getOrNull(currentIndex + 1)?.id
+                    djFillerScheduler.playFillerThenAdvance(
+                        djInterstitialPlayer = djInterstitialPlayer,
+                        upcomingTrackId = upcomingTrackId
+                    ) {
+                        context.scope.launch { performSpotifyAutoAdvance(previousTrackId, state) }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Mirrors next()'s guard: a throw from the filler dispatch itself happens
+                    // before performSpotifyAutoAdvance ever runs, so the track never actually
+                    // advanced - lastAcknowledgedEndOfTrackCount was already bumped above, so
+                    // just resetting the in-flight flag would leave playback stalled here.
+                    // Fall back to advancing directly, mirroring performSpotifyAutoAdvance's
+                    // own failure path.
+                    CompatLog.w(TAG, "Spotify sync() filler dispatch failed", e)
+                    context.recovery.spotifyAutoAdvanceInFlight = false
+                    context.scope.launch { fallbackAdvanceSpotifyQueue(previousTrackId, context.mutableStatus.value) }
                 }
                 return
             }
@@ -446,40 +554,60 @@ internal class SpotifyPlaybackOps(
         // poll cycles - see MID_TRACK_STALL_THRESHOLD_MS. The state write below flips
         // state.state to PAUSED after the first stalled poll, so continuing to watch an
         // already-detected stall across later polls can't gate on state.state staying
-        // PLAYING - it uses spotifyMidTrackStallTrackId being already set instead. A
+        // PLAYING - it uses spotifyMidTrackStall.trackId being already set instead. A
         // fresh watch still only ever starts from an unexpected PLAYING->not-playing
         // transition, never from an explicit pause (pause()/togglePlayPause() clear the
         // watch directly), so a deliberate pause can't be mistaken for a stall.
         val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying
-        val continuingKnownStallWatch = context.recovery.spotifyMidTrackStallTrackId != null && !spotifySnapshot.isPlaying
+        val continuingKnownStallWatch = context.recovery.spotifyMidTrackStall.trackId != null && !spotifySnapshot.isPlaying
         if ((startingNewStallWatch || continuingKnownStallWatch) &&
             !context.recovery.manualSkipInFlight && state.queue.isNotEmpty()
         ) {
-            val nowMs = System.currentTimeMillis()
-            val currentTrackId = state.currentTrack?.id
-            val sameTrack = context.recovery.spotifyMidTrackStallTrackId == currentTrackId
-            val samePosition = context.recovery.spotifyMidTrackStallPositionMs == spotifySnapshot.progressMs
-            if (!sameTrack || !samePosition) {
-                context.recovery.spotifyMidTrackStallTrackId = currentTrackId
-                context.recovery.spotifyMidTrackStallPositionMs = spotifySnapshot.progressMs
-                context.recovery.spotifyMidTrackStallSinceMs = nowMs
-            } else {
-                val stalledMs = nowMs - context.recovery.spotifyMidTrackStallSinceMs
-                if (stalledMs >= MID_TRACK_STALL_THRESHOLD_MS) {
-                    val currentIndex = context.queueIndexCache.currentQueueIndex(state)
-                    CompatLog.w(TAG, "Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery at index=$currentIndex")
-                    context.recovery.resetSpotifyMidTrackStallState()
-                    maybeRecoverSpotifyTrack(
-                        queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
-                        startIndex = currentIndex,
-                        failureMessage = "Spotify playback stalled mid-track"
-                    )
-                    return
-                }
+            val stalledMs = context.recovery.spotifyMidTrackStall.update(
+                System.currentTimeMillis(), state.currentTrack?.id, spotifySnapshot.progressMs
+            )
+            if (stalledMs >= MID_TRACK_STALL_THRESHOLD_MS) {
+                val currentIndex = context.queueIndexCache.currentQueueIndex(state)
+                CompatLog.w(TAG, "Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery at index=$currentIndex")
+                context.recovery.clearMidTrackStallWatch()
+                maybeRecoverSpotifyTrack(
+                    queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
+                    startIndex = currentIndex,
+                    failureMessage = "Spotify playback stalled mid-track"
+                )
+                return
             }
         } else {
-            context.recovery.resetSpotifyMidTrackStallState()
+            context.recovery.clearMidTrackStallWatch()
         }
+
+        // The opposite failure mode: Spotify's own server keeps reporting `is_playing: true`
+        // with a frozen (track, position) - e.g. a ghost/zombie Connect session left behind
+        // after the app hosting playback was killed abruptly instead of cleanly paused. The
+        // mid-track-stall watch above can never catch this since it only fires when the
+        // snapshot reports NOT playing - this only ever fires while it reports playing.
+        if (spotifySnapshot.isPlaying && !nearTrackEnd &&
+            !context.recovery.manualSkipInFlight && !context.recovery.spotifyAutoAdvanceInFlight &&
+            state.queue.isNotEmpty()
+        ) {
+            val stalledMs = context.recovery.spotifyGhostPlayingStall.update(
+                System.currentTimeMillis(), state.currentTrack?.id, spotifySnapshot.progressMs
+            )
+            if (stalledMs >= GHOST_PLAYING_STALL_THRESHOLD_MS) {
+                val currentIndex = context.queueIndexCache.currentQueueIndex(state)
+                CompatLog.w(TAG, "Spotify reports playing but position frozen for ${stalledMs}ms (likely a ghost Connect session); attempting recovery at index=$currentIndex")
+                context.recovery.clearGhostPlayingStallWatch()
+                maybeRecoverSpotifyTrack(
+                    queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
+                    startIndex = currentIndex,
+                    failureMessage = "Spotify playback stalled while reporting playing"
+                )
+                return
+            }
+        } else {
+            context.recovery.clearGhostPlayingStallWatch()
+        }
+
         if (state.state == PlaybackStateType.ERROR && !spotifySnapshot.isPlaying && state.queue.isNotEmpty()) {
             val currentIndex = context.queueIndexCache.currentQueueIndex(state)
             CompatLog.w(TAG, "Spotify in ERROR state; attempting recovery at index=$currentIndex attempts=${context.recovery.spotifyRecoveryAttempts}")
@@ -559,6 +687,33 @@ internal class SpotifyPlaybackOps(
             context.recovery.spotifyRecoveryInFlight = false
         }
         return true
+    }
+
+    /** The immediate `next()`-driven auto-advance path, extracted out of [sync] so the AI
+     *  DJ hook there can either run it directly or defer it until a standalone
+     *  interstitial finishes playing on the shared (Spotify-idle) ExoPlayer. */
+    private suspend fun performSpotifyAutoAdvance(previousTrackId: String?, state: PlaybackStatus) {
+        val success = spotifyPlaybackController.next()
+        context.recovery.spotifyAutoAdvanceInFlight = false
+        if (success) {
+            val advancedTrackIndex = awaitSpotifyAdvance(
+                previousTrackId = previousTrackId,
+                state = context.mutableStatus.value,
+                timeoutMs = SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS
+            )
+            if (advancedTrackIndex != null) {
+                context.queueIndexCache.spotifyCurrentQueueIndex = advancedTrackIndex
+                context.addToQueueInsertionOffset = 0
+            } else {
+                CompatLog.w(TAG, "Immediate spotifyNext() returned success without advancing; falling back to startQueue")
+                fallbackAdvanceSpotifyQueue(previousTrackId, context.mutableStatus.value)
+                context.addToQueueInsertionOffset = 0
+            }
+        } else {
+            CompatLog.w(TAG, "Immediate spotifyNext() failed; falling back to startQueue")
+            fallbackAdvanceSpotifyQueue(previousTrackId, state)
+            context.addToQueueInsertionOffset = 0
+        }
     }
 
     private suspend fun awaitSpotifyAdvance(

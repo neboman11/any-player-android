@@ -4,6 +4,7 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -41,13 +42,18 @@ class LocalPlaybackOpsTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        // resolveTimelineIndex() is an identity passthrough whenever no interstitial splice
+        // is active (see Media3PlaybackController) - stubbed here so tests that don't touch
+        // the AI DJ splice path don't need to know about it.
+        whenever(media3.resolveTimelineIndex(any())).thenAnswer { it.arguments[0] }
         context = PlaybackEngineContext(spotify)
         ops = LocalPlaybackOps(
             media3PlaybackController = media3,
             context = context,
             applyNormalizedMedia3Volume = { _, _ -> },
             triggerPrefetch = {},
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djInterstitialPlayer = mock()
         )
     }
 

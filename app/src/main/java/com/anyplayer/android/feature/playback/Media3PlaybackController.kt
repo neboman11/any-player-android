@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.playback
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -31,6 +33,92 @@ class Media3PlaybackController @Inject constructor(
 ) {
     companion object {
         private const val TAG = "Media3PlaybackCtrl"
+
+        /** Prefix marking a synthetic AI DJ voice-over [MediaItem.mediaId], used to spot it
+         *  in the raw ExoPlayer timeline without it ever entering the domain-level queue. */
+        const val DJ_FILLER_MEDIA_ID_PREFIX = "dj-filler:"
+
+        // ponytail: fixed cap rather than sizing to the actual filler's audio duration
+        // (not known up front without a MediaExtractor probe). Generous enough for any
+        // real DJ break; upgrade to a duration-aware timeout if fillers grow much longer.
+        private const val STANDALONE_INTERSTITIAL_WATCHDOG_MS = 60_000L
+    }
+
+    /** Mutable so a DJ interstitial can be played once, at most, at a time; identifies which
+     *  timeline item (if any) is currently the AI DJ voice-over, for both insertion modes
+     *  (see [insertInterstitial] and [playInterstitialStandalone]). */
+    private var activeInterstitialMediaId: String? = null
+    private var standaloneInterstitialEndedCallback: (() -> Unit)? = null
+    var interstitialListener: InterstitialTransitionListener? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var standaloneWatchdog: Runnable? = null
+
+    /** Backstop for [playInterstitialStandalone]: if playback stalls indefinitely (e.g.
+     *  buffering that never resolves) without ever reaching [Player.STATE_ENDED] or
+     *  [Player.Listener.onPlayerError], neither of those cleanup paths runs and [onEnded]
+     *  never fires - leaving the caller's in-flight/recovery flags stuck forever. Forces
+     *  the same cleanup those paths would have done. */
+    private fun armStandaloneWatchdog() {
+        cancelStandaloneWatchdog()
+        val watchdog = Runnable {
+            val onEnded = standaloneInterstitialEndedCallback
+            if (onEnded != null && activeInterstitialMediaId != null) {
+                CompatLog.w(TAG, "Standalone DJ interstitial stalled past ${STANDALONE_INTERSTITIAL_WATCHDOG_MS}ms; forcing cleanup")
+                endStandaloneInterstitial(stopPlayer = true)
+                onEnded()
+            }
+        }
+        standaloneWatchdog = watchdog
+        mainHandler.postDelayed(watchdog, STANDALONE_INTERSTITIAL_WATCHDOG_MS)
+    }
+
+    private fun cancelStandaloneWatchdog() {
+        standaloneWatchdog?.let { mainHandler.removeCallbacks(it) }
+        standaloneWatchdog = null
+    }
+
+    /** Single owner for standalone-interstitial teardown - previously hand-copied at every
+     *  call site ([skipInterstitial], [clearStandaloneInterstitial], the STATE_ENDED/
+     *  onPlayerError listener branches below, and the watchdog above), which is how those
+     *  copies drifted to call [ExoPlayer.stop] inconsistently. [stopPlayer] is false for the
+     *  listener call sites, where the player already reached STATE_ENDED/error on its own
+     *  and an explicit stop() would be redundant; every other caller passes true to halt
+     *  playback that's still actively in progress. Returns the ended media id, or null if
+     *  nothing was playing. */
+    private fun endStandaloneInterstitial(stopPlayer: Boolean): String? {
+        val endedId = activeInterstitialMediaId ?: return null
+        cancelStandaloneWatchdog()
+        activeInterstitialMediaId = null
+        standaloneInterstitialEndedCallback = null
+        if (stopPlayer) playerInstance.stop()
+        playerInstance.clearMediaItems()
+        interstitialListener?.onInterstitialEnded(endedId)
+        return endedId
+    }
+
+    val isPlayingInterstitial: Boolean
+        get() = activeInterstitialMediaId != null
+
+    /** A manual transport skip during an AI DJ break is treated as "skip the break," not
+     *  a real track skip - standalone playback (Spotify/Mixed modes) is force-ended right
+     *  away so its `onEnded` callback resumes the caller's own advance immediately; a
+     *  local-mode splice just needs ExoPlayer's normal seek-to-next, which naturally
+     *  carries past it exactly like any other timeline item. */
+    fun skipInterstitial() {
+        if (activeInterstitialMediaId == null) return
+        val onEnded = standaloneInterstitialEndedCallback
+        if (onEnded != null) {
+            endStandaloneInterstitial(stopPlayer = true)
+            onEnded()
+        } else {
+            playerInstance.seekToNextMediaItem()
+            playerInstance.playWhenReady = true
+        }
+    }
+
+    fun clearStandaloneInterstitial() {
+        endStandaloneInterstitial(stopPlayer = true)
     }
 
     private val playerInstance: ExoPlayer = ExoPlayer.Builder(context)
@@ -66,6 +154,16 @@ class Media3PlaybackController @Inject constructor(
                     else -> "UNKNOWN($playbackState)"
                 }
                 CompatLog.d(TAG, "playbackState=$name mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition bufferedPositionMs=$bufferedPosition")
+
+                // Standalone interstitial playback (Spotify/Mixed modes, see
+                // playInterstitialStandalone) uses a single-item timeline with no next
+                // item to transition into, so its completion is only observable here.
+                if (playbackState == Player.STATE_ENDED) {
+                    val onEnded = standaloneInterstitialEndedCallback
+                    if (onEnded != null && endStandaloneInterstitial(stopPlayer = false) != null) {
+                        onEnded()
+                    }
+                }
             }
 
             override fun onIsLoadingChanged(isLoading: Boolean) {
@@ -74,10 +172,47 @@ class Media3PlaybackController @Inject constructor(
 
             override fun onPlayerError(error: PlaybackException) {
                 CompatLog.e(TAG, "playerError code=${error.errorCodeName} mediaIndex=${currentMediaItemIndex} positionMs=$currentPosition", error)
+
+                // A corrupt/truncated filler (failed TTS run, storage I/O error) drives
+                // ExoPlayer to STATE_IDLE+error instead of STATE_ENDED, so the interstitial
+                // cleanup in onPlaybackStateChanged/onMediaItemTransition never runs and
+                // playback gets stuck on the DJ break forever. Mirror both cleanup paths here.
+                val endedId = activeInterstitialMediaId ?: return
+                val onEnded = standaloneInterstitialEndedCallback
+                if (onEnded != null) {
+                    endStandaloneInterstitial(stopPlayer = false)
+                    onEnded()
+                } else {
+                    activeInterstitialMediaId = null
+                    val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
+                    index?.let { removeMediaItem(it) }
+                    interstitialListener?.onInterstitialEnded(endedId)
+                    // ExoPlayer stops responding to play/pause/seek after a fatal error until
+                    // re-prepared (see retryAfterError doc) - do it here directly rather than
+                    // relying on LocalPlaybackOps.sync()'s generic error retry to happen to run
+                    // after isPlayingInterstitial flips false on a later poll tick.
+                    prepare()
+                }
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 CompatLog.d(TAG, "playWhenReady=$playWhenReady reason=$reason")
+            }
+
+            // Local-mode interstitial splice (see insertInterstitial): fires when ExoPlayer's
+            // own auto-advance carries playback into or out of a spliced-in dj-filler item.
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val newId = mediaItem?.mediaId
+                if (newId != null && newId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX)) {
+                    activeInterstitialMediaId = newId
+                    interstitialListener?.onInterstitialStarted(newId)
+                    return
+                }
+                val endedId = activeInterstitialMediaId ?: return
+                activeInterstitialMediaId = null
+                val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
+                index?.let { removeMediaItem(it) }
+                interstitialListener?.onInterstitialEnded(endedId)
             }
         })
     }
@@ -86,6 +221,14 @@ class Media3PlaybackController @Inject constructor(
         get() = playerInstance
 
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean): Int {
+        if (activeInterstitialMediaId != null) {
+            // A brand-new queue supersedes any in-progress AI DJ interstitial outright
+            // (unlike PlaybackQueueManager.addNextInQueue's additive splice, which defers
+            // instead) - tear down its bookkeeping/listener here or clearMediaItems() below
+            // leaves activeInterstitialMediaId/standaloneInterstitialEndedCallback leaked
+            // and the "AnyPlayer DJ" now-playing override stuck on indefinitely.
+            endStandaloneInterstitial(stopPlayer = false)
+        }
         val playableTracks = tracks.filter(::isMedia3PlayableTrack)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()
@@ -127,6 +270,33 @@ class Media3PlaybackController @Inject constructor(
         playerInstance.seekToDefaultPosition(index.coerceIn(0, playerInstance.mediaItemCount - 1))
         playerInstance.playWhenReady = true
     }
+
+    /** Maps a media-item index computed against the domain queue (i.e. as if no filler were
+     *  spliced in) to the raw ExoPlayer timeline index - shifting by one if a local-mode
+     *  splice (see [insertInterstitial]) sits at or before the target position. Scans the
+     *  live timeline directly rather than gating on [activeInterstitialMediaId], which is
+     *  only set once playback actually transitions into the filler
+     *  ([onMediaItemTransition]) - a splice sits in the raw timeline from the moment
+     *  [insertInterstitial] runs, well before that (generation can finish anywhere in the
+     *  pre-break song, not just at its tail), so gating on it left a window where a queue
+     *  tap resolved to the wrong (off-by-one) track. Single owner for this offset - callers
+     *  used to re-derive the same +1 rule by hand. */
+    fun resolveTimelineIndex(queueMediaIndex: Int): Int {
+        val interstitialIndex = (0 until playerInstance.mediaItemCount)
+            .firstOrNull { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
+            ?: return queueMediaIndex
+        return if (queueMediaIndex >= interstitialIndex) queueMediaIndex + 1 else queueMediaIndex
+    }
+
+    /** True from the moment a local-mode splice ([insertInterstitial]) lands in the raw
+     *  timeline, not just once playback actually transitions into it (that's
+     *  [isPlayingInterstitial], driven by [activeInterstitialMediaId]/[onMediaItemTransition]).
+     *  Callers that rebuild the raw timeline from the domain queue (e.g.
+     *  [PlaybackQueueManager.addNextInQueue]) must check this too, or they'd silently drop a
+     *  pending-but-not-yet-playing break. */
+    fun hasSplicedFiller(): Boolean =
+        (0 until playerInstance.mediaItemCount)
+            .any { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
 
     fun play() {
         playerInstance.playWhenReady = true
@@ -224,6 +394,55 @@ class Media3PlaybackController @Inject constructor(
             shuffledMediaIndices = shuffledMediaIndices
         )
     }
+
+    /** Local/provider-mode AI DJ splice: adds [fileUri] as a timeline item immediately after
+     *  the currently playing item, without touching/rebuffering it. ExoPlayer's own
+     *  auto-advance then carries playback into it (and, once left behind, [onMediaItemTransition]
+     *  removes it) with the same zero-gap behavior as a normal queue transition. No-op if
+     *  nothing is currently loaded (nothing to splice after). */
+    fun insertInterstitial(fileUri: Uri, mediaId: String): Boolean {
+        if (playerInstance.mediaItemCount == 0) return false
+        val insertAt = (playerInstance.currentMediaItemIndex + 1)
+            .coerceAtMost(playerInstance.mediaItemCount)
+        playerInstance.addMediaItem(
+            insertAt,
+            MediaItem.Builder()
+                .setMediaId(mediaId)
+                .setUri(fileUri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle("AnyPlayer DJ").build())
+                .build()
+        )
+        return true
+    }
+
+    /** Spotify/Mixed-mode AI DJ playback: the shared ExoPlayer is idle whenever a Spotify
+     *  track is current, so this commandeers it for a one-shot standalone play of [fileUri],
+     *  invoking [onEnded] once playback completes (see [Player.STATE_ENDED] handling in the
+     *  listener above) so the caller can resume its own advance logic. */
+    fun playInterstitialStandalone(fileUri: Uri, mediaId: String, onEnded: () -> Unit) {
+        standaloneInterstitialEndedCallback = onEnded
+        activeInterstitialMediaId = mediaId
+        interstitialListener?.onInterstitialStarted(mediaId)
+        playerInstance.setMediaItem(
+            MediaItem.Builder()
+                .setMediaId(mediaId)
+                .setUri(fileUri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle("AnyPlayer DJ").build())
+                .build()
+        )
+        playerInstance.prepare()
+        playerInstance.playWhenReady = true
+        armStandaloneWatchdog()
+    }
+}
+
+/** Notifies interested listeners (see [DjInterstitialPlayer]) when the shared ExoPlayer
+ *  instance starts or finishes playing an AI DJ voice-over, regardless of which insertion
+ *  mechanism ([Media3PlaybackController.insertInterstitial] or
+ *  [Media3PlaybackController.playInterstitialStandalone]) is in use. */
+interface InterstitialTransitionListener {
+    fun onInterstitialStarted(mediaId: String)
+    fun onInterstitialEnded(mediaId: String)
 }
 
 data class PlaybackSnapshot(

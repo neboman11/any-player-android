@@ -5,11 +5,14 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -47,6 +50,7 @@ class PlaybackQueueManagerTest {
     private val spotify: SpotifyPlaybackController = mock()
     private val stateStore: PlaybackStateStore = mock()
     private val audioCache: AudioCacheManager = mock()
+    private val djInterstitialPlayer: DjInterstitialPlayer = mock()
     private val json = Json { ignoreUnknownKeys = true }
 
     private lateinit var manager: PlaybackQueueManager
@@ -64,6 +68,9 @@ class PlaybackQueueManagerTest {
         wheneverBlocking { spotify.setShuffle(any()) } doReturn true
         wheneverBlocking { spotify.setRepeatMode(any()) } doReturn true
         whenever(media3.setQueue(any(), any(), any())).thenReturn(0)
+        // resolveTimelineIndex() is an identity passthrough whenever no interstitial splice
+        // is active (see Media3PlaybackController).
+        whenever(media3.resolveTimelineIndex(any())).thenAnswer { it.arguments[0] }
         whenever(media3.snapshot()).thenReturn(
             PlaybackSnapshot(
                 state = PlaybackStateType.IDLE,
@@ -77,7 +84,7 @@ class PlaybackQueueManagerTest {
             )
         )
 
-        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json)
+        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json, mock(), djInterstitialPlayer)
         // Leave providerRestoreGate uncompleted: init's restore/poll loop parks on
         // providerRestoreGate.await() and never runs syncFromPlaybackEngine() during these
         // tests, so it can't race with the assertions below.
@@ -171,6 +178,31 @@ class PlaybackQueueManagerTest {
     }
 
     @Test
+    fun localMode_previous_whileInterstitialSeeksBackPastFillerWithoutSkipInterstitial() {
+        whenever(media3.previous()).thenReturn(true)
+        whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
+        manager.setQueue(listOf(localTrack("a"), localTrack("b")))
+
+        manager.previous()
+
+        verify(media3, never()).skipInterstitial()
+        verify(media3).previous()
+        assertEquals(PlaybackStateType.PLAYING, manager.status.value.state)
+    }
+
+    @Test
+    fun spotifyMode_previous_whileInterstitialEndsBreakWithoutAdvancing() {
+        whenever(djInterstitialPlayer.isPlayingInterstitial).thenReturn(true)
+        manager.setQueue(listOf(spotifyTrack("s1"), spotifyTrack("s2")), startIndex = 1)
+
+        manager.previous()
+
+        verify(media3).clearStandaloneInterstitial()
+        verifyBlocking(spotify) { startQueue(listOf("s1", "s2"), 0) }
+        assertEquals("s1", manager.status.value.currentTrack?.id)
+    }
+
+    @Test
     fun localMode_seekTo_callsMedia3AndClampsPosition() {
         manager.setQueue(listOf(localTrack("a")))
 
@@ -204,6 +236,46 @@ class PlaybackQueueManagerTest {
         manager.setShuffle(true)
 
         verify(media3).setShuffle(true)
+        assertTrue(manager.status.value.shuffle)
+    }
+
+    @Test
+    fun restorePersistedState_appliesShuffleToMedia3() = runTest {
+        wheneverBlocking { stateStore.read() } doReturn json.encodeToString(
+            PersistedPlaybackState(
+                queue = listOf(localTrack("a")),
+                currentQueueIndex = 0,
+                positionMs = 0L,
+                shuffle = true,
+                repeatMode = RepeatMode.OFF,
+                volume = 100,
+                state = PlaybackStateType.PAUSED
+            )
+        )
+
+        manager.restorePersistedStateNowIfNeeded()
+
+        verify(media3).setShuffle(true)
+        assertTrue(manager.status.value.shuffle)
+    }
+
+    @Test
+    fun restorePersistedState_appliesShuffleToSpotify() = runTest {
+        wheneverBlocking { stateStore.read() } doReturn json.encodeToString(
+            PersistedPlaybackState(
+                queue = listOf(spotifyTrack("s1")),
+                currentQueueIndex = 0,
+                positionMs = 0L,
+                shuffle = true,
+                repeatMode = RepeatMode.OFF,
+                volume = 100,
+                state = PlaybackStateType.PAUSED
+            )
+        )
+
+        manager.restorePersistedStateNowIfNeeded()
+
+        verifyBlocking(spotify) { setShuffle(true) }
         assertTrue(manager.status.value.shuffle)
     }
 

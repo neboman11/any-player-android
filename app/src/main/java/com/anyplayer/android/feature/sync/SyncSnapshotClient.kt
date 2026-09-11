@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.sync
 
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
+import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
+import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.Track
@@ -78,21 +80,9 @@ class SyncSnapshotClient @Inject constructor(
 ) {
     fun getClientId(): String = syncPreferencesStore.getOrCreateClientId()
 
-    private val bearerRegex = Regex("^Bearer\\s+", RegexOption.IGNORE_CASE)
+    private fun normalizeBaseUrl(serverTarget: String): String = normalizeSyncServerBaseUrl(serverTarget)
 
-    private fun normalizeBaseUrl(serverTarget: String): String {
-        val trimmed = serverTarget.trim().trimEnd('/')
-        return when {
-            trimmed.isBlank() -> trimmed
-            trimmed.startsWith("https://") || trimmed.startsWith("http://") -> trimmed
-            else -> "https://$trimmed"
-        }
-    }
-
-    private fun normalizeToken(raw: String): String {
-        val trimmed = raw.trim()
-        return bearerRegex.replace(trimmed, "")
-    }
+    private fun normalizeToken(raw: String): String = normalizeSyncServerAuthToken(raw)
 
     suspend fun fetchSnapshot(serverTarget: String): JsonObject? = withContext(Dispatchers.IO) {
         val base = normalizeBaseUrl(serverTarget)
@@ -184,6 +174,38 @@ class SyncSnapshotClient @Inject constructor(
         val response = runCatching { okHttpClient.newCall(request).execute() }.getOrNull() ?: return@withContext false
         response.use { it.isSuccessful }
     }
+
+    /** Generic PUT /v1/state/<namespace> push - used for domains without a dedicated
+     *  payload type (playlists, provider-configuration, settings). [namespace] must be
+     *  one of the server's hyphenated namespace names (e.g. "provider-configuration"). */
+    suspend fun pushNamespace(serverTarget: String, namespace: String, data: JsonElement): Boolean =
+        withContext(Dispatchers.IO) {
+            val base = normalizeBaseUrl(serverTarget)
+            if (base.isBlank()) {
+                return@withContext false
+            }
+
+            val body = JsonObject(
+                mapOf(
+                    "client_id" to JsonPrimitive(syncPreferencesStore.getOrCreateClientId()),
+                    "data" to data
+                )
+            )
+
+            val request = Request.Builder()
+                .url("$base/v1/state/$namespace")
+                .apply {
+                    val token = normalizeToken(syncPreferencesStore.read().authToken)
+                    if (token.isNotEmpty()) {
+                        header("Authorization", "Bearer $token")
+                    }
+                }
+                .put(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = runCatching { okHttpClient.newCall(request).execute() }.getOrNull() ?: return@withContext false
+            response.use { it.isSuccessful }
+        }
 
     fun observeStateUpdates(serverTarget: String): Flow<SyncUpdateEvent> = callbackFlow {
         val base = normalizeBaseUrl(serverTarget)

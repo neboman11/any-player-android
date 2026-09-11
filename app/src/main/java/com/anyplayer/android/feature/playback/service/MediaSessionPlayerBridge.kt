@@ -15,6 +15,7 @@ import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.inject.Inject
@@ -48,7 +50,8 @@ import javax.inject.Singleton
 class MediaSessionPlayerBridge @Inject constructor(
     private val media3PlaybackController: Media3PlaybackController,
     private val playbackQueueManager: PlaybackQueueManager,
-    private val authRepository: ProviderAuthRepository
+    private val authRepository: ProviderAuthRepository,
+    private val djInterstitialPlayer: DjInterstitialPlayer
 ) : ForwardingPlayer(media3PlaybackController.player) {
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
@@ -67,19 +70,31 @@ class MediaSessionPlayerBridge @Inject constructor(
         }
         collectJob = scope.launch {
             var prev = currentStatusSnapshot
+            var prevOverride = djInterstitialPlayer.nowPlayingOverride.value
             CompatLog.d(TAG, "StateFlow collector started; initial state=${prev.state} track=${prev.currentTrack?.id}")
-            playbackQueueManager.status.collect { status ->
-                if (status === prev) return@collect
+            // Also observe nowPlayingOverride: local-mode DJ interstitials deliberately leave
+            // status.currentTrack unchanged while a break plays (so the real track resumes
+            // seamlessly after), so diffing status.currentTrack alone never notices a break
+            // starting/ending - lock screen/Android Auto/Bluetooth metadata would keep
+            // showing the pre-break track for the whole voice-over otherwise.
+            combine(playbackQueueManager.status, djInterstitialPlayer.nowPlayingOverride) { status, override ->
+                status to override
+            }.collect { (status, override) ->
+                if (status === prev && override === prevOverride) return@collect
                 val prevSnap = prev
+                val prevOverrideSnap = prevOverride
                 prev = status
+                prevOverride = override
                 currentStatusSnapshot = status
-                CompatLog.d(TAG, "StateFlow emitted: ${prevSnap.state}->${status.state} track=${status.currentTrack?.id} listeners=${listeners.size}")
+                CompatLog.d(TAG, "StateFlow emitted: ${prevSnap.state}->${status.state} track=${status.currentTrack?.id} override=${override?.id} listeners=${listeners.size}")
 
                 val newState    = mapState(status.state)
                 val prevState   = mapState(prevSnap.state)
                 val nowPlaying  = status.state == PlaybackStateType.PLAYING
                 val wasPlaying  = prevSnap.state == PlaybackStateType.PLAYING
-                val trackChanged    = status.currentTrack?.id != prevSnap.currentTrack?.id
+                val effectiveTrack     = override ?: status.currentTrack
+                val prevEffectiveTrack = prevOverrideSnap ?: prevSnap.currentTrack
+                val trackChanged    = effectiveTrack?.id != prevEffectiveTrack?.id
                 val hasItemsNow = status.currentTrack != null || status.queue.isNotEmpty()
                 val hadItemsBefore = prevSnap.currentTrack != null || prevSnap.queue.isNotEmpty()
                 val commandsChanged = hasItemsNow != hadItemsBefore
@@ -104,7 +119,7 @@ class MediaSessionPlayerBridge @Inject constructor(
                     if (nowPlaying != wasPlaying) l.onIsPlayingChanged(nowPlaying)
                     if (trackChanged) {
                         l.onMediaItemTransition(
-                            status.currentTrack?.toMediaItem(),
+                            effectiveTrack?.toMediaItem(),
                             Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
                         )
                     }
@@ -138,7 +153,7 @@ class MediaSessionPlayerBridge @Inject constructor(
             listener.onPlaybackStateChanged(state)
             listener.onIsPlayingChanged(playing)
             if (hasTrack) listener.onMediaItemTransition(
-                status.currentTrack?.toMediaItem(),
+                currentTrackOrFallback()?.toMediaItem(),
                 Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
             )
             listener.onMediaMetadataChanged(getMediaMetadata())
@@ -302,6 +317,7 @@ class MediaSessionPlayerBridge @Inject constructor(
     }
 
     private fun currentTrackOrFallback(): Track? {
+        djInterstitialPlayer.nowPlayingOverride.value?.let { return it }
         val status = currentStatus()
         return status.currentTrack ?: status.queue.firstOrNull()
     }

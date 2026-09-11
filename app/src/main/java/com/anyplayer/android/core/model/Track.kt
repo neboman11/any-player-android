@@ -14,5 +14,9 @@ data class Track(
     val imageUrl: String? = null,
     val bitrateKbps: Int? = null,
     val sampleRateHz: Int? = null,
-    val enriched: Boolean? = null
+    val enriched: Boolean? = null,
+    /** True for the synthetic AI DJ voice-over track spliced between real songs.
+     *  Never persisted, never counted as a real song, and shown as "AnyPlayer DJ"
+     *  in place of real track metadata wherever the UI/session reads it. */
+    val isDjFiller: Boolean = false
 )
