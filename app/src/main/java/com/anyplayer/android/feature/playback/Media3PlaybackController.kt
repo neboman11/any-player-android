@@ -49,6 +49,7 @@ class Media3PlaybackController @Inject constructor(
      *  (see [insertInterstitial] and [playInterstitialStandalone]). */
     private var activeInterstitialMediaId: String? = null
     private var standaloneInterstitialEndedCallback: (() -> Unit)? = null
+    private var standaloneRepeatMode: Int? = null
     var interstitialListener: InterstitialTransitionListener? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -93,6 +94,8 @@ class Media3PlaybackController @Inject constructor(
         standaloneInterstitialEndedCallback = null
         if (stopPlayer) playerInstance.stop()
         playerInstance.clearMediaItems()
+        standaloneRepeatMode?.let { playerInstance.repeatMode = it }
+        standaloneRepeatMode = null
         interstitialListener?.onInterstitialEnded(endedId)
         return endedId
     }
@@ -361,11 +364,13 @@ class Media3PlaybackController @Inject constructor(
     }
 
     fun setRepeatMode(mode: RepeatMode) {
-        playerInstance.repeatMode = when (mode) {
+        val playerMode = when (mode) {
             RepeatMode.OFF -> Player.REPEAT_MODE_OFF
             RepeatMode.ONE -> Player.REPEAT_MODE_ONE
             RepeatMode.ALL -> Player.REPEAT_MODE_ALL
         }
+        if (standaloneRepeatMode != null) standaloneRepeatMode = playerMode
+        else playerInstance.repeatMode = playerMode
     }
 
     fun snapshot(): PlaybackSnapshot {
@@ -377,7 +382,7 @@ class Media3PlaybackController @Inject constructor(
             else -> PlaybackStateType.IDLE
         }
 
-        val repeat = when (playerInstance.repeatMode) {
+        val repeat = when (standaloneRepeatMode ?: playerInstance.repeatMode) {
             Player.REPEAT_MODE_ONE -> RepeatMode.ONE
             Player.REPEAT_MODE_ALL -> RepeatMode.ALL
             else -> RepeatMode.OFF
@@ -433,6 +438,8 @@ class Media3PlaybackController @Inject constructor(
      *  invoking [onEnded] once playback completes (see [Player.STATE_ENDED] handling in the
      *  listener above) so the caller can resume its own advance logic. */
     fun playInterstitialStandalone(fileUri: Uri, mediaId: String, onEnded: () -> Unit) {
+        standaloneRepeatMode = playerInstance.repeatMode
+        playerInstance.repeatMode = Player.REPEAT_MODE_OFF
         standaloneInterstitialEndedCallback = onEnded
         activeInterstitialMediaId = mediaId
         interstitialListener?.onInterstitialStarted(mediaId)

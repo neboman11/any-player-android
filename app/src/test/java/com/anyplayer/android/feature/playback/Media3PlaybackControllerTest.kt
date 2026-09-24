@@ -177,6 +177,39 @@ class Media3PlaybackControllerTest {
     }
 
     @Test
+    fun standaloneInterstitial_playsOnceAndRestoresRepeatAfterSkip() {
+        val controller = newController()
+        controller.setRepeatMode(RepeatMode.ONE)
+        var ended = 0
+
+        controller.playInterstitialStandalone(Uri.parse("file:///tmp/filler.wav"), "dj-filler:one") { ended++ }
+
+        assertEquals(Player.REPEAT_MODE_OFF, controller.player.repeatMode)
+        assertEquals(RepeatMode.ONE, controller.snapshot().repeatMode)
+
+        controller.skipInterstitial()
+
+        assertEquals(1, ended)
+        assertEquals(Player.REPEAT_MODE_ONE, controller.player.repeatMode)
+    }
+
+    @Test
+    fun standaloneInterstitial_repeatChangeDuringPlaybackAppliesAfterClear() {
+        val controller = newController()
+        controller.setRepeatMode(RepeatMode.ALL)
+        controller.playInterstitialStandalone(Uri.parse("file:///tmp/filler.wav"), "dj-filler:all") {}
+
+        controller.setRepeatMode(RepeatMode.ONE)
+
+        assertEquals(Player.REPEAT_MODE_OFF, controller.player.repeatMode)
+        assertEquals(RepeatMode.ONE, controller.snapshot().repeatMode)
+
+        controller.clearStandaloneInterstitial()
+
+        assertEquals(Player.REPEAT_MODE_ONE, controller.player.repeatMode)
+    }
+
+    @Test
     fun snapshot_freshController_reportsIdleWithNoTracks() {
         val controller = newController()
 

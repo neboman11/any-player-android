@@ -459,12 +459,12 @@ class PlaybackQueueManagerTest {
     }
 
     @Test
-    fun mixedMode_setRepeatMode_fallsThroughToMedia3() {
+    fun mixedMode_setRepeatMode_keepsLogicalModeWhileSingleItemPlayerDoesNotLoop() {
         manager.setQueue(listOf(localTrack("a"), spotifyTrack("s1")))
 
         manager.setRepeatMode(RepeatMode.ALL)
 
-        verify(media3).setRepeatMode(RepeatMode.ALL)
+        verify(media3, never()).setRepeatMode(RepeatMode.ALL)
         assertEquals(RepeatMode.ALL, manager.status.value.repeatMode)
     }
 }

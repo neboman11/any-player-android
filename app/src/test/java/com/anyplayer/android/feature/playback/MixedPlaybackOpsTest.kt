@@ -21,6 +21,7 @@ import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -115,6 +116,50 @@ class MixedPlaybackOpsTest {
         repeatMode = RepeatMode.OFF,
         shuffledMediaIndices = emptyList()
     )
+
+    @Test
+    fun mixedQueue_repeatAll_disablesRepeatOnBothSingleItemPlayers() = runTest {
+        val tracks = listOf(track("local1", SourceType.JELLYFIN), track("s1", SourceType.SPOTIFY))
+        context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
+        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        whenever(media3.snapshot()).thenReturn(media3Snapshot(0, PlaybackStateType.IDLE))
+
+        ops.setQueue(tracks, startIndex = 0, autoPlay = true)
+        verify(media3, atLeastOnce()).setRepeatMode(RepeatMode.OFF)
+
+        ops.playMixedTrackAtIndex(1)
+        verifyBlocking(spotify) { setRepeatMode(RepeatMode.OFF) }
+        assertEquals(RepeatMode.ALL, context.mutableStatus.value.repeatMode)
+    }
+
+    @Test
+    fun sync_mixedQueue_keepsRequestedRepeatWhenPlayerReportsOff() = runTest {
+        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
+        wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s1", playing = true)
+
+        ops.sync()
+        assertEquals(RepeatMode.ALL, context.mutableStatus.value.repeatMode)
+
+        seedQueue(tracks, currentIndex = 1, state = PlaybackStateType.PLAYING)
+        whenever(media3.snapshot()).thenReturn(media3Snapshot(5_000L))
+        ops.sync()
+        assertEquals(RepeatMode.ALL, context.mutableStatus.value.repeatMode)
+    }
+
+    @Test
+    fun mixedQueue_repeatAll_disablesRepeatWhenStartingLocalTrackDirectly() = runTest {
+        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
+        whenever(media3.setQueue(any(), any(), any())).thenReturn(0)
+
+        ops.playMixedTrackAtIndex(1)
+
+        verify(media3).setRepeatMode(RepeatMode.OFF)
+        assertEquals(RepeatMode.ALL, context.mutableStatus.value.repeatMode)
+    }
 
     // ---- Spotify-track dwell check ----
 
@@ -280,6 +325,19 @@ class MixedPlaybackOpsTest {
         ops.sync()
 
         assertEquals("local2", context.mutableStatus.value.currentTrack?.id)
+    }
+
+    @Test
+    fun sync_mixedRepeatAll_wrapsFromLastTrackToFirst() = runTest {
+        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 1, state = PlaybackStateType.PLAYING)
+        context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
+        whenever(media3.snapshot()).thenReturn(media3Snapshot(199_500L, PlaybackStateType.PAUSED))
+        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+
+        ops.sync()
+
+        assertEquals("s1", context.mutableStatus.value.currentTrack?.id)
     }
 
     // ---- normalized-id lookup ----

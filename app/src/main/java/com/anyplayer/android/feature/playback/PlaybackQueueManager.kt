@@ -493,6 +493,10 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setRepeatMode(mode: RepeatMode) {
+        if (context.mixedMode) {
+            mixedOps.setRepeatMode(mode)
+            return
+        }
         if (context.spotifyMode) {
             spotifyOps.setRepeatMode(mode)
             return

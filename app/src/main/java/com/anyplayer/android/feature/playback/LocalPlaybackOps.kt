@@ -30,6 +30,7 @@ internal class LocalPlaybackOps(
      *  no Spotify tracks, per [PlaybackEngineContext.spotifyMode]/[PlaybackEngineContext.mixedMode]
      *  both having already been computed false by the caller. [startIndex] is pre-resolved. */
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
+        media3PlaybackController.setRepeatMode(context.mutableStatus.value.repeatMode)
         context.spotifyQueueRequiresReload = false
         context.playableQueueIndices = tracks.mapIndexedNotNull { queueIndex, track ->
             queueIndex.takeIf { isLocallyPlayableTrack(track) }
