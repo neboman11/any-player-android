@@ -49,7 +49,9 @@ jobs:
           java -version
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
@@ -59,8 +61,6 @@ jobs:
             exit 1
           fi
           yes | sdkmanager --sdk_root="$SDK_ROOT" \
-            "cmdline-tools;latest" \
-            "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
