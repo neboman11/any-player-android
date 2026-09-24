@@ -263,5 +263,4 @@ class SyncSnapshotClient @Inject constructor(
         return playbackStatusToAppStatePayload(status)
     }
 
-    fun parseRemoteAppState(snapshot: JsonObject): JsonElement? = snapshot["app_state"]
 }

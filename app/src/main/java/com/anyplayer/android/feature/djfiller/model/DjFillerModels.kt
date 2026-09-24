@@ -20,7 +20,6 @@ val AI_DJ_PRESENTATION_TRACK = Track(
  *  audio file on disk. */
 data class PreparedFiller(
     val track: Track,
-    val scriptText: String,
     val audioFile: File
 )
 

@@ -340,7 +340,7 @@ internal class SyncStateHolder(
 
     fun startRealtimePlaybackSync() {
         viewModelScope.launch {
-            combine(syncServerTarget, syncAppStateEnabled) { serverTarget, appStateEnabled ->
+            combine(syncServerTarget, syncAppStateEnabled, syncAuthToken) { serverTarget, appStateEnabled, _ ->
                 Pair(serverTarget.trim(), appStateEnabled)
             }.collectLatest { (serverTarget, appStateEnabled) ->
                 if (!appStateEnabled || serverTarget.isBlank()) {

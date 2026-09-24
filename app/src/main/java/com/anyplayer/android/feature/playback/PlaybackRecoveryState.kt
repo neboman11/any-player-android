@@ -49,7 +49,6 @@ internal class PlaybackRecoveryState {
     val mixedMediaEndStall = StallWatch()
 
     var spotifyAutoAdvanceInFlight = false
-    var spotifyAutoAdvanceTrackId: String? = null
 
     var spotifyRecoveryInFlight = false
     var spotifyRecoveryLastAttemptMs = 0L
@@ -80,7 +79,6 @@ internal class PlaybackRecoveryState {
 
     fun resetSpotifyAutoAdvanceState() {
         spotifyAutoAdvanceInFlight = false
-        spotifyAutoAdvanceTrackId = null
         lastAcknowledgedEndOfTrackCount = 0L
     }
 

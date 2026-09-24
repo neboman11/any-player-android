@@ -254,7 +254,7 @@ class MixedPlaybackOpsTest {
             djInterstitialPlayer = interstitial
         )
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
-        val filler = PreparedFiller(tracks[1], "intro", File("intro.wav"))
+        val filler = PreparedFiller(tracks[1], File("intro.wav"))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
         wheneverBlocking { media3.snapshot() } doReturn media3Snapshot(positionMs = 198_500L)
         whenever(scheduler.consumeReadyFillerIfDue("local2")).thenReturn(filler)

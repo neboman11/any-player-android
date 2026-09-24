@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.djfiller
 
+import androidx.annotation.MainThread
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStatus
 import com.anyplayer.android.core.model.Track
@@ -18,18 +19,12 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.random.Random
 
-/** Counts real songs played (fed by [onStatusUpdated], called once per ~500ms tick of
- *  [com.anyplayer.android.feature.playback.PlaybackQueueManager]'s own poll loop - see
- *  its `syncFromPlaybackEngine()` call site) and decides when an AI DJ break is due.
- *
- *  Generation (fact lookup + LLM script + TTS render) starts as soon as the last
- *  pre-break song becomes current, using nearly that whole song's duration as budget.
- *  [consumeReadyFillerIfDue] is the only way a caller ever learns a break is due, and it
- *  is designed to NEVER block a transition: if generation isn't finished in time, or the
- *  queue changed underneath it, it simply returns null and the caller proceeds exactly as
- *  if AI DJ were disabled for that one cycle. */
+/**
+ * Keeps one AI DJ voice-over ready for the track after the real song currently playing.
+ * Generation starts on the first playback update after launch or after the previous
+ * voice-over has finished. [consumeReadyFillerIfDue] never blocks a track transition.
+ */
 @Singleton
 class DjFillerScheduler @Inject constructor(
     private val djScriptGenerator: DjScriptGenerator,
@@ -51,8 +46,6 @@ class DjFillerScheduler @Inject constructor(
     }
     private companion object {
         const val TAG = "DjFillerScheduler"
-        const val MIN_SONGS_BETWEEN_BREAKS = 3
-        const val MAX_SONGS_BETWEEN_BREAKS_EXCLUSIVE = 6
     }
 
     @Volatile
@@ -74,12 +67,6 @@ class DjFillerScheduler @Inject constructor(
     @Volatile
     private var expectedNextTrackId: String? = null
 
-    @Volatile
-    private var songsSinceLastBreak = 0
-
-    @Volatile
-    private var nextBreakThreshold = rollThreshold()
-
     private data class PendingFiller(
         val filler: PreparedFiller,
         val forTrackId: String
@@ -92,7 +79,7 @@ class DjFillerScheduler @Inject constructor(
 
     // Guards generationVersion + pendingFiller mutations against the TOCTOU race between a
     // generation coroutine (runs on a Dispatchers.Default thread) finishing right as
-    // setEnabled(false) (callable from any thread) invalidates it - without this, a coroutine
+    // setEnabled(false) on the main thread invalidates it - without this, a coroutine
     // that passed its version check just before invalidation could still stash a stale
     // pendingFiller afterward.
     private val stateLock = Any()
@@ -121,7 +108,6 @@ class DjFillerScheduler @Inject constructor(
         scope = CoroutineScope(SupervisorJob() + schedulerDispatcher)
     }
 
-    private fun rollThreshold(): Int = Random.nextInt(MIN_SONGS_BETWEEN_BREAKS, MAX_SONGS_BETWEEN_BREAKS_EXCLUSIVE)
 
     private val mutablePendingBreakSongsAway = MutableStateFlow<Int?>(null)
 
@@ -133,11 +119,7 @@ class DjFillerScheduler @Inject constructor(
     val pendingBreakSongsAway: StateFlow<Int?> = mutablePendingBreakSongsAway
 
     private fun updatePendingBreakOffset() {
-        mutablePendingBreakSongsAway.value = if (enabled) {
-            (nextBreakThreshold - songsSinceLastBreak).coerceAtLeast(0)
-        } else {
-            null
-        }
+        mutablePendingBreakSongsAway.value = if (enabled) 0 else null
     }
 
     val voiceModelDownloadState: StateFlow<DjModelDownloadState> = djVoiceSynthesizer.downloadState
@@ -155,8 +137,6 @@ class DjFillerScheduler @Inject constructor(
     fun downloadVoiceModel() = djVoiceSynthesizer.downloadSelectedVoice()
 
     private fun resetSchedulingState() {
-        songsSinceLastBreak = 0
-        nextBreakThreshold = rollThreshold()
         updatePendingBreakOffset()
     }
 
@@ -168,7 +148,9 @@ class DjFillerScheduler @Inject constructor(
     }
 
     private fun discardPendingFiller() {
-        pendingFiller?.filler?.audioFile?.delete()
+        if (!djInterstitialPlayer.isPlayingInterstitial) {
+            pendingFiller?.filler?.audioFile?.let(djFillerAudioCache::delete)
+        }
         pendingFiller = null
     }
 
@@ -178,17 +160,31 @@ class DjFillerScheduler @Inject constructor(
         generationJob = null
     }
 
+    @MainThread
     fun setEnabled(value: Boolean) {
-        enabled = value
-        if (!value) {
-            synchronized(stateLock) {
+        synchronized(stateLock) {
+            enabled = value
+            if (!value) {
                 invalidateGeneration()
+                djInterstitialPlayer.cancelPendingLocal()
                 discardPendingFiller()
+                if (!djInterstitialPlayer.isPlayingInterstitial) djFillerAudioCache.clear()
                 resetSchedulingState()
                 resetSeenTrackState()
             }
         }
         updatePendingBreakOffset()
+    }
+
+    @MainThread
+    fun onQueueReplaced() {
+        synchronized(stateLock) {
+            invalidateGeneration()
+            djInterstitialPlayer.onLocalInterstitialEnded = null
+            djInterstitialPlayer.cancelPendingLocal()
+            discardPendingFiller()
+            resetSeenTrackState()
+        }
     }
 
     /** Call once per real playback-status tick. Counts a new real song exactly once per
@@ -227,18 +223,9 @@ class DjFillerScheduler @Inject constructor(
 
         lastSeenTrackId = current.id
         lastSeenIndex = currentIndex
-        val advance = if (previousIndex >= 0 && currentIndex >= 0) {
-            (currentIndex - previousIndex).takeIf { it > 0 } ?: 1
-        } else {
-            1
-        }
         lastSeenPositionMs = status.position
-
-        songsSinceLastBreak += advance
         updatePendingBreakOffset()
-        if (songsSinceLastBreak >= nextBreakThreshold) {
-            startGenerationFor(status, current)
-        }
+        prepareFillerFor(status, current)
     }
 
     private fun positionIsStillAdvancing(positionMs: Long): Boolean =
@@ -264,6 +251,27 @@ class DjFillerScheduler @Inject constructor(
             }
         }
         return best
+    }
+
+    private fun prepareFillerFor(status: PlaybackStatus, preBreakTrack: Track) {
+        pendingFiller?.takeIf { !it.filler.audioFile.exists() }?.let { pendingFiller = null }
+        if (pendingFiller != null || generationJob?.isActive == true) return
+
+        val sequence = sequenceOf(status)
+        val currentIndex = lastSeenIndex.takeIf {
+            it >= 0 && sequence.getOrNull(it)?.id == preBreakTrack.id
+        } ?: nearestIndexOf(sequence, preBreakTrack.id, 0)
+        if (currentIndex < 0) return
+        val nextTrack = sequence.getOrNull(currentIndex + 1) ?: return
+        val cachedFile = djFillerAudioCache.load(nextTrack.id)
+        if (cachedFile == null) {
+            startGenerationFor(status, preBreakTrack)
+            return
+        }
+
+        val ready = PreparedFiller(nextTrack, audioFile = cachedFile)
+        pendingFiller = PendingFiller(ready, nextTrack.id)
+        if (isLocalModeActive()) djInterstitialPlayer.insertLocal(ready)
     }
 
     private fun startGenerationFor(status: PlaybackStatus, preBreakTrack: Track) {
@@ -318,7 +326,7 @@ class DjFillerScheduler @Inject constructor(
             // another thread between the check and the mutation.
             val stale = synchronized(stateLock) { generationId != generationVersion.get() }
             if (stale) {
-                ready.audioFile.delete()
+                djFillerAudioCache.delete(ready.audioFile)
                 return@launch
             }
 
@@ -326,30 +334,49 @@ class DjFillerScheduler @Inject constructor(
                 // Push immediately: ExoPlayer's own auto-advance will carry playback into
                 // the spliced item with zero gap once the current song ends, so there's
                 // nothing left to "consume" later - reset scheduling state right away.
-                withContext(Dispatchers.Main.immediate) {
-                    // Generation can take seconds; if the user manually skipped during that
-                    // window, preBreakTrack is no longer current and insertLocal() would
-                    // splice this (now stale) break after whatever is actually playing.
-                    val stillPending = synchronized(stateLock) { generationId == generationVersion.get() }
-                    if (
-                        stillPending &&
-                        isLocalModeActive() &&
-                        lastSeenTrackId == preBreakTrack.id &&
-                        expectedNextTrackId == nextTrack.id
-                    ) {
-                        djInterstitialPlayer.insertLocal(ready)
-                    } else {
-                        CompatLog.i(TAG, "AI DJ: pre-break track ${preBreakTrack.id} no longer current after generation, discarding stale break")
-                        ready.audioFile.delete()
+                try {
+                    withContext(Dispatchers.Main.immediate) {
+                        // Generation can take seconds; if the user manually skipped during that
+                        // window, preBreakTrack is no longer current and insertLocal() would
+                        // splice this (now stale) break after whatever is actually playing.
+                        val stillPending = synchronized(stateLock) { generationId == generationVersion.get() }
+                        if (stillPending && isLocalModeActive()) {
+                            val cachedReady = ready.copy(audioFile = djFillerAudioCache.save(nextTrack.id, ready.audioFile))
+                            synchronized(stateLock) {
+                                if (
+                                    enabled &&
+                                    generationId == generationVersion.get() &&
+                                    isLocalModeActive() &&
+                                    lastSeenTrackId == preBreakTrack.id &&
+                                    expectedNextTrackId == nextTrack.id
+                                ) {
+                                    pendingFiller = PendingFiller(cachedReady, nextTrack.id)
+                                    djInterstitialPlayer.insertLocal(cachedReady)
+                                } else {
+                                    djFillerAudioCache.delete(cachedReady.audioFile)
+                                }
+                            }
+                        } else {
+                            CompatLog.i(TAG, "AI DJ: pre-break track ${preBreakTrack.id} no longer current after generation, discarding stale break")
+                            djFillerAudioCache.delete(ready.audioFile)
+                        }
+                        resetSchedulingState()
                     }
-                    resetSchedulingState()
+                } finally {
+                    // Cancellation can happen before the Main dispatcher runs this block.
+                    // save() moves the file when playback takes ownership, so this only
+                    // removes an unclaimed generation output.
+                    djFillerAudioCache.delete(ready.audioFile)
                 }
             } else {
                 synchronized(stateLock) {
                     if (generationId == generationVersion.get()) {
-                        pendingFiller = PendingFiller(ready, nextTrack.id)
+                        pendingFiller = PendingFiller(
+                            ready.copy(audioFile = djFillerAudioCache.save(nextTrack.id, ready.audioFile)),
+                            nextTrack.id
+                        )
                     } else {
-                        ready.audioFile.delete()
+                        djFillerAudioCache.delete(ready.audioFile)
                     }
                 }
             }
@@ -379,23 +406,16 @@ class DjFillerScheduler @Inject constructor(
             CompatLog.w(TAG, "AI DJ: TTS synthesis failed for generated script")
             return null
         }
-        return PreparedFiller(track = nextTrack, scriptText = script, audioFile = outputFile)
+        return PreparedFiller(track = nextTrack, audioFile = outputFile)
     }
 
-    /** [upcomingTrackId] is the id of whatever the caller is about to advance into. Returns
-     *  a ready [PreparedFiller] only when a break is due AND generation finished for
-     *  exactly that track; otherwise resets nothing extra and returns null so the caller's
-     *  normal advance logic is completely unaffected. */
+    /**
+     * Returns a ready [PreparedFiller] only for [upcomingTrackId], otherwise leaves the
+     * caller's normal advance logic unaffected.
+     */
     fun consumeReadyFillerIfDue(upcomingTrackId: String?): PreparedFiller? {
         if (!enabled) return null
-        if (songsSinceLastBreak < nextBreakThreshold) return null
-
-        // Reset unconditionally, whether or not a ready filler is actually consumed below -
-        // otherwise a single cycle where generation didn't finish in time would leave
-        // songsSinceLastBreak permanently >= nextBreakThreshold, and since onStatusUpdated
-        // only (re)starts generation on an *exact* equality match, the scheduler would never
-        // trigger generation again for the rest of the session. This also rolls a fresh
-        // threshold and updates the "songs away" display to the *next* break immediately.
+        // A late generation is for the old transition and must not survive into the next one.
         val pending = synchronized(stateLock) {
             invalidateGeneration()
             pendingFiller.also { pendingFiller = null }
@@ -403,7 +423,7 @@ class DjFillerScheduler @Inject constructor(
         resetSchedulingState()
 
         if (pending == null || upcomingTrackId == null || pending.forTrackId != upcomingTrackId) {
-            pending?.filler?.audioFile?.delete()
+            pending?.filler?.audioFile?.let(djFillerAudioCache::delete)
             CompatLog.i(TAG, "AI DJ break due but no ready filler matched upcomingTrackId=$upcomingTrackId pending=${pending?.forTrackId}")
             return null
         }

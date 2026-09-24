@@ -620,7 +620,6 @@ internal class SpotifyPlaybackOps(
         }
         if (context.recovery.spotifyAutoAdvanceInFlight) {
             context.recovery.spotifyAutoAdvanceInFlight = false
-            context.recovery.spotifyAutoAdvanceTrackId = null
         }
         val mappedTrackIndex = spotifySnapshot.currentTrackId?.let { id ->
             context.queueIndexCache.findQueueIndexNear(id, context.queueIndexCache.spotifyCurrentQueueIndex, state.queue).takeIf { it >= 0 }

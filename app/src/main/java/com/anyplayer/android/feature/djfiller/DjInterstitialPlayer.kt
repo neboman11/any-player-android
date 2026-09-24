@@ -74,12 +74,21 @@ class DjInterstitialPlayer @Inject constructor(
         }
     }
 
+    fun cancelPendingLocal() {
+        media3PlaybackController.cancelPendingInterstitial()
+    }
+
     /** Spotify/Mixed mode: the shared ExoPlayer is idle whenever a Spotify track is current,
      *  so [filler] plays standalone on it; [onEnded] resumes the caller's own advance logic
      *  (e.g. the Spotify `.next()` call that was deferred to make room for this). */
     fun playStandalone(filler: PreparedFiller, onEnded: () -> Unit) {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
         pendingCleanupFiles[mediaId] = filler.audioFile
-        media3PlaybackController.playInterstitialStandalone(Uri.fromFile(filler.audioFile), mediaId, onEnded)
+        try {
+            media3PlaybackController.playInterstitialStandalone(Uri.fromFile(filler.audioFile), mediaId, onEnded)
+        } catch (failure: Throwable) {
+            pendingCleanupFiles.remove(mediaId)?.delete()
+            throw failure
+        }
     }
 }

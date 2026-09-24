@@ -229,6 +229,9 @@ class Media3PlaybackController @Inject constructor(
             // and the "AnyPlayer DJ" now-playing override stuck on indefinitely.
             endStandaloneInterstitial(stopPlayer = false)
         }
+        // A splice may still be queued, so activeInterstitialMediaId is null.
+        // Notify its owner before replacing the timeline so its file is reclaimed.
+        cancelPendingInterstitial()
         val playableTracks = tracks.filter(::isMedia3PlayableTrack)
         if (playableTracks.isEmpty()) {
             playerInstance.clearMediaItems()
@@ -263,6 +266,16 @@ class Media3PlaybackController @Inject constructor(
         playerInstance.playWhenReady = autoPlay
 
         return mappedIndex
+    }
+
+    fun cancelPendingInterstitial() {
+        val index = (0 until playerInstance.mediaItemCount).firstOrNull {
+            it != playerInstance.currentMediaItemIndex &&
+                playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX)
+        } ?: return
+        val mediaId = playerInstance.getMediaItemAt(index).mediaId
+        playerInstance.removeMediaItem(index)
+        interstitialListener?.onInterstitialEnded(mediaId)
     }
 
     fun playFromIndex(index: Int) {

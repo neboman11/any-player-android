@@ -9,22 +9,31 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.never
+import org.mockito.kotlin.whenever
+import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import java.nio.file.Files
 
 /**
- * [DjFillerScheduler] counting/gating logic and the "songs away" queue-display schedule.
+ * [DjFillerScheduler] next-track preparation and non-blocking transitions.
  * Generation itself runs on an internal background scope wired to real (mocked-here)
  * TTS/LLM/network dependencies, so these tests focus on what's deterministic without
- * waiting on that async pipeline: that the randomized 3-5 song threshold is honored, that
+ * waiting on that async pipeline: that the next-track presentation remains visible, that
  * [DjFillerScheduler.pendingBreakSongsAway] always reflects the schedule regardless of
  * whether generation has finished, that disabling the feature suppresses everything, and -
  * the core zero-wait guarantee - that [DjFillerScheduler.consumeReadyFillerIfDue] never
@@ -32,6 +41,91 @@ import org.mockito.kotlin.mock
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DjFillerSchedulerTest {
+
+    @Test
+    fun `replacing queue forgets inserted filler so next queue can prepare one`() {
+        val cache = mock<DjFillerAudioCache>()
+        val interstitial = mock<DjInterstitialPlayer>()
+        val audio = Files.createTempFile("dj-replace", ".wav").toFile()
+        val queue = listOf(track("old"), track("next"))
+        whenever(cache.load("next")).thenReturn(audio)
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, interstitial, testDispatcher)
+        scheduler.configureLocalModeProvider { true }
+        try {
+            scheduler.setEnabled(true)
+            scheduler.onStatusUpdated(statusWith("old", queue))
+            scheduler.onQueueReplaced()
+            scheduler.onStatusUpdated(statusWith("old", queue))
+            verify(interstitial, org.mockito.kotlin.times(2)).insertLocal(org.mockito.kotlin.any())
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
+    fun `disabling removes queued local filler before cache is cleared`() {
+        val cache = mock<DjFillerAudioCache>()
+        val interstitial = mock<DjInterstitialPlayer>()
+        val audio = Files.createTempFile("dj-disable", ".wav").toFile()
+        whenever(cache.load("next")).thenReturn(audio)
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, interstitial, testDispatcher)
+        scheduler.configureLocalModeProvider { true }
+        try {
+            scheduler.setEnabled(true)
+            scheduler.onStatusUpdated(statusWith("old", listOf(track("old"), track("next"))))
+            scheduler.setEnabled(false)
+            val order = org.mockito.kotlin.inOrder(interstitial, cache)
+            order.verify(interstitial).cancelPendingLocal()
+            order.verify(cache).clear()
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
+    fun `disabling during active filler leaves audio for playback owner to delete`() {
+        val cache = mock<DjFillerAudioCache>()
+        val interstitial = mock<DjInterstitialPlayer>()
+        val audio = Files.createTempFile("dj-active", ".wav").toFile()
+        whenever(cache.load("next")).thenReturn(audio)
+        whenever(interstitial.isPlayingInterstitial).thenReturn(true)
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, interstitial, testDispatcher)
+        scheduler.configureLocalModeProvider { true }
+        try {
+            scheduler.setEnabled(true)
+            scheduler.onStatusUpdated(statusWith("old", listOf(track("old"), track("next"))))
+            scheduler.setEnabled(false)
+            verify(cache, never()).delete(audio)
+            verify(cache, never()).clear()
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
+    fun `cancelled generation deletes audio while main-thread handoff is pending`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val audio = Files.createTempFile("dj-generated", ".wav").toFile()
+        val cache = mock<DjFillerAudioCache>()
+        val voice = mock<DjVoiceSynthesizer>()
+        val script = mock<DjScriptGenerator>()
+        whenever(cache.newOutputFile()).thenReturn(audio)
+        whenever(voice.isAvailable()).thenReturn(true)
+        whenever(script.generateScript(any(), anyOrNull())).thenReturn("intro")
+        whenever(voice.synthesizeToFile(any(), any())).thenReturn(true)
+        scheduler = DjFillerScheduler(script, voice, mock(), cache, mock(), UnconfinedTestDispatcher(testScheduler))
+        scheduler.configureLocalModeProvider { true }
+        try {
+            scheduler.setEnabled(true)
+            scheduler.onStatusUpdated(statusWith("old", listOf(track("old"), track("next"))))
+            assertTrue(audio.exists())
+            scheduler.onQueueReplaced()
+            runCurrent()
+            verify(cache).delete(audio)
+        } finally {
+            audio.delete()
+        }
+    }
 
     private val testDispatcher = UnconfinedTestDispatcher()
     private lateinit var scheduler: DjFillerScheduler
@@ -74,12 +168,6 @@ class DjFillerSchedulerTest {
         isDjFiller = isDjFiller
     )
 
-    private fun setThreshold(value: Int) {
-        val field = DjFillerScheduler::class.java.getDeclaredField("nextBreakThreshold")
-        field.isAccessible = true
-        field.setInt(scheduler, value)
-    }
-
     private fun getPrivateIntField(target: Any, fieldName: String): Int {
         val field = target.javaClass.getDeclaredField(fieldName)
         field.isAccessible = true
@@ -107,9 +195,8 @@ class DjFillerSchedulerTest {
     }
 
     @Test
-    fun `break is never due before the 3-5 song threshold`() {
+    fun `no ready filler leaves the normal advance unchanged`() {
         scheduler.setEnabled(true)
-        setThreshold(5)
         val queue = (1..10).map { track("t$it") }
 
         repeat(4) { i ->
@@ -119,33 +206,27 @@ class DjFillerSchedulerTest {
     }
 
     @Test
-    fun `pendingBreakSongsAway reflects the schedule immediately, independent of generation`() {
-        setThreshold(3)
+    fun `pendingBreakSongsAway keeps the next-track break visible`() {
         scheduler.setEnabled(true)
         val queue = (1..10).map { track("t$it") }
 
-        // Visible as soon as the threshold exists, before any real song has even played.
-        assertEquals(3, scheduler.pendingBreakSongsAway.value)
+        // The next track is always the planned AI DJ transition.
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
 
         scheduler.onStatusUpdated(statusWith("t1", queue))
-        assertEquals(2, scheduler.pendingBreakSongsAway.value)
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
 
         scheduler.onStatusUpdated(statusWith("t2", queue))
-        assertEquals(1, scheduler.pendingBreakSongsAway.value)
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
 
-        // Third song change reaches the threshold and kicks off generation - with a mocked,
-        // unavailable TTS voice it fails synchronously under the test dispatcher and rolls a
-        // fresh 3-5 threshold immediately, which is itself proof the offset never depends on
-        // generation succeeding: there's always a valid value, never null or stuck.
+        // A failed generation never hides the next-track transition.
         scheduler.onStatusUpdated(statusWith("t3", queue))
-        val songsAway = scheduler.pendingBreakSongsAway.value
-        assertTrue("expected a non-null offset in [0, 5], was $songsAway", songsAway != null && songsAway in 0..5)
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
     }
 
     @Test
-    fun `consumeReadyFillerIfDue never blocks even once the threshold is reached`() {
+    fun `consumeReadyFillerIfDue never blocks while generation is pending`() {
         scheduler.setEnabled(true)
-        setThreshold(3)
         val queue = (1..10).map { track("t$it") }
 
         // Generation is fully mocked and async, so it can never have actually completed -
@@ -157,23 +238,20 @@ class DjFillerSchedulerTest {
     @Test
     fun `the synthetic DJ track itself is never counted as a real song`() {
         scheduler.setEnabled(true)
-        setThreshold(5)
         val queue = (1..10).map { track("t$it") }
         val fillerStatus = statusWith("t1", queue).copy(currentTrack = track("dj", isDjFiller = true))
 
         scheduler.onStatusUpdated(statusWith("t1", queue))
         repeat(5) { scheduler.onStatusUpdated(fillerStatus) }
 
-        // Only one real track change was ever observed - still 4 songs away from the
-        // 5-song threshold, not due yet.
-        assertEquals(4, scheduler.pendingBreakSongsAway.value)
+        // The synthetic interstitial does not hide the next-track transition.
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
         assertNull(scheduler.consumeReadyFillerIfDue("t2"))
     }
 
     @Test
     fun `duplicate track occurrence counts when playback position resets`() {
         scheduler.setEnabled(true)
-        setThreshold(5)
         val queue = listOf(track("duplicate"), track("duplicate"), track("t3"))
         val firstOccurrence = statusWith("duplicate", queue).copy(position = 1_000L)
 
@@ -181,46 +259,36 @@ class DjFillerSchedulerTest {
         scheduler.onStatusUpdated(firstOccurrence.copy(position = 2_000L))
         scheduler.onStatusUpdated(firstOccurrence.copy(currentTrack = queue[1], position = 0L))
 
-        assertEquals(3, scheduler.pendingBreakSongsAway.value)
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
     }
 
     @Test
     fun `re-enabling starts a fresh schedule`() {
         val queue = (1..10).map { track("t$it") }
         scheduler.setEnabled(true)
-        setThreshold(5)
         scheduler.onStatusUpdated(statusWith("t1", queue))
         scheduler.onStatusUpdated(statusWith("t2", queue))
 
         scheduler.setEnabled(false)
 
-        assertEquals(0, getPrivateIntField(scheduler, "songsSinceLastBreak"))
         assertEquals(-1, getPrivateIntField(scheduler, "lastSeenIndex"))
 
-        setThreshold(5)
         scheduler.setEnabled(true)
         scheduler.onStatusUpdated(statusWith("t8", queue))
 
-        assertEquals(4, scheduler.pendingBreakSongsAway.value)
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
     }
 
     @Test
-    fun `failed generation resets the scheduling state and rolls a fresh offset`() = runTest {
+    fun `failed generation keeps the next-track offset visible`() = runTest {
         scheduler.setEnabled(true)
-        setThreshold(1)
         val queue = (1..4).map { track("t$it") }
         val status = statusWith("t1", queue)
-
-        val songsField = DjFillerScheduler::class.java.getDeclaredField("songsSinceLastBreak")
-        songsField.isAccessible = true
-        songsField.setInt(scheduler, 1)
 
         invokeStartGenerationFor(status, queue.first())
         advanceUntilIdle()
 
-        assertEquals(0, getPrivateIntField(scheduler, "songsSinceLastBreak"))
-        // A fresh (randomized 3-5) threshold was rolled, so the offset is showing again
-        // rather than being left null.
-        assertEquals(getPrivateIntField(scheduler, "nextBreakThreshold"), scheduler.pendingBreakSongsAway.value)
+        // A failed generation still leaves the next-track transition visible.
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
     }
 }

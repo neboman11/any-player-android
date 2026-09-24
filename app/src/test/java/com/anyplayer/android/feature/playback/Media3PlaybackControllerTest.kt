@@ -16,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 
@@ -118,6 +119,34 @@ class Media3PlaybackControllerTest {
 
         assertTrue(controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:added"))
         assertEquals(2, controller.player.mediaItemCount)
+    }
+
+    @Test
+    fun setQueue_notifiesWhenUnplayedInterstitialIsDiscarded() {
+        val controller = newController()
+        val listener: InterstitialTransitionListener = mock()
+        controller.interstitialListener = listener
+        controller.setQueue(listOf(playableTrack("a")), 0, false)
+        controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:queued")
+
+        controller.setQueue(listOf(playableTrack("b")), 0, false)
+
+        verify(listener).onInterstitialEnded("dj-filler:queued")
+        assertEquals(1, controller.player.mediaItemCount)
+    }
+
+    @Test
+    fun cancelPendingInterstitial_removesUnplayedItemAndNotifiesListener() {
+        val controller = newController()
+        val listener: InterstitialTransitionListener = mock()
+        controller.interstitialListener = listener
+        controller.setQueue(listOf(playableTrack("a")), 0, false)
+        controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:queued")
+
+        controller.cancelPendingInterstitial()
+
+        assertEquals(1, controller.player.mediaItemCount)
+        verify(listener).onInterstitialEnded("dj-filler:queued")
     }
 
     // ---- simple property proxies ----

@@ -13,11 +13,13 @@ import com.anyplayer.android.feature.sync.AppStateSyncPayload
 import com.anyplayer.android.feature.sync.SyncPreferences
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import com.anyplayer.android.feature.sync.SyncSnapshotClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -29,6 +31,7 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
@@ -51,6 +54,28 @@ class SyncStateHolderTest {
             queue = listOf(track("local"), track("next"))
         )
     )
+
+    @Test
+    fun startRealtimePlaybackSync_reconnectsWhenAuthTokenChanges() = runTest {
+        val holder = holder(
+            SyncPreferences(serverTarget = "http://sync", authToken = "old-token"),
+            backgroundScope
+        )
+        whenever(syncSnapshotClient.getClientId()).thenReturn("local-client")
+        whenever(syncSnapshotClient.payloadFromPlayback(status.value)).thenReturn(
+            AppStateSyncPayload("playing", false, "off", 75, 10_000L, 180_000L)
+        )
+        whenever(syncSnapshotClient.observeStateUpdates("http://sync"))
+            .thenReturn(MutableSharedFlow())
+
+        holder.startRealtimePlaybackSync()
+        runCurrent()
+        verify(syncSnapshotClient).observeStateUpdates("http://sync")
+
+        holder.updateSyncAuthToken("new-token")
+        runCurrent()
+        verify(syncSnapshotClient, times(2)).observeStateUpdates("http://sync")
+    }
 
     @Test
     fun pullSyncState_clearsPlaybackWhenRemoteAppStateIsEmptyAndStopped() = runTest {
@@ -128,14 +153,17 @@ class SyncStateHolderTest {
         assertEquals("Some local data failed to push to server.", holder.syncStatus.value)
     }
 
-    private fun TestScope.holder(preferences: SyncPreferences): SyncStateHolder {
+    private fun TestScope.holder(
+        preferences: SyncPreferences,
+        scope: CoroutineScope = this
+    ): SyncStateHolder {
         whenever(syncPreferencesStore.read()).doReturn(preferences)
         whenever(playbackQueueManager.status).doReturn(status)
         whenever(playbackQueueManager.audioNormalizationSettings).doReturn(
             MutableStateFlow(AudioNormalizationSettings())
         )
         return SyncStateHolder(
-            viewModelScope = this,
+            viewModelScope = scope,
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = syncSnapshotClient,
             playbackQueueManager = playbackQueueManager,

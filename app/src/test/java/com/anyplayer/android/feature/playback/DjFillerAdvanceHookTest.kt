@@ -6,8 +6,10 @@ import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -19,6 +21,54 @@ import org.mockito.kotlin.whenever
 @OptIn(ExperimentalCoroutinesApi::class)
 class DjFillerAdvanceHookTest {
     @Test
+    fun `pause exception deletes consumed filler and preserves failure`() = runTest {
+        val scheduler: DjFillerScheduler = mock()
+        val interstitial: DjInterstitialPlayer = mock()
+        val audioFile = File.createTempFile("dj-handoff-", ".wav")
+        val filler = PreparedFiller(
+            track = Track(id = "next", title = "Next", artist = "Artist", source = SourceType.SPOTIFY),
+            audioFile = audioFile
+        )
+        whenever(scheduler.consumeReadyFillerIfDue("next")).thenReturn(filler)
+
+        try {
+            val failure = runCatching {
+                scheduler.playFillerThenAdvance(interstitial, "next", { throw IllegalStateException("pause failed") }) {}
+            }.exceptionOrNull()
+
+            assertTrue(failure is IllegalStateException)
+            assertFalse(audioFile.exists())
+            verify(interstitial, never()).playStandalone(any(), any())
+        } finally {
+            audioFile.delete()
+        }
+    }
+
+    @Test
+    fun `pause cancellation deletes consumed filler and propagates cancellation`() = runTest {
+        val scheduler: DjFillerScheduler = mock()
+        val interstitial: DjInterstitialPlayer = mock()
+        val audioFile = File.createTempFile("dj-handoff-", ".wav")
+        val filler = PreparedFiller(
+            track = Track(id = "next", title = "Next", artist = "Artist", source = SourceType.SPOTIFY),
+            audioFile = audioFile
+        )
+        whenever(scheduler.consumeReadyFillerIfDue("next")).thenReturn(filler)
+
+        try {
+            val failure = runCatching {
+                scheduler.playFillerThenAdvance(interstitial, "next", { throw CancellationException("cancelled") }) {}
+            }.exceptionOrNull()
+
+            assertTrue(failure is CancellationException)
+            assertFalse(audioFile.exists())
+            verify(interstitial, never()).playStandalone(any(), any())
+        } finally {
+            audioFile.delete()
+        }
+    }
+
+    @Test
     fun `pause failure skips standalone filler and advances normally`() = runTest {
         val scheduler: DjFillerScheduler = mock()
         val interstitial: DjInterstitialPlayer = mock()
@@ -29,7 +79,6 @@ class DjFillerAdvanceHookTest {
                 artist = "Artist",
                 source = SourceType.SPOTIFY
             ),
-            scriptText = "intro",
             audioFile = File("intro.wav")
         )
         var advanced = false

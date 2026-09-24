@@ -22,11 +22,16 @@ internal suspend fun DjFillerScheduler.playFillerThenAdvance(
 ) {
     val filler = consumeReadyFillerIfDue(upcomingTrackId)
     if (filler != null) {
-        if (pauseActiveSpotify?.invoke() != false) {
-            djInterstitialPlayer.playStandalone(filler, onAdvance)
-        } else {
+        try {
+            if (pauseActiveSpotify?.invoke() != false) {
+                djInterstitialPlayer.playStandalone(filler, onAdvance)
+            } else {
+                filler.audioFile.delete()
+                onAdvance()
+            }
+        } catch (failure: Throwable) {
             filler.audioFile.delete()
-            onAdvance()
+            throw failure
         }
     } else {
         onAdvance()
