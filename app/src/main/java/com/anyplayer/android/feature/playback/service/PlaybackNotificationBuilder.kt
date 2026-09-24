@@ -12,6 +12,7 @@ import com.anyplayer.android.MainActivity
 import com.anyplayer.android.R
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
+import com.anyplayer.android.core.model.Track
 
 /** Builds the foreground-service media-style playback notification and its transport actions. */
 internal class PlaybackNotificationBuilder(private val context: Context) {
@@ -22,8 +23,8 @@ internal class PlaybackNotificationBuilder(private val context: Context) {
         const val ACTION_PREVIOUS = "com.anyplayer.android.action.PREVIOUS"
     }
 
-    fun build(status: PlaybackStatus, session: MediaLibrarySession?): Notification {
-        val currentTrack = status.currentTrack
+    fun build(status: PlaybackStatus, session: MediaLibrarySession?, nowPlayingOverride: Track? = null): Notification {
+        val currentTrack = nowPlayingOverride ?: status.currentTrack
         val hasTrack = currentTrack != null
         val isPlaying = status.state == PlaybackStateType.PLAYING
         val mediaStyle = MediaStyle()

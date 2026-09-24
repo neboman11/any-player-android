@@ -167,6 +167,69 @@ class SpotifyConnectBridgeTest {
         assertEquals(0L, cache.snapshot(nowMs = 6_500)?.endOfTrackCount)
     }
 
+    @Test
+    fun playbackStateCache_manualPauseDoesNotReportStalePlayingState() {
+        val cache = SpotifyPlaybackStateCache(endOfTrackToleranceMs = TOLERANCE_MS)
+        cache.update(playbackState(isPlaying = true, progressMs = 90_000, durationMs = 180_000), nowMs = 0)
+
+        cache.markManualPause(nowMs = 100, gracePeriodMs = 5_000)
+
+        assertFalse(cache.snapshot(nowMs = 300)?.isPlaying == true)
+    }
+
+    @Test
+    fun playbackStateCache_manualPauseGraceSurvivesPausedPoll() {
+        val cache = SpotifyPlaybackStateCache(endOfTrackToleranceMs = TOLERANCE_MS)
+        cache.update(playbackState(isPlaying = true, progressMs = 90_000, durationMs = 180_000), nowMs = 0)
+        cache.markManualPause(nowMs = 100, gracePeriodMs = 5_000)
+
+        cache.update(
+            playbackState(isPlaying = false, progressMs = 90_000, durationMs = 180_000),
+            nowMs = 300
+        )
+
+        assertTrue(cache.isManualPauseExpected(nowMs = 300))
+    }
+
+    @Test
+    fun playbackStateCache_slowPauseExtendsGraceAfterPausedPoll() {
+        val cache = SpotifyPlaybackStateCache(endOfTrackToleranceMs = TOLERANCE_MS)
+        cache.update(playbackState(isPlaying = true, progressMs = 90_000, durationMs = 180_000), nowMs = 0)
+        cache.markManualPause(nowMs = 100, gracePeriodMs = 5_000)
+        cache.update(
+            playbackState(isPlaying = false, progressMs = 90_000, durationMs = 180_000),
+            nowMs = 300
+        )
+
+        cache.extendManualPauseAfterSuccessfulCommand(nowMs = 4_000, gracePeriodMs = 5_000)
+
+        assertTrue(cache.isManualPauseExpected(nowMs = 5_200))
+    }
+
+    @Test
+    fun playbackStateCache_pauseCommandKeepsGracePastInitialTimeout() {
+        val cache = SpotifyPlaybackStateCache(endOfTrackToleranceMs = TOLERANCE_MS)
+
+        cache.markManualPause(nowMs = 100, gracePeriodMs = 5_000)
+
+        assertTrue(cache.isManualPauseExpected(nowMs = 5_200))
+    }
+
+    @Test
+    fun playbackStateCache_slowPauseNearTrackEndDoesNotCountCompletion() {
+        val cache = SpotifyPlaybackStateCache(endOfTrackToleranceMs = TOLERANCE_MS)
+        cache.update(playbackState(isPlaying = true, progressMs = 178_500, durationMs = 180_000), nowMs = 0)
+        cache.markManualPause(nowMs = 100, gracePeriodMs = 5_000)
+
+        cache.update(
+            playbackState(isPlaying = false, progressMs = 179_000, durationMs = 180_000),
+            nowMs = 6_000
+        )
+        cache.extendManualPauseAfterSuccessfulCommand(nowMs = 6_000, gracePeriodMs = 5_000)
+
+        assertEquals(0L, cache.snapshot(nowMs = 6_000)?.endOfTrackCount)
+    }
+
     private fun playbackState(
         isPlaying: Boolean,
         progressMs: Long,

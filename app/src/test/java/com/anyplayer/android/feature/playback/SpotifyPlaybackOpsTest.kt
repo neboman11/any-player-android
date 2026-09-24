@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -21,6 +23,7 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
+import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
@@ -53,7 +56,9 @@ class SpotifyPlaybackOpsTest {
             audioCacheManager = audioCache,
             context = context,
             isNearTrackEnd = { _, _, _ -> false },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -105,8 +110,8 @@ class SpotifyPlaybackOpsTest {
         ops.sync()
 
         verifyBlocking(spotify, never()) { startQueue(any(), any()) }
-        assertEquals("a", context.recovery.spotifyMidTrackStallTrackId)
-        assertEquals(5_000L, context.recovery.spotifyMidTrackStallPositionMs)
+        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
+        assertEquals(5_000L, context.recovery.spotifyMidTrackStall.positionMs)
     }
 
     @Test
@@ -117,12 +122,12 @@ class SpotifyPlaybackOpsTest {
 
         ops.sync() // seeds the dwell timer at "now"
         // Simulate the dwell threshold having elapsed without a real delay.
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
 
         ops.sync()
 
         verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0) }
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -131,16 +136,16 @@ class SpotifyPlaybackOpsTest {
         seedPlayingState(tracks)
         wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a")
         ops.sync()
-        assertEquals("a", context.recovery.spotifyMidTrackStallTrackId)
+        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
 
         wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a", playing = true)
         ops.sync()
 
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
 
         // Even after the threshold elapses, no recovery should fire - the dwell
         // window was reset by the resumed playback, not just carried forward.
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
         ops.sync()
 
         verifyBlocking(spotify, never()) { startQueue(any(), any()) }
@@ -169,6 +174,22 @@ class SpotifyPlaybackOpsTest {
 
         assertEquals(1, context.queueIndexCache.spotifyCurrentQueueIndex)
         assertEquals(1L, context.recovery.lastAcknowledgedEndOfTrackCount)
+    }
+
+    @Test
+    fun sync_manualPauseGrace_clearsStallWatchesWithoutRestarting() = runTest {
+        val tracks = listOf(track("a"), track("b"))
+        seedPlayingState(tracks)
+        context.recovery.spotifyMidTrackStall.trackId = "a"
+        context.recovery.spotifyGhostPlayingStall.trackId = "a"
+
+        whenever(spotify.isManualPauseExpected()).thenReturn(true)
+
+        ops.sync()
+
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
+        assertNull(context.recovery.spotifyGhostPlayingStall.trackId)
+        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
     }
 
     @Test

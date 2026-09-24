@@ -79,6 +79,8 @@ class SpotifyPlaybackController @Inject constructor(
 
     suspend fun pause(): Boolean = runCommand("pause") { connectBridge.pause(it) }
 
+    fun isManualPauseExpected(): Boolean = connectBridge.isManualPauseExpected()
+
     suspend fun next(): Boolean = runCommand("next") { connectBridge.next(it) }
 
     suspend fun seekTo(positionMs: Long): Boolean =

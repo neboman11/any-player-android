@@ -18,6 +18,7 @@ import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playback.SpotifyConnectBridge
 import com.anyplayer.android.feature.playback.trackIdsMatch
@@ -35,8 +36,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
@@ -51,6 +52,8 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     lateinit var authRepository: ProviderAuthRepository
     @Inject
     lateinit var spotifyConnectBridge: SpotifyConnectBridge
+    @Inject
+    lateinit var djInterstitialPlayer: DjInterstitialPlayer
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -271,19 +274,27 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
         ).build()
 
         serviceScope.launch {
-            data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val state: PlaybackStateType)
-            playbackQueueManager.status
-                .map { status ->
-                    NotificationKey(
-                        trackId = status.currentTrack?.id,
-                        title = status.currentTrack?.title,
-                        artist = status.currentTrack?.artist,
-                        state = status.state
-                    ) to status
-                }
+            data class NotificationKey(val trackId: String?, val title: String?, val artist: String?, val state: PlaybackStateType, val overrideId: String?)
+            // overrideId must be part of the key: a local-mode DJ interstitial deliberately
+            // leaves status.currentTrack/state unchanged while it plays (so the real track
+            // resumes seamlessly after), so keying on status alone means distinctUntilChanged
+            // suppresses the rebuild and the notification keeps showing the prior track for
+            // the whole voice-over even though nowPlayingOverride did change.
+            combine(playbackQueueManager.status, djInterstitialPlayer.nowPlayingOverride) { status, override ->
+                NotificationKey(
+                    trackId = status.currentTrack?.id,
+                    title = status.currentTrack?.title,
+                    artist = status.currentTrack?.artist,
+                    state = status.state,
+                    overrideId = override?.id
+                ) to (status to override)
+            }
                 .distinctUntilChanged { old, new -> old.first == new.first }
-                .collect { (_, status) ->
-                    startForegroundCompat(notificationBuilder.build(status, mediaLibrarySession))
+                .collect { (_, statusAndOverride) ->
+                    val (status, override) = statusAndOverride
+                    startForegroundCompat(
+                        notificationBuilder.build(status, mediaLibrarySession, override)
+                    )
                 }
         }
 

@@ -16,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 
@@ -108,6 +109,46 @@ class Media3PlaybackControllerTest {
         assertFalse(controller.player.playWhenReady)
     }
 
+    @Test
+    fun insertInterstitial_reportsWhetherItWasAdded() {
+        val controller = newController()
+
+        assertFalse(controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:empty"))
+
+        controller.setQueue(listOf(playableTrack("a")), startIndex = 0, autoPlay = false)
+
+        assertTrue(controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:added"))
+        assertEquals(2, controller.player.mediaItemCount)
+    }
+
+    @Test
+    fun setQueue_notifiesWhenUnplayedInterstitialIsDiscarded() {
+        val controller = newController()
+        val listener: InterstitialTransitionListener = mock()
+        controller.interstitialListener = listener
+        controller.setQueue(listOf(playableTrack("a")), 0, false)
+        controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:queued")
+
+        controller.setQueue(listOf(playableTrack("b")), 0, false)
+
+        verify(listener).onInterstitialEnded("dj-filler:queued")
+        assertEquals(1, controller.player.mediaItemCount)
+    }
+
+    @Test
+    fun cancelPendingInterstitial_removesUnplayedItemAndNotifiesListener() {
+        val controller = newController()
+        val listener: InterstitialTransitionListener = mock()
+        controller.interstitialListener = listener
+        controller.setQueue(listOf(playableTrack("a")), 0, false)
+        controller.insertInterstitial(Uri.parse("file:///tmp/filler.wav"), "dj-filler:queued")
+
+        controller.cancelPendingInterstitial()
+
+        assertEquals(1, controller.player.mediaItemCount)
+        verify(listener).onInterstitialEnded("dj-filler:queued")
+    }
+
     // ---- simple property proxies ----
 
     @Test
@@ -133,6 +174,39 @@ class Media3PlaybackControllerTest {
 
         assertTrue(controller.player.shuffleModeEnabled)
         assertEquals(Player.REPEAT_MODE_ALL, controller.player.repeatMode)
+    }
+
+    @Test
+    fun standaloneInterstitial_playsOnceAndRestoresRepeatAfterSkip() {
+        val controller = newController()
+        controller.setRepeatMode(RepeatMode.ONE)
+        var ended = 0
+
+        controller.playInterstitialStandalone(Uri.parse("file:///tmp/filler.wav"), "dj-filler:one") { ended++ }
+
+        assertEquals(Player.REPEAT_MODE_OFF, controller.player.repeatMode)
+        assertEquals(RepeatMode.ONE, controller.snapshot().repeatMode)
+
+        controller.skipInterstitial()
+
+        assertEquals(1, ended)
+        assertEquals(Player.REPEAT_MODE_ONE, controller.player.repeatMode)
+    }
+
+    @Test
+    fun standaloneInterstitial_repeatChangeDuringPlaybackAppliesAfterClear() {
+        val controller = newController()
+        controller.setRepeatMode(RepeatMode.ALL)
+        controller.playInterstitialStandalone(Uri.parse("file:///tmp/filler.wav"), "dj-filler:all") {}
+
+        controller.setRepeatMode(RepeatMode.ONE)
+
+        assertEquals(Player.REPEAT_MODE_OFF, controller.player.repeatMode)
+        assertEquals(RepeatMode.ONE, controller.snapshot().repeatMode)
+
+        controller.clearStandaloneInterstitial()
+
+        assertEquals(Player.REPEAT_MODE_ONE, controller.player.repeatMode)
     }
 
     @Test
