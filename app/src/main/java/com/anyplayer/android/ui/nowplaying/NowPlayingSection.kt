@@ -29,6 +29,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -40,6 +42,7 @@ import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
+import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
 import com.anyplayer.android.ui.QueueTableHeader
 import com.anyplayer.android.ui.QueueTrackRow
 import com.anyplayer.android.ui.TrackRow
@@ -49,12 +52,28 @@ import com.anyplayer.android.ui.formatTrackDuration
 internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
     val status = state.playbackStatus
     val playbackDisabledMessage = state.playbackDisabledMessage
+    val nowPlayingOverride by viewModel.nowPlayingOverride.collectAsState()
+    // While an AI DJ break is playing, show it instead of the real track - but the
+    // up-next/history queue split below still tracks the real track's position, since
+    // the break is never actually part of the domain queue.
+    val displayTrack = nowPlayingOverride ?: status.currentTrack
     val currentTrackId = status.currentTrack?.id
     val displayQueue = status.orderedQueue.ifEmpty { status.queue }
     val originalQueue = status.queue
 
     val currentIdx = displayQueue.indexOfFirst { it.id == currentTrackId }
-    val upcomingTracks = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
+    val djFillerPendingBreakSongsAway by viewModel.djFillerPendingBreakSongsAway.collectAsState()
+    val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
+    val upcomingTracks = run {
+        val base = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
+        val songsAway = djFillerPendingBreakSongsAway
+        if (showDjEntriesInQueue && songsAway != null) {
+            val insertAt = songsAway.coerceIn(0, base.size)
+            base.subList(0, insertAt) + AI_DJ_PRESENTATION_TRACK + base.subList(insertAt, base.size)
+        } else {
+            base
+        }
+    }
     val pastTracks    = if (currentIdx >  0) displayQueue.take(currentIdx)     else emptyList()
 
     val isPlaying = status.state == PlaybackStateType.PLAYING
@@ -68,7 +87,7 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                status.currentTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
+                displayTrack?.imageUrl?.takeIf { it.isNotBlank() }?.let { artworkUrl ->
                     ElevatedCard(
                         modifier = Modifier.size(120.dp),
                         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -86,14 +105,14 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = status.currentTrack?.title ?: "—",
+                        text = displayTrack?.title ?: "—",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = status.currentTrack?.artist ?: "—",
+                        text = displayTrack?.artist ?: "—",
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis

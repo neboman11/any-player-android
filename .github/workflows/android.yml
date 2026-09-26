@@ -49,16 +49,21 @@ jobs:
           java -version
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install Android NDK
+      - name: Install Android SDK packages
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
           if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
             echo "Resolved Android SDK root is invalid: '$SDK_ROOT'"
             exit 1
           fi
-          yes | sdkmanager --sdk_root="$SDK_ROOT" "ndk;${ANDROID_NDK_VERSION}"
+          yes | sdkmanager --sdk_root="$SDK_ROOT" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
           if [ ! -d "$SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" ]; then
             echo "Expected NDK path not found: $SDK_ROOT/ndk/${ANDROID_NDK_VERSION}"
             exit 1

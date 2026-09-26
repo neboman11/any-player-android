@@ -96,12 +96,15 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             playbackQueueManager = playbackQueueManager,
             stateTransferManager = stateTransferManager,
             configFileImporter = configFileImporter,
+            configFileExporter = mock(),
             providerCatalogRepository = providerCatalogRepository,
             playlistStorageRepository = mock(),
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -193,12 +196,15 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             playbackQueueManager = playbackQueueManager,
             stateTransferManager = stateTransferManager,
             configFileImporter = configFileImporter,
+            configFileExporter = mock(),
             providerCatalogRepository = providerCatalogRepository,
             playlistStorageRepository = mock(),
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(
             id = "s-provider",
@@ -253,12 +259,15 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             playbackQueueManager = playbackQueueManager,
             stateTransferManager = stateTransferManager,
             configFileImporter = configFileImporter,
+            configFileExporter = mock(),
             providerCatalogRepository = providerCatalogRepository,
             playlistStorageRepository = mock(),
             customPlaylistEngine = customPlaylistEngine,
             startupResilienceManager = startupResilienceManager,
             syncPreferencesStore = syncPreferencesStore,
-            syncSnapshotClient = mock()
+            syncSnapshotClient = mock(),
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
         )
 
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(
