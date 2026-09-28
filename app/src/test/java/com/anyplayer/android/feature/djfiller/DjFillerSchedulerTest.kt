@@ -593,6 +593,30 @@ class DjFillerSchedulerTest {
     }
 
     @Test
+    fun `backward track bounces and same-track restarts do not move the break`() = runTest {
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler.setEnabled(true)
+        val queue = (1..10).map { track("t$it") }
+        scheduler.onStatusUpdated(statusWith("t1", queue).copy(position = 5_000L))
+        scheduler.onStatusUpdated(statusWith("t2", queue).copy(position = 1_000L))
+        val away = scheduler.pendingBreakSongsAway.value
+
+        // Spotify briefly reports the previous track after a switch.
+        scheduler.onStatusUpdated(statusWith("t1", queue).copy(position = 0L))
+        scheduler.onStatusUpdated(statusWith("t2", queue).copy(position = 2_000L))
+        assertEquals(away, scheduler.pendingBreakSongsAway.value)
+
+        // Spotify recovery restarts the current track from zero.
+        scheduler.onStatusUpdated(statusWith("t2", queue).copy(position = 0L))
+        scheduler.onStatusUpdated(statusWith("t2", queue).copy(position = 1_000L))
+        assertEquals(away, scheduler.pendingBreakSongsAway.value)
+
+        // Real forward progress still counts.
+        scheduler.onStatusUpdated(statusWith("t3", queue))
+        assertEquals(away!! - 1, scheduler.pendingBreakSongsAway.value)
+    }
+
+    @Test
     fun `duplicate track occurrence counts when playback position resets`() {
         scheduler.setEnabled(true)
         val queue = listOf(track("duplicate"), track("duplicate"), track("t3"))

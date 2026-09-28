@@ -69,6 +69,15 @@ class DjFillerScheduler @Inject constructor(
     @Volatile
     private var lastSeenIndex: Int = -1
 
+    // Furthest sequence position reached. Only moving past it counts as a new song and the
+    // break target is anchored to it, so a transient backward bounce (Spotify briefly
+    // reporting the previous track) or a same-track restart (Spotify recovery) neither
+    // consumes the countdown nor moves the break.
+    @Volatile
+    private var furthestIndex: Int = -1
+
+    private var lastSequence: List<Track>? = null
+
     @Volatile
     private var expectedNextTrackId: String? = null
 
@@ -148,7 +157,8 @@ class DjFillerScheduler @Inject constructor(
     val pendingBreakSongsAway: StateFlow<Int?> = mutablePendingBreakSongsAway
 
     private fun updatePendingBreakOffset() {
-        mutablePendingBreakSongsAway.value = if (enabled) songsUntilBreak else null
+        mutablePendingBreakSongsAway.value =
+            if (enabled) songsUntilBreak + (furthestIndex - lastSeenIndex).coerceAtLeast(0) else null
     }
 
     val voiceModelDownloadState: StateFlow<DjModelDownloadState> = djVoiceSynthesizer.downloadState
@@ -180,6 +190,8 @@ class DjFillerScheduler @Inject constructor(
         lastSeenTrackId = null
         lastSeenPositionMs = -1L
         lastSeenIndex = -1
+        furthestIndex = -1
+        lastSequence = null
         expectedNextTrackId = null
         lastObservedStatus = null
         breakCommitted = false
@@ -244,11 +256,8 @@ class DjFillerScheduler @Inject constructor(
         val previousTrackId = lastSeenTrackId
 
         // A run of very short tracks (or a burst of skips) can advance through more than
-        // one real song between two ~500ms poll ticks; a flat +1 here would silently drop
-        // the skipped ones and never count them. Use the queue-position delta between the
-        // last observed track and the current one when it's resolvable (both present, in
-        // forward order); fall back to +1 for the first tick, a shuffle reorder, or a
-        // manual previous(), where position delta isn't meaningful. Resolved nearest the
+        // one real song between two ~500ms poll ticks, so progress is the sequence-position
+        // delta past [furthestIndex], not a flat +1 per track change. Resolved nearest the
         // last known index rather than indexOfFirst, since a queue/playlist can repeat the
         // same track id more than once.
         val sequence = sequenceOf(status)
@@ -267,11 +276,28 @@ class DjFillerScheduler @Inject constructor(
             return
         }
 
+        val trackChanged = current.id != previousTrackId || currentIndex != previousIndex
         lastSeenTrackId = current.id
         lastSeenIndex = currentIndex
         lastSeenPositionMs = status.position
+        // A shuffle toggle rebuilds the sequence: re-anchor at the current position.
+        val reordered = sequence !== lastSequence && sequence != lastSequence && lastSequence != null
+        lastSequence = sequence
+        // A jump back of more than one (repeat-all wrap, picking an earlier song) is a real
+        // move and re-anchors; one step back or a same-track restart is a transient glitch.
+        val reanchor = furthestIndex < 0 || reordered || currentIndex < furthestIndex - 1
+        val songsAdvanced = when {
+            currentIndex < 0 -> 0
+            reanchor -> if (trackChanged) 1 else 0
+            else -> (currentIndex - furthestIndex).coerceAtLeast(0)
+        }
+        if (currentIndex >= 0 && (reanchor || currentIndex > furthestIndex)) furthestIndex = currentIndex
+        if (songsAdvanced == 0) {
+            prepareScheduledFiller(status)
+            return
+        }
         failedOnCurrentTrack = false
-        if (!breakCommitted && songsUntilBreak > 0) songsUntilBreak--
+        if (!breakCommitted) songsUntilBreak = (songsUntilBreak - songsAdvanced).coerceAtLeast(0)
         updatePendingBreakOffset()
         prepareScheduledFiller(status)
     }
@@ -302,9 +328,9 @@ class DjFillerScheduler @Inject constructor(
     }
 
     private fun prepareScheduledFiller(status: PlaybackStatus) {
-        if (breakCommitted || failedOnCurrentTrack || lastSeenIndex < 0) return
+        if (breakCommitted || failedOnCurrentTrack || furthestIndex < 0) return
         val sequence = sequenceOf(status)
-        val target = sequence.getOrNull(lastSeenIndex + songsUntilBreak + 1)
+        val target = sequence.getOrNull(furthestIndex + songsUntilBreak + 1)
             ?.takeUnless { it.isDjFiller } ?: return
         if (expectedNextTrackId != null && expectedNextTrackId != target.id) {
             invalidateGeneration()
@@ -447,7 +473,7 @@ class DjFillerScheduler @Inject constructor(
      */
     fun consumeReadyFillerIfDue(upcomingTrackId: String?): PreparedFiller? {
         if (!enabled) return null
-        if (songsUntilBreak != 0) return null
+        if (songsUntilBreak != 0 || lastSeenIndex < furthestIndex) return null
         // A late generation is for the old transition and must not survive into the next one.
         val pending = synchronized(stateLock) {
             invalidateGeneration()
