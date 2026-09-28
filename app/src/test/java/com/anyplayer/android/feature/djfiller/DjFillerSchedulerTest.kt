@@ -617,6 +617,20 @@ class DjFillerSchedulerTest {
     }
 
     @Test
+    fun `cold start adopts the break already saved for an upcoming track`() = runTest {
+        val cache = mock<DjFillerAudioCache>()
+        whenever(cache.readyTrackId()).thenReturn("t2")
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler.setEnabled(true)
+        val queue = (1..10).map { track("t$it") }
+
+        scheduler.onStatusUpdated(statusWith("t1", queue))
+
+        // A fresh schedule is never fewer than two songs away after the first one.
+        assertEquals(0, scheduler.pendingBreakSongsAway.value)
+    }
+
+    @Test
     fun `duplicate track occurrence counts when playback position resets`() {
         scheduler.setEnabled(true)
         val queue = listOf(track("duplicate"), track("duplicate"), track("t3"))

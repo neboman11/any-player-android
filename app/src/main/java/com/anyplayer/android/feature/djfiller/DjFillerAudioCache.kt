@@ -36,6 +36,10 @@ class DjFillerAudioCache @Inject constructor(
         return readyFile
     }
 
+    /** The track the saved break introduces, so a cold start can keep its schedule. */
+    fun readyTrackId(): String? =
+        readyTrackIdFile.takeIf { readyFile.isFile && it.isFile }?.readText()
+
     fun loadPassages(trackId: String): DjPassages? = if (load(trackId) != null) {
         runCatching { Json.decodeFromString(DjPassages.serializer(), readyPassagesFile.readText()) }.getOrNull()
     } else null

@@ -50,6 +50,7 @@ class DjFillerScheduler @Inject constructor(
         isLocalModeActive = provider
     }
     private companion object {
+        const val MAX_SONGS_BETWEEN_BREAKS = 5
         const val TAG = "DjFillerScheduler"
     }
 
@@ -182,7 +183,7 @@ class DjFillerScheduler @Inject constructor(
     }
 
     private fun scheduleAfterPlayedBreak() {
-        songsUntilBreak = Random.nextInt(3, 6)
+        songsUntilBreak = Random.nextInt(3, MAX_SONGS_BETWEEN_BREAKS + 1)
         updatePendingBreakOffset()
     }
 
@@ -217,7 +218,7 @@ class DjFillerScheduler @Inject constructor(
     @MainThread
     fun setEnabled(value: Boolean) {
         synchronized(stateLock) {
-            if (value && !enabled) songsUntilBreak = Random.nextInt(3, 6)
+            if (value && !enabled) songsUntilBreak = Random.nextInt(3, MAX_SONGS_BETWEEN_BREAKS + 1)
             enabled = value
             if (!value) {
                 invalidateGeneration()
@@ -239,7 +240,7 @@ class DjFillerScheduler @Inject constructor(
             djInterstitialPlayer.cancelPendingLocal()
             discardPendingFiller()
             resetSeenTrackState()
-            if (enabled) songsUntilBreak = Random.nextInt(3, 6)
+            if (enabled) songsUntilBreak = Random.nextInt(3, MAX_SONGS_BETWEEN_BREAKS + 1)
         }
         updatePendingBreakOffset()
     }
@@ -285,7 +286,8 @@ class DjFillerScheduler @Inject constructor(
         lastSequence = sequence
         // A jump back of more than one (repeat-all wrap, picking an earlier song) is a real
         // move and re-anchors; one step back or a same-track restart is a transient glitch.
-        val reanchor = furthestIndex < 0 || reordered || currentIndex < furthestIndex - 1
+        val firstAnchor = furthestIndex < 0
+        val reanchor = firstAnchor || reordered || currentIndex < furthestIndex - 1
         val songsAdvanced = when {
             currentIndex < 0 -> 0
             reanchor -> if (trackChanged) 1 else 0
@@ -298,8 +300,19 @@ class DjFillerScheduler @Inject constructor(
         }
         failedOnCurrentTrack = false
         if (!breakCommitted) songsUntilBreak = (songsUntilBreak - songsAdvanced).coerceAtLeast(0)
+        if (firstAnchor && !breakCommitted) adoptSavedBreak(sequence, currentIndex)
         updatePendingBreakOffset()
         prepareScheduledFiller(status)
+    }
+
+    /** A cold start (process killed) re-rolls the schedule; keep the break already saved on
+     *  disk instead when its track is among the next few songs, so it plays rather than
+     *  being overwritten by a new generation for a different track. */
+    private fun adoptSavedBreak(sequence: List<Track>, currentIndex: Int) {
+        val readyId = djFillerAudioCache.readyTrackId() ?: return
+        val last = minOf(currentIndex + MAX_SONGS_BETWEEN_BREAKS + 1, sequence.lastIndex)
+        val readyIndex = (currentIndex + 1..last).firstOrNull { sequence[it].id == readyId } ?: return
+        songsUntilBreak = readyIndex - currentIndex - 1
     }
 
     private fun positionIsStillAdvancing(positionMs: Long): Boolean =
