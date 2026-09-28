@@ -5,6 +5,8 @@ import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.auth.spotify.SpotifyPlaybackState
+import com.anyplayer.android.feature.djfiller.DjFillerScheduler
+import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -21,6 +23,7 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verifyBlocking
+import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
@@ -45,7 +48,7 @@ class SpotifyPlaybackOpsTest {
         Dispatchers.setMain(testDispatcher)
         context = PlaybackEngineContext(spotify)
         context.spotifyMode = true
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
         wheneverBlocking { spotify.setVolume(any()) } doReturn true
         ops = SpotifyPlaybackOps(
             media3PlaybackController = media3,
@@ -53,7 +56,9 @@ class SpotifyPlaybackOpsTest {
             audioCacheManager = audioCache,
             context = context,
             isNearTrackEnd = { _, _, _ -> false },
-            persistStateAsync = {}
+            persistStateAsync = {},
+            djFillerScheduler = mock(),
+            djInterstitialPlayer = mock()
         )
     }
 
@@ -104,9 +109,9 @@ class SpotifyPlaybackOpsTest {
 
         ops.sync()
 
-        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
-        assertEquals("a", context.recovery.spotifyMidTrackStallTrackId)
-        assertEquals(5_000L, context.recovery.spotifyMidTrackStallPositionMs)
+        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
+        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
+        assertEquals(5_000L, context.recovery.spotifyMidTrackStall.positionMs)
     }
 
     @Test
@@ -117,12 +122,12 @@ class SpotifyPlaybackOpsTest {
 
         ops.sync() // seeds the dwell timer at "now"
         // Simulate the dwell threshold having elapsed without a real delay.
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
 
         ops.sync()
 
-        verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0) }
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0, 5_000L) }
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -131,19 +136,19 @@ class SpotifyPlaybackOpsTest {
         seedPlayingState(tracks)
         wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a")
         ops.sync()
-        assertEquals("a", context.recovery.spotifyMidTrackStallTrackId)
+        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
 
         wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a", playing = true)
         ops.sync()
 
-        assertNull(context.recovery.spotifyMidTrackStallTrackId)
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
 
         // Even after the threshold elapses, no recovery should fire - the dwell
         // window was reset by the resumed playback, not just carried forward.
-        context.recovery.spotifyMidTrackStallSinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
+        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
         ops.sync()
 
-        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
+        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
     }
 
     @Test
@@ -172,6 +177,22 @@ class SpotifyPlaybackOpsTest {
     }
 
     @Test
+    fun sync_manualPauseGrace_clearsStallWatchesWithoutRestarting() = runTest {
+        val tracks = listOf(track("a"), track("b"))
+        seedPlayingState(tracks)
+        context.recovery.spotifyMidTrackStall.trackId = "a"
+        context.recovery.spotifyGhostPlayingStall.trackId = "a"
+
+        whenever(spotify.isManualPauseExpected()).thenReturn(true)
+
+        ops.sync()
+
+        assertNull(context.recovery.spotifyMidTrackStall.trackId)
+        assertNull(context.recovery.spotifyGhostPlayingStall.trackId)
+        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
+    }
+
+    @Test
     fun sync_errorState_attemptsRecoveryAtCurrentQueueIndex() = runTest {
         val tracks = listOf(track("a"), track("b"))
         seedPlayingState(tracks)
@@ -180,12 +201,12 @@ class SpotifyPlaybackOpsTest {
 
         ops.sync()
 
-        verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0) }
+        verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0, 5_000L) }
     }
 
     @Test
     fun maybeRecoverSpotifyTrack_exhaustsAfterThreeFailedAttempts_thenStopsRetrying() = runTest {
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn false
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn false
 
         repeat(3) {
             val triggered = ops.maybeRecoverSpotifyTrack(listOf("a"), 0, "failed")
@@ -198,7 +219,7 @@ class SpotifyPlaybackOpsTest {
         val fourthAttempt = ops.maybeRecoverSpotifyTrack(listOf("a"), 0, "failed")
 
         assertEquals(false, fourthAttempt)
-        verifyBlocking(spotify, org.mockito.kotlin.times(3)) { startQueue(any(), any()) }
+        verifyBlocking(spotify, org.mockito.kotlin.times(3)) { startQueue(any(), any(), any()) }
     }
 
     @Test
@@ -210,7 +231,7 @@ class SpotifyPlaybackOpsTest {
 
         ops.next(context.mutableStatus.value)
 
-        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
+        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
     }
 
     @Test
@@ -221,6 +242,44 @@ class SpotifyPlaybackOpsTest {
 
         ops.previous(context.mutableStatus.value)
 
-        verifyBlocking(spotify, never()) { startQueue(any(), any()) }
+        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
+    }
+
+    @Test
+    fun maybeRecoverSpotifyTrack_resumesAtCurrentPositionInsteadOfRestarting() = runTest {
+        seedPlayingState(listOf(track("a")))
+        context.mutableStatus.value = context.mutableStatus.value.copy(position = 42_000L)
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
+
+        ops.maybeRecoverSpotifyTrack(listOf("a"), 0, "failed")
+
+        verifyBlocking(spotify) { startQueue(listOf("a"), 0, 42_000L) }
+    }
+
+    @Test
+    fun maybeRecoverSpotifyTrack_acceptedCommandsWithoutPlaybackStillExhaust() = runTest {
+        // Spotify accepting the play command (204) isn't proof playback came back: when
+        // snapshots stayed unavailable, resetting on command success made recovery loop
+        // forever, restarting the song every few seconds.
+        val tracks = listOf(track("a"))
+        seedPlayingState(tracks)
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
+        repeat(3) {
+            assertEquals(true, ops.maybeRecoverSpotifyTrack(listOf("a"), 0, "failed"))
+            context.recovery.spotifyRecoveryLastAttemptMs = 0L
+        }
+
+        assertEquals(false, ops.maybeRecoverSpotifyTrack(listOf("a"), 0, "failed"))
+        // Giving up surfaces as an error instead of silently claiming to still be playing.
+        assertEquals(PlaybackStateType.ERROR, context.mutableStatus.value.state)
+        assertEquals(
+            "Couldn't get Spotify playback back (failed). Press play to try again.",
+            context.mutableStatus.value.errorMessage
+        )
+
+        // An observed playing snapshot is the real confirmation and re-arms recovery.
+        wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a", playing = true)
+        ops.sync()
+        assertEquals(0, context.recovery.spotifyRecoveryAttempts)
     }
 }

@@ -1,6 +1,7 @@
 package com.anyplayer.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -25,9 +26,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.model.DjFillerPreparationStatus
 
 internal enum class TrackSortColumn { TITLE, ARTIST, ALBUM, DURATION, SOURCE }
 
@@ -158,21 +161,43 @@ internal fun QueueTableHeader() {
 internal fun QueueTrackRow(
     track: Track,
     onPlay: () -> Unit,
-    subdued: Boolean = false
+    subdued: Boolean = false,
+    djStatus: DjFillerPreparationStatus? = null
 ) {
-    val textColor = if (subdued) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+    val colors = MaterialTheme.colorScheme
+    val backgroundColor = when (djStatus) {
+        DjFillerPreparationStatus.NOT_STARTED -> colors.surfaceVariant
+        DjFillerPreparationStatus.PROCESSING -> colors.secondaryContainer
+        DjFillerPreparationStatus.READY -> colors.tertiaryContainer
+        null -> Color.Transparent
+    }
+    val textColor = when (djStatus) {
+        DjFillerPreparationStatus.NOT_STARTED -> colors.onSurfaceVariant
+        DjFillerPreparationStatus.PROCESSING -> colors.onSecondaryContainer
+        DjFillerPreparationStatus.READY -> colors.onTertiaryContainer
+        null -> if (subdued) colors.onSurfaceVariant else colors.onSurface
+    }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().background(backgroundColor, RoundedCornerShape(8.dp))
+            .padding(if (djStatus == null) 0.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(track.title, modifier = Modifier.weight(2f), style = MaterialTheme.typography.bodySmall, color = textColor)
-        Text(track.artist, modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.bodySmall, color = textColor)
+        Text(
+            if (djStatus == null) track.artist else when (djStatus) {
+                DjFillerPreparationStatus.NOT_STARTED -> "Not started"
+                DjFillerPreparationStatus.PROCESSING -> "Processing"
+                DjFillerPreparationStatus.READY -> "Ready for playback"
+            },
+            modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.bodySmall, color = textColor
+        )
         TrackSourceBadge(source = track.source, modifier = Modifier.weight(1f))
-        TrackQualityBadge(track = track, modifier = Modifier.weight(1.3f))
+        if (djStatus == null) TrackQualityBadge(track = track, modifier = Modifier.weight(1.3f))
+        else Text("—", modifier = Modifier.weight(1.3f), color = textColor)
         Text(formatTrackDuration(track.durationMs), modifier = Modifier.weight(0.8f), style = MaterialTheme.typography.bodySmall, color = textColor)
-        TrackActionMenu(listOf("Play" to onPlay))
+        if (djStatus == null) TrackActionMenu(listOf("Play" to onPlay)) else Text("—", color = textColor)
     }
 }
 

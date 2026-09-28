@@ -62,7 +62,7 @@ class SpotifyPlaybackController @Inject constructor(
      *  plays one URI at a time - Any Player's own queue state machine drives
      *  advancement, the same restart-at-index pattern already used for
      *  user-initiated skip. */
-    suspend fun startQueue(trackIds: List<String>, startIndex: Int): Boolean {
+    suspend fun startQueue(trackIds: List<String>, startIndex: Int, positionMs: Long = 0L): Boolean {
         if (trackIds.isEmpty()) {
             lastError = "Spotify queue is empty"
             return false
@@ -72,12 +72,14 @@ class SpotifyPlaybackController @Inject constructor(
         // lock would freeze snapshot() polling for that whole duration.
         val accessToken = resolveAccessToken() ?: return false
         val deviceId = connectBridge.resolveDeviceIdForPlayback(accessToken) ?: return false
-        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex, deviceId) }
+        return runCommand("startQueue") { connectBridge.playUri(it, trackIds, startIndex, deviceId, positionMs) }
     }
 
     suspend fun play(): Boolean = runCommand("play") { connectBridge.resume(it) }
 
     suspend fun pause(): Boolean = runCommand("pause") { connectBridge.pause(it) }
+
+    fun isManualPauseExpected(): Boolean = connectBridge.isManualPauseExpected()
 
     suspend fun next(): Boolean = runCommand("next") { connectBridge.next(it) }
 

@@ -40,13 +40,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.PlaylistType
 import com.anyplayer.android.core.model.SourceType
+import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.model.normalizePlaylistId
 import com.anyplayer.android.ui.TrackActionMenu
@@ -100,7 +103,10 @@ internal fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             }
 
             Text("${selectedProviderPlaylist.name} (${selectedProviderPlaylist.source.name.lowercase()})")
-            Text("Tracks: ${state.selectedProviderPlaylistTracks.size}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Tracks: ${state.selectedProviderPlaylistTracks.size}")
+                CopyTracksButton(state.selectedProviderPlaylistTracks)
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -326,7 +332,10 @@ internal fun PlaylistSection(viewModel: MainViewModel, state: MainUiState) {
             }
 
             Text("${selectedCustomPlaylist.name} (${selectedCustomPlaylist.playlistType.name.lowercase()})")
-            Text("Tracks: ${state.activeCustomPlaylistTracks.size}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Tracks: ${state.activeCustomPlaylistTracks.size}")
+                CopyTracksButton(state.activeCustomPlaylistTracks)
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -693,4 +702,20 @@ private fun RefreshFeedback(inProgress: Boolean, status: String?, inProgressLabe
             }
         }
     }
+}
+
+/** Copies [tracks] as tab-separated "title, artist, album" lines, e.g. for pasting into a spreadsheet. */
+@Composable
+private fun CopyTracksButton(tracks: List<Track>) {
+    val clipboard = LocalClipboardManager.current
+    OutlinedButton(
+        onClick = {
+            val text = tracks.joinToString("\n") { track ->
+                listOf(track.title, track.artist, track.album.orEmpty())
+                    .joinToString("\t") { it.replace(Regex("[\t\r\n]+"), " ") }
+            }
+            clipboard.setText(AnnotatedString(text))
+        },
+        enabled = tracks.isNotEmpty()
+    ) { Text("Copy tracks") }
 }

@@ -50,6 +50,26 @@ class SyncPreferencesStore @Inject constructor(
         prefs.edit().putString(SYNC_PREFS_KEY, json.encodeToString(SyncPreferences.serializer(), value)).apply()
     }
 
+    fun selectedDjVoiceId(): String? = prefs.getString(SELECTED_DJ_VOICE_ID_KEY, null)?.trim()?.takeIf(String::isNotBlank)
+
+    fun setSelectedDjVoiceId(id: String?) {
+        prefs.edit().apply {
+            if (id == null) remove(SELECTED_DJ_VOICE_ID_KEY) else putString(SELECTED_DJ_VOICE_ID_KEY, id)
+        }.apply()
+    }
+
+    fun selectedDjModelId(): String? = prefs.getString(SELECTED_DJ_MODEL_ID_KEY, null)?.trim()?.takeIf(String::isNotBlank)
+
+    fun setSelectedDjModelId(id: String) {
+        prefs.edit().putString(SELECTED_DJ_MODEL_ID_KEY, id).apply()
+    }
+
+    fun djVoiceGain(): Float = prefs.getFloat(DJ_VOICE_GAIN_KEY, DEFAULT_DJ_VOICE_GAIN)
+
+    fun setDjVoiceGain(gain: Float) {
+        prefs.edit().putFloat(DJ_VOICE_GAIN_KEY, gain).apply()
+    }
+
     fun getOrCreateClientId(): String {
         val existing = prefs.getString(SYNC_CLIENT_ID_KEY, null)?.trim().orEmpty()
         if (existing.isNotBlank()) {
@@ -64,5 +84,11 @@ class SyncPreferencesStore @Inject constructor(
     private companion object {
         const val SYNC_PREFS_KEY = "sync_preferences_json"
         const val SYNC_CLIENT_ID_KEY = "sync_client_id"
+        const val SELECTED_DJ_VOICE_ID_KEY = "selected_dj_voice_id"
+        const val SELECTED_DJ_MODEL_ID_KEY = "selected_dj_model_id"
+        // Level trim relative to the loudness-normalized voice. The old "dj_voice_gain" key
+        // stored a raw boost and is deliberately not carried over.
+        const val DJ_VOICE_GAIN_KEY = "dj_voice_level"
+        const val DEFAULT_DJ_VOICE_GAIN = 1.0f
     }
 }

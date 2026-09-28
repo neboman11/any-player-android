@@ -11,6 +11,7 @@ internal class SpotifyPlaybackStateCache(
     private var lastPolledAtMs: Long = 0L
     private var consecutiveEmptyPolls: Int = 0
     private var manualPauseExpiresAtMs: Long = 0L
+    private var manualPauseCommandInFlight: Boolean = false
 
     @Synchronized
     fun update(polled: SpotifyPlaybackState?, nowMs: Long) {
@@ -19,12 +20,12 @@ internal class SpotifyPlaybackStateCache(
             if (consecutiveEmptyPolls >= emptyPollsBeforeClear) {
                 lastKnownState = null
                 lastPolledAtMs = 0L
-                manualPauseExpiresAtMs = 0L
+                if (!manualPauseCommandInFlight) manualPauseExpiresAtMs = 0L
             }
             return
         }
 
-        val manualPauseExpected = nowMs <= manualPauseExpiresAtMs
+        val manualPauseExpected = isManualPauseExpected(nowMs)
         lastKnownState = mergeEndOfTrackCount(
             previous = lastKnownState,
             polled = polled,
@@ -33,31 +34,38 @@ internal class SpotifyPlaybackStateCache(
         )
         consecutiveEmptyPolls = 0
         lastPolledAtMs = nowMs
-        if (!polled.isPlaying) {
+        if (!polled.isPlaying && !manualPauseExpected) {
             manualPauseExpiresAtMs = 0L
         }
     }
 
     @Synchronized
     fun markManualPause(nowMs: Long, gracePeriodMs: Long) {
+        manualPauseCommandInFlight = true
         manualPauseExpiresAtMs = nowMs + gracePeriodMs.coerceAtLeast(0L)
     }
 
     @Synchronized
     fun extendManualPauseAfterSuccessfulCommand(nowMs: Long, gracePeriodMs: Long) {
-        if (lastKnownState?.isPlaying != false) {
-            markManualPause(nowMs, gracePeriodMs)
-        }
+        manualPauseCommandInFlight = false
+        manualPauseExpiresAtMs = nowMs + gracePeriodMs.coerceAtLeast(0L)
     }
 
     @Synchronized
     fun clearManualPause() {
+        manualPauseCommandInFlight = false
         manualPauseExpiresAtMs = 0L
     }
 
     @Synchronized
+    fun isManualPauseExpected(nowMs: Long): Boolean =
+        manualPauseCommandInFlight ||
+            (manualPauseExpiresAtMs > 0L && nowMs <= manualPauseExpiresAtMs)
+
+    @Synchronized
     fun snapshot(nowMs: Long): SpotifyPlaybackState? {
         val cached = lastKnownState ?: return null
+        if (isManualPauseExpected(nowMs)) return cached.copy(isPlaying = false)
         return if (cached.isPlaying) {
             extrapolatePosition(cached, (nowMs - lastPolledAtMs).coerceAtLeast(0L))
         } else {
@@ -71,6 +79,7 @@ internal class SpotifyPlaybackStateCache(
         lastPolledAtMs = 0L
         consecutiveEmptyPolls = 0
         manualPauseExpiresAtMs = 0L
+        manualPauseCommandInFlight = false
     }
 
     private companion object {

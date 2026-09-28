@@ -6,6 +6,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import com.anyplayer.android.MainActivity
+import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.fakes.FakeProviderAuthRepository
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -46,8 +47,7 @@ class SettingsScreenTest {
         composeRule.onNodeWithText("Playback").assertExists()
         composeRule.onNodeWithText("Data").assertExists()
         composeRule.onNodeWithText("Normalize Audio Across Providers").assertExists()
-        composeRule.onNodeWithText("Strict Normalization").assertExists()
-        composeRule.onNodeWithText("Clear Provider Cache").assertExists()
+        composeRule.onNodeWithText("Strict Normalization (Unavailable)").assertExists()
         composeRule.onNodeWithText("Choose what you'd like to do:").assertExists()
     }
 
@@ -59,7 +59,8 @@ class SettingsScreenTest {
 
     @Test
     fun canConnectJellyfinFromCredentialFields() {
-        composeRule.onNodeWithTag("settings_tab_JELLYFIN").performClick()
+        composeRule.onNodeWithTag("settings_tab_PROVIDERS").performClick()
+        composeRule.onNodeWithText("Clear Provider Cache").assertExists()
         composeRule.onNodeWithTag("field_jellyfin_url").assertExists()
 
         composeRule.onNodeWithTag("field_jellyfin_url").performTextInput("http://jellyfin.local:8096")
@@ -72,7 +73,7 @@ class SettingsScreenTest {
 
     @Test
     fun canConnectPlexFromCredentialFields() {
-        composeRule.onNodeWithTag("settings_tab_PLEX").performClick()
+        composeRule.onNodeWithTag("settings_tab_PROVIDERS").performClick()
         composeRule.onNodeWithTag("field_plex_url").assertExists()
 
         composeRule.onNodeWithTag("field_plex_url").performTextInput("http://plex.local:32400")
@@ -87,11 +88,30 @@ class SettingsScreenTest {
     fun jellyfinConnectFailureShowsError() {
         fakeProviderAuthRepository.nextConnectError = RuntimeException("boom")
 
-        composeRule.onNodeWithTag("settings_tab_JELLYFIN").performClick()
+        composeRule.onNodeWithTag("settings_tab_PROVIDERS").performClick()
         composeRule.onNodeWithTag("field_jellyfin_url").performTextInput("http://jellyfin.local:8096")
         composeRule.onNodeWithTag("field_jellyfin_token").performTextInput("test-jellyfin-token")
         composeRule.onNodeWithText("Connect Jellyfin").performClick()
 
         composeRule.onNodeWithText("Jellyfin connection failed: boom").assertExists()
+    }
+
+    @Test
+    fun aiDjTabShowsControlsAndLogs() {
+        composeRule.onNodeWithTag("settings_tab_AI_DJ").performClick()
+        composeRule.onNodeWithText("Enable AI DJ").assertExists()
+        composeRule.onNodeWithText("AI DJ Logs").assertExists()
+        composeRule.onNodeWithText("Clear logs").assertExists()
+    }
+
+    @Test
+    fun aiDjLogsCanBeViewedAndCleared() {
+        CompatLog.clearAiDjLogs()
+        CompatLog.i("DjScriptGenerator", "AI DJ test message")
+        composeRule.onNodeWithTag("settings_tab_AI_DJ").performClick()
+
+        composeRule.onNodeWithText("AI DJ test message", substring = true).assertExists()
+        composeRule.onNodeWithText("Clear logs").performClick()
+        composeRule.onNodeWithText("AI DJ test message", substring = true).assertDoesNotExist()
     }
 }

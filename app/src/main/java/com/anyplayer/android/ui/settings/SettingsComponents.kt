@@ -321,20 +321,6 @@ internal fun ProviderStatusTable(
     }
 }
 
-@Composable
-internal fun SettingsProviderTabLabel(
-    label: String,
-    connected: Boolean,
-    tooltipText: String
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label)
-        if (connected) {
-            ProviderCheckmarkTooltip(tooltipText = tooltipText)
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ProviderCheckmarkTooltip(tooltipText: String) {

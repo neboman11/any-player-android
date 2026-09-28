@@ -81,7 +81,9 @@ internal class ProjectionControllerGuard(
         projectionDisconnectPauseJob = serviceScope.launch {
             delay(PROJECTION_DISCONNECT_GRACE_MS)
             val current = playbackQueueManager.status.value
-            if (activeProjectionControllers == 0 && current.state == PlaybackStateType.PLAYING) {
+            if (activeProjectionControllers == 0 &&
+                current.state in setOf(PlaybackStateType.PLAYING, PlaybackStateType.BUFFERING)
+            ) {
                 CompatLog.i(TAG, "Projection controllers inactive after grace period; pausing playback")
                 playbackQueueManager.pause()
             }

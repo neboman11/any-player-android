@@ -1,5 +1,12 @@
 package com.anyplayer.android.core.log
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+data class AiDjLogEntry(val timestampMs: Long, val level: String, val tag: String, val message: String)
+
 /**
  * Lightweight compatibility logger.
  *
@@ -8,6 +15,21 @@ package com.anyplayer.android.core.log
  * stdout when android.util.Log isn't present.
  */
 object CompatLog {
+    private val mutableAiDjLogs = MutableStateFlow<List<AiDjLogEntry>>(emptyList())
+    val aiDjLogs: StateFlow<List<AiDjLogEntry>> = mutableAiDjLogs.asStateFlow()
+
+    fun clearAiDjLogs() { mutableAiDjLogs.value = emptyList() }
+
+    // ponytail: playback tags are here to debug the mixed-queue replay bug from the in-app log; drop once fixed.
+    private val extraInAppLogTags = setOf(
+        "VoiceModelDownloader", "MixedPlaybackOps", "PlaybackQueueManager", "SpotifyPlaybackOps", "SyncStateHolder"
+    )
+
+    private fun recordAiDj(level: String, tag: String, message: String) {
+        if (!tag.startsWith("Dj") && tag !in extraInAppLogTags) return
+        mutableAiDjLogs.update { (it + AiDjLogEntry(System.currentTimeMillis(), level, tag, message)).takeLast(200) }
+    }
+
     private fun tryAndroidLog(block: () -> Unit): Boolean {
         try {
             block()
@@ -21,24 +43,28 @@ object CompatLog {
     }
 
     fun d(tag: String, msg: String) {
+        recordAiDj("D", tag, msg)
         if (!tryAndroidLog { android.util.Log.d(tag, msg) }) {
             println("D/$tag: $msg")
         }
     }
 
     fun i(tag: String, msg: String) {
+        recordAiDj("I", tag, msg)
         if (!tryAndroidLog { android.util.Log.i(tag, msg) }) {
             println("I/$tag: $msg")
         }
     }
 
     fun w(tag: String, msg: String) {
+        recordAiDj("W", tag, msg)
         if (!tryAndroidLog { android.util.Log.w(tag, msg) }) {
             println("W/$tag: $msg")
         }
     }
 
     fun w(tag: String, msg: String, t: Throwable?) {
+        recordAiDj("W", tag, msg)
         if (!tryAndroidLog {
             if (t != null) android.util.Log.w(tag, msg, t) else android.util.Log.w(tag, msg)
         }) {
@@ -48,6 +74,7 @@ object CompatLog {
     }
 
     fun e(tag: String, msg: String, t: Throwable? = null) {
+        recordAiDj("E", tag, msg)
         if (!tryAndroidLog {
             if (t != null) android.util.Log.e(tag, msg, t) else android.util.Log.e(tag, msg)
         }) {
