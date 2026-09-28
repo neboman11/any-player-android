@@ -442,6 +442,43 @@ class DjFillerSchedulerTest {
         }
     }
 
+    @Test
+    fun `a transient backward track bounce keeps the ready break for its track`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val audio = Files.createTempFile("dj-bounce", ".wav").toFile()
+        val cache = mock<DjFillerAudioCache>()
+        val facts = mock<DjPassageRepository>()
+        val selected = passages()
+        whenever(facts.findPassages(any())).thenReturn(selected)
+        whenever(cache.load("t3")).thenReturn(audio)
+        whenever(cache.loadPassages("t3")).thenReturn(selected)
+        whenever(cache.save("t3", audio, selected)).thenReturn(audio)
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), StandardTestDispatcher(testScheduler))
+        try {
+            scheduler.setEnabled(true)
+            val field = DjFillerScheduler::class.java.getDeclaredField("songsUntilBreak")
+            field.isAccessible = true
+            field.setInt(scheduler, 2)
+            val queue = (1..10).map { track("t$it") }
+
+            scheduler.onStatusUpdated(statusWith("t1", queue))
+            runCurrent()
+            assertEquals(DjFillerPreparationStatus.READY, scheduler.preparationStatus.value)
+            scheduler.onStatusUpdated(statusWith("t2", queue))
+
+            // Spotify briefly reports the previous track right after a switch, then the real one.
+            scheduler.onStatusUpdated(statusWith("t1", queue))
+            scheduler.onStatusUpdated(statusWith("t2", queue))
+            runCurrent()
+
+            verify(cache, never()).delete(audio)
+            assertEquals(DjFillerPreparationStatus.READY, scheduler.preparationStatus.value)
+            assertEquals(audio, scheduler.consumeReadyFillerIfDue("t3")?.audioFile)
+        } finally {
+            audio.delete()
+        }
+    }
+
     private val testDispatcher = UnconfinedTestDispatcher()
     private lateinit var scheduler: DjFillerScheduler
 

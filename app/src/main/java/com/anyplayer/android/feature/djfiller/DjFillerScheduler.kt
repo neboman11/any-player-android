@@ -308,7 +308,11 @@ class DjFillerScheduler @Inject constructor(
             ?.takeUnless { it.isDjFiller } ?: return
         if (expectedNextTrackId != null && expectedNextTrackId != target.id) {
             invalidateGeneration()
-            discardPendingFiller()
+            // Forget the pending break but keep its cached audio: the target can flip right
+            // back (Spotify briefly reports the previous track after a switch), and generate()
+            // reuses the cache when the passages still match instead of regenerating for minutes.
+            pendingFiller = null
+            localFillerInserted = false
         }
         expectedNextTrackId = target.id
         if (pendingFiller?.filler?.audioFile?.exists() == false) discardPendingFiller()
