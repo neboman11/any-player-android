@@ -12,6 +12,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.SourceType
@@ -48,6 +49,7 @@ class Media3PlaybackController @Inject constructor(
      *  timeline item (if any) is currently the AI DJ voice-over, for both insertion modes
      *  (see [insertInterstitial] and [playInterstitialStandalone]). */
     private var activeInterstitialMediaId: String? = null
+    private var reportedInterstitialMediaId: String? = null
     private var standaloneInterstitialEndedCallback: (() -> Unit)? = null
     private var standaloneRepeatMode: Int? = null
     var interstitialListener: InterstitialTransitionListener? = null
@@ -91,6 +93,7 @@ class Media3PlaybackController @Inject constructor(
         val endedId = activeInterstitialMediaId ?: return null
         cancelStandaloneWatchdog()
         activeInterstitialMediaId = null
+        reportedInterstitialMediaId = null
         standaloneInterstitialEndedCallback = null
         if (stopPlayer) playerInstance.stop()
         playerInstance.clearMediaItems()
@@ -102,6 +105,18 @@ class Media3PlaybackController @Inject constructor(
 
     val isPlayingInterstitial: Boolean
         get() = activeInterstitialMediaId != null
+
+    val currentMediaId: String?
+        get() = playerInstance.currentMediaItem?.mediaId
+
+    /** ExoPlayer may select a DJ item before it is ready or audible. Call from the
+     *  batched event callback, where current item and playing state agree. */
+    internal fun reportInterstitialPlaying(isPlaying: Boolean) {
+        val id = activeInterstitialMediaId ?: return
+        if (!isPlaying || reportedInterstitialMediaId == id || playerInstance.currentMediaItem?.mediaId != id) return
+        reportedInterstitialMediaId = id
+        interstitialListener?.onInterstitialStarted(id)
+    }
 
     /** A manual transport skip during an AI DJ break is treated as "skip the break," not
      *  a real track skip - standalone playback (Spotify/Mixed modes) is force-ended right
@@ -148,6 +163,10 @@ class Media3PlaybackController @Inject constructor(
             true
         )
         addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                reportInterstitialPlaying(player.isPlaying && player.playbackState == Player.STATE_READY)
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 val name = when (playbackState) {
                     Player.STATE_IDLE -> "IDLE"
@@ -187,6 +206,7 @@ class Media3PlaybackController @Inject constructor(
                     onEnded()
                 } else {
                     activeInterstitialMediaId = null
+                    reportedInterstitialMediaId = null
                     val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
                     index?.let { removeMediaItem(it) }
                     interstitialListener?.onInterstitialEnded(endedId)
@@ -208,11 +228,11 @@ class Media3PlaybackController @Inject constructor(
                 val newId = mediaItem?.mediaId
                 if (newId != null && newId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX)) {
                     activeInterstitialMediaId = newId
-                    interstitialListener?.onInterstitialStarted(newId)
                     return
                 }
                 val endedId = activeInterstitialMediaId ?: return
                 activeInterstitialMediaId = null
+                reportedInterstitialMediaId = null
                 val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == endedId }
                 index?.let { removeMediaItem(it) }
                 interstitialListener?.onInterstitialEnded(endedId)
@@ -298,10 +318,32 @@ class Media3PlaybackController @Inject constructor(
      *  tap resolved to the wrong (off-by-one) track. Single owner for this offset - callers
      *  used to re-derive the same +1 rule by hand. */
     fun resolveTimelineIndex(queueMediaIndex: Int): Int {
-        val interstitialIndex = (0 until playerInstance.mediaItemCount)
-            .firstOrNull { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
-            ?: return queueMediaIndex
+        val interstitialIndex = splicedFillerIndex() ?: return queueMediaIndex
         return if (queueMediaIndex >= interstitialIndex) queueMediaIndex + 1 else queueMediaIndex
+    }
+
+    /** Inverse of [resolveTimelineIndex]: raw ExoPlayer timeline index to the domain
+     *  queue's media index. The splice itself resolves to the item that follows it. */
+    private fun toQueueMediaIndex(timelineIndex: Int, interstitialIndex: Int?): Int =
+        if (interstitialIndex != null && timelineIndex > interstitialIndex) timelineIndex - 1 else timelineIndex
+
+    private fun splicedFillerIndex(): Int? =
+        (0 until playerInstance.mediaItemCount)
+            .firstOrNull { playerInstance.getMediaItemAt(it).mediaId.startsWith(DJ_FILLER_MEDIA_ID_PREFIX) }
+
+    /** Raw timeline indices in playback order (shuffle-aware). */
+    private fun playbackOrderIndices(): List<Int> {
+        val windowCount = playerInstance.mediaItemCount
+        if (windowCount == 0) return emptyList()
+        val shuffleEnabled = playerInstance.shuffleModeEnabled
+        val timeline = playerInstance.currentTimeline
+        val list = mutableListOf<Int>()
+        var idx = timeline.getFirstWindowIndex(shuffleEnabled)
+        while (idx != C.INDEX_UNSET && list.size < windowCount) {
+            list.add(idx)
+            idx = timeline.getNextWindowIndex(idx, Player.REPEAT_MODE_OFF, shuffleEnabled)
+        }
+        return if (list.size == windowCount) list else (0 until windowCount).toList()
     }
 
     /** True from the moment a local-mode splice ([insertInterstitial]) lands in the raw
@@ -388,24 +430,18 @@ class Media3PlaybackController @Inject constructor(
             else -> RepeatMode.OFF
         }
 
-        val windowCount = playerInstance.mediaItemCount
-        val shuffleEnabled = playerInstance.shuffleModeEnabled
-        val shuffledMediaIndices: List<Int> = if (windowCount > 0) {
-            val timeline = playerInstance.currentTimeline
-            val list = mutableListOf<Int>()
-            var idx = timeline.getFirstWindowIndex(shuffleEnabled)
-            while (idx != C.INDEX_UNSET && list.size < windowCount) {
-                list.add(idx)
-                idx = timeline.getNextWindowIndex(idx, Player.REPEAT_MODE_OFF, shuffleEnabled)
-            }
-            if (list.size == windowCount) list else (0 until windowCount).toList()
-        } else emptyList()
+        // Report domain-queue indices: a local-mode DJ splice is not a queue entry, and
+        // leaving it in shifted every later index onto the wrong track.
+        val interstitialIndex = splicedFillerIndex()
+        val shuffledMediaIndices = playbackOrderIndices()
+            .filter { it != interstitialIndex }
+            .map { toQueueMediaIndex(it, interstitialIndex) }
 
         return PlaybackSnapshot(
             state = state,
             positionMs = playerInstance.currentPosition.coerceAtLeast(0L),
             durationMs = playerInstance.duration.takeIf { it > 0L } ?: 0L,
-            currentMediaIndex = playerInstance.currentMediaItemIndex,
+            currentMediaIndex = toQueueMediaIndex(playerInstance.currentMediaItemIndex, interstitialIndex),
             volume = (playerInstance.volume * 100f).toInt().coerceIn(0, 100),
             shuffle = playerInstance.shuffleModeEnabled,
             repeatMode = repeat,
@@ -430,6 +466,13 @@ class Media3PlaybackController @Inject constructor(
                 .setMediaMetadata(MediaMetadata.Builder().setTitle("AnyPlayer DJ").build())
                 .build()
         )
+        if (playerInstance.shuffleModeEnabled) {
+            // ExoPlayer drops an added item at a random shuffle position; the break must
+            // play right after the current track, whatever the shuffle order.
+            val order = playbackOrderIndices().filter { it != insertAt }.toMutableList()
+            order.add(order.indexOf(playerInstance.currentMediaItemIndex) + 1, insertAt)
+            playerInstance.setShuffleOrder(DefaultShuffleOrder(order.toIntArray(), System.nanoTime()))
+        }
         return true
     }
 
@@ -442,7 +485,6 @@ class Media3PlaybackController @Inject constructor(
         playerInstance.repeatMode = Player.REPEAT_MODE_OFF
         standaloneInterstitialEndedCallback = onEnded
         activeInterstitialMediaId = mediaId
-        interstitialListener?.onInterstitialStarted(mediaId)
         playerInstance.setMediaItem(
             MediaItem.Builder()
                 .setMediaId(mediaId)

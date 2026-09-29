@@ -197,8 +197,10 @@ dependencies {
     implementation("androidx.media3:media3-database:1.5.1")
     implementation("androidx.media:media:1.8.0")
 
-    // On-device LLM inference for the AI DJ feature (feature/djfiller).
+    // On-device LLM inference for the AI DJ feature (feature/djfiller): MediaPipe runs
+    // `.task` models, LiteRT-LM runs `.litertlm` ones (e.g. Gemma 4).
     implementation("com.google.mediapipe:tasks-genai:0.10.24")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
 
     // On-device neural TTS for the AI DJ feature - offline Piper/VITS voice synthesis
     // via sherpa-onnx (see downloadSherpaOnnxAar below; no Maven Central artifact exists,
@@ -215,8 +217,8 @@ dependencies {
 
     implementation("androidx.security:security-crypto:1.1.0")
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
@@ -224,7 +226,7 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("androidx.room:room-testing:$roomVersion")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
@@ -262,7 +264,7 @@ val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
     inputs.property("sherpaOnnxAarSha256", sherpaOnnxAarSha256)
     outputs.file(sherpaOnnxAarFile)
     doLast {
-        if (!sherpaOnnxAarFile.exists()) {
+        if (!sherpaOnnxAarFile.exists() || sherpaOnnxAarFile.length() == 0L) {
             sherpaOnnxAarFile.parentFile.mkdirs()
             logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
             URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
@@ -274,9 +276,21 @@ val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
             .digest(sherpaOnnxAarFile.readBytes())
             .joinToString("") { "%02x".format(it) }
         if (actualSha256 != sherpaOnnxAarSha256) {
-            throw GradleException(
-                "Downloaded sherpa-onnx AAR SHA-256 mismatch: expected $sherpaOnnxAarSha256 but got $actualSha256"
-            )
+            logger.warn("Corrupt sherpa-onnx AAR detected at ${sherpaOnnxAarFile.absolutePath}; deleting and re-downloading")
+            sherpaOnnxAarFile.delete()
+            sherpaOnnxAarFile.parentFile.mkdirs()
+            logger.lifecycle("Re-downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
+            URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
+                sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            val recheckedSha256 = MessageDigest.getInstance("SHA-256")
+                .digest(sherpaOnnxAarFile.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            if (recheckedSha256 != sherpaOnnxAarSha256) {
+                throw GradleException(
+                    "Downloaded sherpa-onnx AAR SHA-256 mismatch after re-download: expected $sherpaOnnxAarSha256 but got $recheckedSha256"
+                )
+            }
         }
     }
 }

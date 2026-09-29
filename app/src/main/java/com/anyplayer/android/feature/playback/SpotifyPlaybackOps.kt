@@ -499,6 +499,7 @@ internal class SpotifyPlaybackOps(
             }
             return
         }
+        if (spotifySnapshot.isPlaying) context.recovery.onSpotifyPlaybackObserved()
         val duration = state.currentTrack?.durationMs ?: state.duration
         val nearTrackEnd = isNearTrackEnd(spotifySnapshot.progressMs, duration, 1500L)
         if (spotifySnapshot.endOfTrackCount > context.recovery.lastAcknowledgedEndOfTrackCount && !context.recovery.manualSkipInFlight) {
@@ -659,21 +660,35 @@ internal class SpotifyPlaybackOps(
             return recoveryInFlight
         }
         if (context.recovery.spotifyRecoveryAttempts >= 3) {
-            CompatLog.w(TAG, "Spotify recovery exhausted after ${context.recovery.spotifyRecoveryAttempts} attempts")
+            val state = context.mutableStatus.value
+            // Set once: the sync loops keep calling in while Spotify stays unreachable.
+            if (state.state != PlaybackStateType.ERROR) {
+                CompatLog.w(TAG, "Spotify recovery exhausted after ${context.recovery.spotifyRecoveryAttempts} attempts")
+                context.mutableStatus.value = state.copy(
+                    state = PlaybackStateType.ERROR,
+                    errorMessage = "Couldn't get Spotify playback back ($failureMessage). Press play to try again."
+                )
+                persistStateAsync()
+            }
             return false
         }
         context.recovery.spotifyRecoveryInFlight = true
         context.recovery.spotifyRecoveryLastAttemptMs = nowMs
         context.recovery.spotifyRecoveryAttempts++
         val attempt = context.recovery.spotifyRecoveryAttempts
-        CompatLog.i(TAG, "Attempting Spotify recovery (attempt $attempt) startIndex=$startIndex queueSize=${queueTrackIds.size}")
+        // Every caller recovers the track that was already playing, so pick up where it was
+        // rather than restarting it from the top.
+        val positionMs = context.mutableStatus.value.position
+        CompatLog.i(TAG, "Attempting Spotify recovery (attempt $attempt) startIndex=$startIndex positionMs=$positionMs queueSize=${queueTrackIds.size}")
         context.scope.launch {
-            val recovered = spotifyPlaybackController.startQueue(queueTrackIds, startIndex)
+            val recovered = spotifyPlaybackController.startQueue(queueTrackIds, startIndex, positionMs)
             if (recovered) {
                 context.queueIndexCache.spotifyCurrentQueueIndex = startIndex.coerceIn(0, (queueTrackIds.size - 1).coerceAtLeast(0))
                 spotifyPlaybackController.setVolume(context.mutableStatus.value.volume)
-                CompatLog.i(TAG, "Spotify recovery succeeded on attempt $attempt")
-                context.recovery.spotifyRecoveryAttempts = 0
+                // Attempts are deliberately not reset here: Spotify accepting the command
+                // doesn't mean playback came back. Only an observed playing snapshot does
+                // (see PlaybackRecoveryState.onSpotifyPlaybackObserved).
+                CompatLog.i(TAG, "Spotify recovery command accepted on attempt $attempt")
             } else {
                 val state = context.mutableStatus.value
                 CompatLog.w(TAG, "Spotify recovery attempt $attempt failed: ${spotifyErrorOrDefault("unknown error")}")

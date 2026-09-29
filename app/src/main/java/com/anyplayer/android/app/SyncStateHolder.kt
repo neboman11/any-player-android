@@ -89,6 +89,7 @@ internal class SyncStateHolder(
     private var suppressSyncPushUntilMs: Long = 0
     private var lastPushedSignature: String = ""
     private var lastPushAtMs: Long = 0
+    private var hasObservedQueue = false
     /** The startup pullSyncState() REST fetch and the realtime WS sync loop both
      *  independently fetch and apply the server's app_state snapshot - without this,
      *  their network round-trips can resolve within milliseconds of each other, both
@@ -131,55 +132,74 @@ internal class SyncStateHolder(
     }
 
     fun pullSyncState(confirmPlaylistOverwrite: Boolean) {
-        viewModelScope.launch {
-            val preferences = currentSyncPreferences()
-            if (preferences.serverTarget.isBlank()) {
-                syncStatus.value = "Sync server target is not set."
-                return@launch
-            }
+        viewModelScope.launch { pullSyncStateNow(confirmPlaylistOverwrite, preserveLocalPlaybackOnEmptyRemote = false) }
+    }
 
-            val snapshot = syncSnapshotClient.fetchSnapshot(preferences.serverTarget)
-            if (snapshot == null) {
-                syncStatus.value = "Sync server unavailable. Continued with local state."
-                return@launch
-            }
+    suspend fun pullSyncStateOnStartup() {
+        pullSyncStateNow(confirmPlaylistOverwrite = false, preserveLocalPlaybackOnEmptyRemote = true)
+    }
 
-            var applied = 0
-
-            if (preferences.syncSettings) {
-                applySettingsDomain(snapshot)
-                applied += 1
-            }
-
-            if (preferences.syncAppState) {
-                applyAppStateMutex.withLock { applyAppStateDomain(snapshot) }
-                val snapshotVersion = snapshot["version"]?.jsonPrimitive?.longOrNull
-                if (snapshotVersion != null) {
-                    lastSyncVersion.updateAndGet { current -> max(current, snapshotVersion) }
-                }
-                applied += 1
-            }
-
-            if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
-                val imported = applyConfigDomains(
-                    snapshot = snapshot,
-                    includePlaylists = preferences.syncPlaylists,
-                    includeProviderConfiguration = preferences.syncProviderConfiguration,
-                    confirmPlaylistOverwrite = confirmPlaylistOverwrite
-                )
-                if (imported) {
-                    applied += 1
-                }
-            }
-
-            if (applied == 0) {
-                syncStatus.value = "Sync completed with no selected domains."
-            } else {
-                syncStatus.value = "Sync pull complete."
-            }
-
-            onSyncApplied()
+    private suspend fun pullSyncStateNow(
+        confirmPlaylistOverwrite: Boolean,
+        preserveLocalPlaybackOnEmptyRemote: Boolean
+    ) {
+        val preferences = currentSyncPreferences()
+        if (preferences.serverTarget.isBlank()) {
+            syncStatus.value = "Sync server target is not set."
+            return
         }
+
+        val playbackBeforeFetch = if (preserveLocalPlaybackOnEmptyRemote) playbackQueueManager.status.value else null
+        val snapshot = syncSnapshotClient.fetchSnapshot(preferences.serverTarget)
+        if (snapshot == null) {
+            syncStatus.value = "Sync server unavailable. Continued with local state."
+            return
+        }
+
+        var applied = 0
+
+        if (preferences.syncSettings) {
+            applySettingsDomain(snapshot)
+            applied += 1
+        }
+
+        if (preferences.syncAppState) {
+            applyAppStateMutex.withLock {
+                val currentPlayback = playbackQueueManager.status.value
+                if (playbackBeforeFetch == null ||
+                    (currentPlayback.currentTrack == playbackBeforeFetch.currentTrack &&
+                        currentPlayback.queue == playbackBeforeFetch.queue &&
+                        currentPlayback.shuffle == playbackBeforeFetch.shuffle)
+                ) {
+                    applyAppStateDomain(snapshot, preserveLocalPlaybackOnEmptyRemote)
+                }
+            }
+            val snapshotVersion = snapshot["version"]?.jsonPrimitive?.longOrNull
+            if (snapshotVersion != null) {
+                lastSyncVersion.updateAndGet { current -> max(current, snapshotVersion) }
+            }
+            applied += 1
+        }
+
+        if (preferences.syncPlaylists || preferences.syncProviderConfiguration) {
+            val imported = applyConfigDomains(
+                snapshot = snapshot,
+                includePlaylists = preferences.syncPlaylists,
+                includeProviderConfiguration = preferences.syncProviderConfiguration,
+                confirmPlaylistOverwrite = confirmPlaylistOverwrite
+            )
+            if (imported) {
+                applied += 1
+            }
+        }
+
+        if (applied == 0) {
+            syncStatus.value = "Sync completed with no selected domains."
+        } else {
+            syncStatus.value = "Sync pull complete."
+        }
+
+        onSyncApplied()
     }
 
     /** Saves the server target/token, then decides how to reconcile local vs. remote
@@ -352,6 +372,8 @@ internal class SyncStateHolder(
                 coroutineScope {
                     launch {
                         playbackQueueManager.status.collect { status ->
+                            if (status.currentTrack != null || status.queue.isNotEmpty()) hasObservedQueue = true
+                            if (!hasObservedQueue) return@collect
                             if (System.currentTimeMillis() < suppressSyncPushUntilMs) {
                                 return@collect
                             }
@@ -515,16 +537,25 @@ internal class SyncStateHolder(
         }
     }
 
-    private fun applyAppStateDomain(snapshot: JsonObject) {
+    private fun applyAppStateDomain(
+        snapshot: JsonObject,
+        preserveLocalPlaybackOnEmptyRemote: Boolean = false
+    ) {
         val appState = snapshot["app_state"]?.asObjectOrNull() ?: return
         val localState = playbackQueueManager.status.value
+        val remoteCurrentTrack = appState.track("current_track")
+        val remoteQueue = appState.trackList("queue")
+        if (preserveLocalPlaybackOnEmptyRemote && remoteCurrentTrack == null && remoteQueue.isEmpty()) return
+        val playbackQueue = if (remoteCurrentTrack != null && remoteQueue.none {
+                it.id == remoteCurrentTrack.id && it.source == remoteCurrentTrack.source
+            }) listOf(remoteCurrentTrack) + remoteQueue else remoteQueue
 
         appState.int("volume")?.let { volume ->
             playbackQueueManager.setVolume(volume)
         }
 
         appState.boolean("shuffle")?.let { shuffle ->
-            playbackQueueManager.setShuffle(shuffle)
+            if (shuffle != localState.shuffle) playbackQueueManager.setShuffle(shuffle)
         }
 
         appState.string("repeat_mode")?.let { repeatMode ->
@@ -536,13 +567,15 @@ internal class SyncStateHolder(
             playbackQueueManager.setRepeatMode(mode)
         }
 
-        val remoteCurrentTrack = appState.track("current_track")
-        val remoteQueue = appState.trackList("queue")
         if (remoteCurrentTrack != null) {
             val sameCurrentTrack = localState.currentTrack?.id == remoteCurrentTrack.id &&
                 localState.currentTrack.source == remoteCurrentTrack.source
-            if (!sameCurrentTrack) {
-                playbackQueueManager.setQueue(listOf(remoteCurrentTrack) + remoteQueue, startIndex = 0, autoPlay = false)
+            val remoteIndex = playbackQueue.indexOfFirst {
+                it.id == remoteCurrentTrack.id && it.source == remoteCurrentTrack.source
+            }.coerceAtLeast(0)
+            if (playbackQueue != localState.queue || !sameCurrentTrack) {
+                CompatLog.i(TAG, "remote app_state replaces queue: current=${remoteCurrentTrack.title} local=${localState.currentTrack?.title}")
+                playbackQueueManager.setQueue(playbackQueue, startIndex = remoteIndex, autoPlay = false)
             }
         } else if (remoteQueue.isEmpty() && (localState.currentTrack != null || localState.queue.isNotEmpty())) {
             playbackQueueManager.setQueue(emptyList(), startIndex = 0, autoPlay = false)

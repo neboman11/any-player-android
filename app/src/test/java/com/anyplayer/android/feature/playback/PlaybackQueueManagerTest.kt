@@ -1,5 +1,6 @@
 package com.anyplayer.android.feature.playback
 
+import com.anyplayer.android.feature.playback.service.PlaybackServiceLauncher
 import com.anyplayer.android.core.model.AudioNormalizationSettings
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.RepeatMode
@@ -7,20 +8,27 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doSuspendableAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -52,6 +60,7 @@ class PlaybackQueueManagerTest {
     private val audioCache: AudioCacheManager = mock()
     private val djInterstitialPlayer: DjInterstitialPlayer = mock()
     private val json = Json { ignoreUnknownKeys = true }
+    private val serviceLauncher: PlaybackServiceLauncher = mock()
 
     private lateinit var manager: PlaybackQueueManager
 
@@ -60,7 +69,7 @@ class PlaybackQueueManagerTest {
         Dispatchers.setMain(testDispatcher)
         whenever(spotify.getAudioNormalizationSettings()).thenReturn(AudioNormalizationSettings())
         whenever(spotify.normalizeVolumeForSource(any(), any())).thenAnswer { it.arguments[0] }
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
         wheneverBlocking { spotify.play() } doReturn true
         wheneverBlocking { spotify.pause() } doReturn true
         wheneverBlocking { spotify.seekTo(any()) } doReturn true
@@ -84,7 +93,7 @@ class PlaybackQueueManagerTest {
             )
         )
 
-        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json, mock(), djInterstitialPlayer)
+        manager = PlaybackQueueManager(media3, spotify, stateStore, audioCache, json, mock(), djInterstitialPlayer, serviceLauncher)
         // Leave providerRestoreGate uncompleted: init's restore/poll loop parks on
         // providerRestoreGate.await() and never runs syncFromPlaybackEngine() during these
         // tests, so it can't race with the assertions below.
@@ -112,7 +121,43 @@ class PlaybackQueueManagerTest {
         durationMs = 200_000L
     )
 
+    @Test
+    fun concurrentRestoreWaitsForFirstRestoreToFinish() = runTest {
+        val readResult = CompletableDeferred<String?>()
+        wheneverBlocking { stateStore.read() } doSuspendableAnswer { readResult.await() }
+
+        val first = async { manager.restorePersistedStateNowIfNeeded() }
+        runCurrent()
+        val second = async { manager.restorePersistedStateNowIfNeeded() }
+        runCurrent()
+
+        try {
+            assertFalse(second.isCompleted)
+        } finally {
+            readResult.complete(null)
+            first.await()
+            second.await()
+        }
+    }
+
     // ---- local (Media3-only) mode ----
+
+    @Test
+    fun localMode_addNextDuringPendingBreak_rebuildsAtTrackAfterBreak() {
+        // Status keeps "a" while the break plays (sync skips it), but by the time the break
+        // ends the player has already moved past it to "x".
+        whenever(media3.currentMediaId).thenReturn("x")
+        whenever(media3.hasSplicedFiller()).thenReturn(true)
+        val tracks = listOf(localTrack("a"), localTrack("b"), localTrack("c"))
+        manager.setQueue(tracks, startIndex = 0, autoPlay = true)
+        manager.addNextInQueue(localTrack("x"))
+        val onBreakEnded = argumentCaptor<() -> Unit>()
+        verify(djInterstitialPlayer).onLocalInterstitialEnded = onBreakEnded.capture()
+
+        onBreakEnded.firstValue()
+
+        verify(media3).setQueue(eq(listOf(localTrack("a"), localTrack("x"), localTrack("b"), localTrack("c"))), eq(1), any())
+    }
 
     @Test
     fun localMode_setQueue_startsPlayingThroughMedia3() {
@@ -123,6 +168,17 @@ class PlaybackQueueManagerTest {
         verify(media3).setQueue(eq(tracks), eq(0), eq(true))
         assertEquals(PlaybackStateType.PLAYING, manager.status.value.state)
         assertEquals("a", manager.status.value.currentTrack?.id)
+    }
+
+    @Test
+    fun enteringPlaying_restartsTheMediaService_eachTimePlaybackResumes() {
+        // Android stops the idle media service while paused; playback resuming from the
+        // still-open app must bring it (session, notification, controls) back.
+        manager.setQueue(listOf(localTrack("a"), localTrack("b")))
+        manager.pause()
+        manager.play()
+
+        verify(serviceLauncher, org.mockito.kotlin.times(2)).ensureRunning()
     }
 
     @Test
@@ -237,6 +293,29 @@ class PlaybackQueueManagerTest {
 
         verify(media3).setShuffle(true)
         assertTrue(manager.status.value.shuffle)
+    }
+
+    @Test
+    fun mixedMode_reapplyingEnabledShuffleKeepsUpcomingOrder() {
+        manager.setQueue(listOf(localTrack("a"), spotifyTrack("b"), localTrack("c"), spotifyTrack("d")))
+        manager.setShuffle(true)
+        val orderedQueue = manager.status.value.orderedQueue
+
+        manager.setShuffle(true)
+
+        assertSame(orderedQueue, manager.status.value.orderedQueue)
+    }
+
+    @Test
+    fun mixedMode_reselectingWithinSameQueueKeepsUpcomingOrder() {
+        val tracks = listOf(localTrack("a"), spotifyTrack("b"), localTrack("c"), spotifyTrack("d"))
+        manager.setQueue(tracks)
+        manager.setShuffle(true)
+        val orderedQueue = manager.status.value.orderedQueue
+
+        manager.setQueue(tracks, startIndex = 1, autoPlay = false)
+
+        assertSame(orderedQueue, manager.status.value.orderedQueue)
     }
 
     @Test

@@ -2,6 +2,8 @@ package com.anyplayer.android.feature.djfiller
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.anyplayer.android.feature.djfiller.metadata.DjPassages
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -16,18 +18,31 @@ class DjFillerAudioCache @Inject constructor(
 
     private val readyFile = File(directory, "ready.wav")
     private val readyTrackIdFile = File(directory, "ready-track-id")
+    private val readyPassagesFile = File(directory, "ready-passages.json")
 
     fun newOutputFile(): File = File(directory, "${UUID.randomUUID()}.wav")
 
-    fun save(trackId: String, audioFile: File): File {
-        readyFile.delete()
-        if (!audioFile.renameTo(readyFile)) {
-            audioFile.copyTo(readyFile, overwrite = true)
-            audioFile.delete()
+    fun save(trackId: String, audioFile: File, passages: DjPassages? = null): File {
+        readyPassagesFile.delete()
+        if (audioFile != readyFile) {
+            readyFile.delete()
+            if (!audioFile.renameTo(readyFile)) {
+                audioFile.copyTo(readyFile, overwrite = true)
+                audioFile.delete()
+            }
         }
         readyTrackIdFile.writeText(trackId)
+        passages?.let { readyPassagesFile.writeText(Json.encodeToString(DjPassages.serializer(), it)) }
         return readyFile
     }
+
+    /** The track the saved break introduces, so a cold start can keep its schedule. */
+    fun readyTrackId(): String? =
+        readyTrackIdFile.takeIf { readyFile.isFile && it.isFile }?.readText()
+
+    fun loadPassages(trackId: String): DjPassages? = if (load(trackId) != null) {
+        runCatching { Json.decodeFromString(DjPassages.serializer(), readyPassagesFile.readText()) }.getOrNull()
+    } else null
 
     fun load(trackId: String): File? {
         if (!readyFile.isFile) {
@@ -39,14 +54,19 @@ class DjFillerAudioCache @Inject constructor(
 
     fun delete(audioFile: File) {
         audioFile.delete()
-        if (audioFile == readyFile) readyTrackIdFile.delete()
+        if (audioFile == readyFile) {
+            readyTrackIdFile.delete()
+            readyPassagesFile.delete()
+        }
     }
 
     fun clear() {
         readyFile.delete()
         readyTrackIdFile.delete()
+        readyPassagesFile.delete()
+        File(directory, "ready-fact.json").delete() // upgrade cleanup: leftover from the previous version
         directory.listFiles()?.forEach { file ->
-            if (file != readyFile && file != readyTrackIdFile) file.delete()
+            if (file != readyFile && file != readyTrackIdFile && file != readyPassagesFile) file.delete()
         }
     }
 }

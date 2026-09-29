@@ -4,6 +4,7 @@ import android.net.Uri
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.model.AI_DJ_PRESENTATION_TRACK
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
+import com.anyplayer.android.feature.djfiller.metadata.DjPassages
 import com.anyplayer.android.feature.playback.InterstitialTransitionListener
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,8 @@ class DjInterstitialPlayer @Inject constructor(
     // every cleanup path below (including the error/watchdog ones in
     // Media3PlaybackController) already reports.
     private val pendingCleanupFiles = mutableMapOf<String, File>()
+    private val pendingPassages = mutableMapOf<String, DjPassages>()
+    var onFillerStarted: ((DjPassages) -> Unit)? = null
 
     init {
         media3PlaybackController.interstitialListener = this
@@ -51,11 +54,13 @@ class DjInterstitialPlayer @Inject constructor(
 
     override fun onInterstitialStarted(mediaId: String) {
         mutableNowPlayingOverride.value = AI_DJ_PRESENTATION_TRACK
+        pendingPassages.remove(mediaId)?.let { onFillerStarted?.invoke(it) }
     }
 
     override fun onInterstitialEnded(mediaId: String) {
         mutableNowPlayingOverride.value = null
         pendingCleanupFiles.remove(mediaId)?.delete()
+        pendingPassages.remove(mediaId)
         onLocalInterstitialEnded?.let {
             onLocalInterstitialEnded = null
             it()
@@ -65,12 +70,16 @@ class DjInterstitialPlayer @Inject constructor(
     /** Local/provider-streamed mode: splice [filler] into the live ExoPlayer timeline right
      *  after the currently playing item; ExoPlayer's own auto-advance then carries playback
      *  into it with zero gap, same as a normal queue transition. */
-    fun insertLocal(filler: PreparedFiller) {
+    fun insertLocal(filler: PreparedFiller): Boolean {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
+        filler.passages?.let { pendingPassages[mediaId] = it }
         if (media3PlaybackController.insertInterstitial(Uri.fromFile(filler.audioFile), mediaId)) {
             pendingCleanupFiles[mediaId] = filler.audioFile
+            return true
         } else {
+            pendingPassages.remove(mediaId)
             filler.audioFile.delete()
+            return false
         }
     }
 
@@ -84,10 +93,12 @@ class DjInterstitialPlayer @Inject constructor(
     fun playStandalone(filler: PreparedFiller, onEnded: () -> Unit) {
         val mediaId = "${Media3PlaybackController.DJ_FILLER_MEDIA_ID_PREFIX}${UUID.randomUUID()}"
         pendingCleanupFiles[mediaId] = filler.audioFile
+        filler.passages?.let { pendingPassages[mediaId] = it }
         try {
             media3PlaybackController.playInterstitialStandalone(Uri.fromFile(filler.audioFile), mediaId, onEnded)
         } catch (failure: Throwable) {
             pendingCleanupFiles.remove(mediaId)?.delete()
+            pendingPassages.remove(mediaId)
             throw failure
         }
     }

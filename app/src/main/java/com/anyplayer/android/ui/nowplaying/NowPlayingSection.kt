@@ -63,6 +63,7 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
 
     val currentIdx = displayQueue.indexOfFirst { it.id == currentTrackId }
     val djFillerPendingBreakSongsAway by viewModel.djFillerPendingBreakSongsAway.collectAsState()
+    val djFillerPreparationStatus by viewModel.djFillerPreparationStatus.collectAsState()
     val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
     val upcomingTracks = run {
         val base = if (currentIdx >= 0) displayQueue.drop(currentIdx + 1) else displayQueue
@@ -272,6 +273,7 @@ internal fun NowPlayingSection(viewModel: MainViewModel, state: MainUiState) {
             items(upcomingTracks, key = { it.id }) { track ->
                 QueueTrackRow(
                     track = track,
+                    djStatus = if (track.isDjFiller) djFillerPreparationStatus else null,
                     onPlay = {
                         val originalIdx = originalQueue.indexOfFirst { it.id == track.id }
                         if (originalIdx >= 0) viewModel.playFromQueue(originalIdx)

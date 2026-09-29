@@ -31,9 +31,9 @@ class SettingsSectionStateTest {
         )
 
         assertEquals(listOf("Baritone"), uiState.options.map { it.displayName })
-        assertEquals("Baritone", uiState.selectedVoiceName)
-        assertEquals("Unavailable until catalog refresh", uiState.activeVoiceLabel)
-        assertFalse(uiState.activeVoiceLabel.contains(restoredMarker.id))
+        assertEquals("Baritone", uiState.selectedName)
+        assertEquals("Unavailable until catalog refresh", uiState.activeLabel)
+        assertFalse(uiState.activeLabel.contains(restoredMarker.id))
         assertFalse(uiState.toString().contains("https://"))
         assertFalse(uiState.toString().contains("model.onnx"))
         assertFalse(uiState.toString().contains("speaker=7"))
@@ -50,7 +50,7 @@ class SettingsSectionStateTest {
             )
         )
 
-        assertEquals("Baritone", uiState.activeVoiceLabel)
+        assertEquals("Baritone", uiState.activeLabel)
     }
 
     @Test

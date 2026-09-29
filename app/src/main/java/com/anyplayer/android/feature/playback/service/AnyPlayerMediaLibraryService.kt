@@ -2,7 +2,9 @@ package com.anyplayer.android.feature.playback.service
 
 import android.app.Notification
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.os.Build
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -20,7 +22,6 @@ import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.auth.isSourceConnected
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
-import com.anyplayer.android.feature.playback.SpotifyConnectBridge
 import com.anyplayer.android.feature.playback.trackIdsMatch
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -51,8 +52,6 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     @Inject
     lateinit var authRepository: ProviderAuthRepository
     @Inject
-    lateinit var spotifyConnectBridge: SpotifyConnectBridge
-    @Inject
     lateinit var djInterstitialPlayer: DjInterstitialPlayer
 
     private var mediaLibrarySession: MediaLibrarySession? = null
@@ -60,13 +59,15 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     private var restoreJob: Deferred<Unit>? = null
     private lateinit var notificationBuilder: PlaybackNotificationBuilder
     private lateinit var projectionControllerGuard: ProjectionControllerGuard
+    private lateinit var audioBecomingNoisyReceiver: AudioBecomingNoisyReceiver
 
     override fun onCreate() {
         super.onCreate()
         notificationBuilder = PlaybackNotificationBuilder(this)
         projectionControllerGuard = ProjectionControllerGuard(this, serviceScope, playbackQueueManager)
+        audioBecomingNoisyReceiver = AudioBecomingNoisyReceiver(playbackQueueManager)
+        registerReceiver(audioBecomingNoisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
         playerBridge.open()
-        spotifyConnectBridge.attach()
         startProviderRestore()
 
         mediaLibrarySession = MediaLibrarySession.Builder(
@@ -342,9 +343,9 @@ class AnyPlayerMediaLibraryService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        unregisterReceiver(audioBecomingNoisyReceiver)
         serviceScope.cancel()
         playerBridge.close()
-        spotifyConnectBridge.release()
         projectionControllerGuard.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         mediaLibrarySession?.run {

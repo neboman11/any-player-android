@@ -4,6 +4,7 @@ import android.content.Context
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
+import com.k2fsa.sherpa.onnx.GeneratedAudio
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
@@ -25,6 +26,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.io.File
@@ -40,8 +43,9 @@ private interface DjVoiceSynthesizerDeps {
     fun syncPreferencesStore(): SyncPreferencesStore
 }
 
-/** Wraps sherpa-onnx's offline neural TTS (a Piper/VITS voice) to render the DJ script to a
- *  local WAV file ahead of playback, fully on-device - replacing the platform
+/** Wraps sherpa-onnx's offline neural TTS (a Kokoro or Piper/VITS voice) to render the DJ
+ *  script to a local WAV file ahead of playback, finished by [DjVoiceProcessor], fully
+ *  on-device - replacing the platform
  *  android.speech.tts.TextToSpeech engine, whose voice quality and availability varied wildly
  *  by device and OEM skin. Owns a manually-constructed [VoiceModelDownloader] to fetch the
  *  voice bundle from the user's own sync server. The shared `espeak-ng-data` phoneme tables
@@ -54,11 +58,22 @@ class DjVoiceSynthesizer @Inject constructor(
     private companion object {
         const val TAG = "DjVoiceSynthesizer"
         const val ESPEAK_DATA_ASSET = "dj_tts/espeak-ng-data.zip"
-        // Piper/VITS output sits well below music loudness, so it needs a boost to stand
-        // out over the track; user-adjustable via the AI DJ settings slider.
-        const val MIN_VOICE_GAIN = 1.0f
-        const val MAX_VOICE_GAIN = 3.0f
+        // Level trim on top of DjVoiceProcessor's loudness normalization: -6 dB to +6 dB.
+        const val MIN_VOICE_GAIN = 0.5f
+        const val MAX_VOICE_GAIN = 2.0f
+        const val VOICE_CONFIG_FILE = "voice.json"
     }
+
+    /** Optional operator-authored `voice.json` inside a voice bundle, so one multi-speaker
+     *  model (e.g. Kokoro v1.0) can back several catalog voices. [lexicons] are file names
+     *  inside the bundle; Kokoro uses them ahead of espeak for more accurate pronunciation. */
+    @Serializable
+    private data class VoiceConfig(
+        @SerialName("speaker_id") val speakerId: Int = 0,
+        val speed: Float = 1.0f,
+        val lang: String = "",
+        val lexicons: List<String> = emptyList()
+    )
 
     // Pulled via an EntryPoint rather than added as constructor params, and used to
     // manually construct a plain (non-`@Inject`) VoiceModelDownloader below: this class
@@ -108,6 +123,7 @@ class DjVoiceSynthesizer @Inject constructor(
     private val loadMutex = Mutex()
     private var tts: OfflineTts? = null
     private var loadedVoiceDir: File? = null
+    private var voiceConfig = VoiceConfig()
 
     private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var downloadJob: Job? = null
@@ -146,6 +162,13 @@ class DjVoiceSynthesizer @Inject constructor(
             // Kokoro bundles ship a voices.bin speaker-embedding table alongside the model;
             // Piper/VITS bundles don't, so its presence is what distinguishes the two.
             val voicesFile = File(voiceDir, "voices.bin").takeIf { it.isRegularFileNoFollow() }
+            val config = File(voiceDir, VOICE_CONFIG_FILE).takeIf { it.isRegularFileNoFollow() }
+                ?.let { file -> runCatching { deps.json().decodeFromString<VoiceConfig>(file.readText()) }.getOrNull() }
+                ?: VoiceConfig()
+            val lexicons = config.lexicons
+                .map { File(voiceDir, it) }
+                .filter { it.parentFile == voiceDir && it.isRegularFileNoFollow() }
+                .joinToString(",") { it.absolutePath }
 
             runCatching {
                 val modelConfig = if (voicesFile != null) {
@@ -154,9 +177,11 @@ class DjVoiceSynthesizer @Inject constructor(
                             model = modelFile.absolutePath,
                             voices = voicesFile.absolutePath,
                             tokens = tokensFile.absolutePath,
-                            dataDir = espeakDataDir.absolutePath
+                            dataDir = espeakDataDir.absolutePath,
+                            lexicon = lexicons,
+                            lang = config.lang
                         ),
-                        numThreads = 2,
+                        numThreads = 4,
                         provider = "cpu"
                     )
                 } else {
@@ -166,7 +191,7 @@ class DjVoiceSynthesizer @Inject constructor(
                             tokens = tokensFile.absolutePath,
                             dataDir = espeakDataDir.absolutePath
                         ),
-                        numThreads = 2,
+                        numThreads = 4,
                         provider = "cpu"
                     )
                 }
@@ -176,6 +201,7 @@ class DjVoiceSynthesizer @Inject constructor(
             }.getOrNull()?.also {
                 tts = it
                 loadedVoiceDir = voiceDir
+                voiceConfig = config
             }
         }
     }
@@ -216,13 +242,10 @@ class DjVoiceSynthesizer @Inject constructor(
         }
         return runCatching {
             withContext(Dispatchers.Default) {
-                val generated = engine.generate(text = text, sid = 0, speed = 1.0f)
-                val samples = generated.samples
-                val gain = mutableVoiceGain.value
-                for (i in samples.indices) {
-                    samples[i] = (samples[i] * gain).coerceIn(-1f, 1f)
-                }
-                generated.save(outputFile.absolutePath)
+                val config = loadMutex.withLock { voiceConfig }
+                val generated = engine.generate(text = text, sid = config.speakerId, speed = config.speed)
+                val processed = DjVoiceProcessor.process(generated.samples, generated.sampleRate, mutableVoiceGain.value)
+                processed.isNotEmpty() && GeneratedAudio(processed, generated.sampleRate).save(outputFile.absolutePath)
             }
         }.onFailure {
             CompatLog.e(TAG, "AI DJ speech synthesis failed", it)

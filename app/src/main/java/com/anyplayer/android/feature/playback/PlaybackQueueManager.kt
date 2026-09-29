@@ -1,5 +1,9 @@
 package com.anyplayer.android.feature.playback
 
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import com.anyplayer.android.feature.playback.service.PlaybackServiceLauncher
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.PlaybackStatus
@@ -11,6 +15,7 @@ import com.anyplayer.android.feature.djfiller.DjFillerScheduler
 import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import com.anyplayer.android.feature.djfiller.DjVoiceState
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
+import com.anyplayer.android.feature.djfiller.model.DjFillerPreparationStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -18,6 +23,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -32,7 +39,8 @@ class PlaybackQueueManager @Inject constructor(
     private val audioCacheManager: AudioCacheManager,
     private val json: Json,
     private val djFillerScheduler: DjFillerScheduler,
-    private val djInterstitialPlayer: DjInterstitialPlayer
+    private val djInterstitialPlayer: DjInterstitialPlayer,
+    private val playbackServiceLauncher: PlaybackServiceLauncher
 ) {
     companion object {
         private const val TAG = "PlaybackQueueManager"
@@ -41,6 +49,7 @@ class PlaybackQueueManager @Inject constructor(
     private val maxPersistedQueueTracks = 5000
     private val context = PlaybackEngineContext(spotifyPlaybackController)
     private var isRestoring = false
+    private val restoreMutex = Mutex()
     private var persistTickCounter = 0
 
     // persistStateAsync() launches on Dispatchers.IO, so back-to-back calls can run
@@ -86,6 +95,15 @@ class PlaybackQueueManager @Inject constructor(
         // a completed filler straight into the live ExoPlayer timeline (see
         // DjFillerScheduler.configureLocalModeProvider).
         djFillerScheduler.configureLocalModeProvider { !context.spotifyMode && !context.mixedMode }
+        // Every transition into PLAYING (re)starts the media service, which Android stops
+        // after it sits paused out of foreground - see PlaybackServiceLauncher.
+        context.scope.launch {
+            context.mutableStatus
+                .map { it.state }
+                .distinctUntilChanged()
+                .filter { it == PlaybackStateType.PLAYING }
+                .collect { playbackServiceLauncher.ensureRunning() }
+        }
     }
 
     /**
@@ -105,6 +123,7 @@ class PlaybackQueueManager @Inject constructor(
     val aiDjEnabled: StateFlow<Boolean> = mutableAiDjEnabled.asStateFlow()
     val showDjEntriesInQueue: StateFlow<Boolean> = mutableShowDjEntriesInQueue.asStateFlow()
     val djFillerPendingBreakSongsAway: StateFlow<Int?> = djFillerScheduler.pendingBreakSongsAway
+    val djFillerPreparationStatus: StateFlow<DjFillerPreparationStatus> = djFillerScheduler.preparationStatus
     val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = djFillerScheduler.voiceModelDownloadState
     val djVoiceCatalogState: StateFlow<DjVoiceState> = djFillerScheduler.voiceCatalogState
     val djVoiceGain: StateFlow<Float> = djFillerScheduler.voiceGain
@@ -119,10 +138,6 @@ class PlaybackQueueManager @Inject constructor(
     fun downloadDjVoiceModel() = djFillerScheduler.downloadVoiceModel()
 
     suspend fun restorePersistedStateNowIfNeeded() {
-        if (context.mutableStatus.value.queue.isNotEmpty() || isRestoring) {
-            ensureWarmSessionState()
-            return
-        }
         restorePersistedState()
         ensureWarmSessionState()
     }
@@ -369,7 +384,9 @@ class PlaybackQueueManager @Inject constructor(
             // dropping it, using whatever the queue looks like at that point.
             djInterstitialPlayer.onLocalInterstitialEnded = {
                 val latest = context.mutableStatus.value
-                val latestQueueIndex = latest.currentTrack?.id
+                // By now the player has moved past the break; status still names the
+                // pre-break track (sync skips it during a break), which would restart it.
+                val latestQueueIndex = (media3PlaybackController.currentMediaId ?: latest.currentTrack?.id)
                     ?.let { context.queueIndexCache.findQueueIndex(it) }
                     ?.takeIf { it >= 0 } ?: 0
                 val latestMediaIndex = context.playableQueueIndices.indexOf(latestQueueIndex).takeIf { it >= 0 } ?: 0
@@ -404,6 +421,8 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun togglePlayPause() {
+        // A user pressing play re-arms Spotify recovery, like next()/previous() do.
+        context.recovery.resetSpotifyRecoveryState()
         val initial = context.mutableStatus.value
         CompatLog.i(
             TAG,
@@ -421,6 +440,8 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun play() {
+        // A user pressing play re-arms Spotify recovery, like next()/previous() do.
+        context.recovery.resetSpotifyRecoveryState()
         val initial = context.mutableStatus.value
         CompatLog.i(
             TAG,
@@ -481,6 +502,7 @@ class PlaybackQueueManager @Inject constructor(
     }
 
     fun setShuffle(enabled: Boolean) {
+        if (context.mutableStatus.value.shuffle == enabled) return
         if (context.mixedMode) {
             mixedOps.setShuffle(enabled)
             return
@@ -568,103 +590,102 @@ class PlaybackQueueManager @Inject constructor(
         localOps.sync()
     }
 
-    private suspend fun restorePersistedState() {
-        // Guards against restorePersistedStateNowIfNeeded() and this function's own
-        // init{} caller both entering before either has suspended once (both check
-        // queue.isEmpty()/isRestoring before the first suspend point), which used to
-        // let both proceed and call setQueue() twice with identical, stale params.
-        if (isRestoring) return
+    private suspend fun restorePersistedState() = restoreMutex.withLock {
+        // The service, view model and polling loop can request restore concurrently.
+        if (context.mutableStatus.value.queue.isNotEmpty()) return@withLock
         isRestoring = true
+        try {
 
-        val raw = playbackStateStore.read()
-        if (raw == null) {
-            isRestoring = false
-            return
-        }
-        val persisted = runCatching {
-            json.decodeFromString<PersistedPlaybackState>(raw)
-        }.getOrNull()
-        if (persisted == null) {
-            isRestoring = false
-            return
-        }
-
-        if (persisted.queue.isEmpty()) {
-            isRestoring = false
-            return
-        }
-
-        setAudioNormalization(
-            persisted.audioNormalizationEnabled,
-            persisted.audioNormalizationStrictMode
-        )
-        setAiDjEnabled(persisted.aiDjEnabled)
-        setShowDjEntriesInQueue(persisted.showDjEntriesInQueue)
-
-        // Set shuffle flag BEFORE setQueue so buildOrderedQueue uses the
-        // persisted value instead of the default (false). This prevents
-        // generating a new random shuffle order on every restore.
-        context.mutableStatus.value = context.mutableStatus.value.copy(shuffle = persisted.shuffle)
-
-        val startIndex = persisted.currentQueueIndex?.coerceIn(0, persisted.queue.lastIndex) ?: 0
-        val shouldAutoPlay = false
-
-        setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
-
-        // setQueue restores app state but not the playback engine's shuffle flag.
-        // Apply it directly so the first sync cannot overwrite persisted state.
-        when {
-            context.spotifyMode -> spotifyPlaybackController.setShuffle(persisted.shuffle)
-            !context.mixedMode -> media3PlaybackController.setShuffle(persisted.shuffle)
-        }
-
-        // Restore the persisted orderedQueue if available and valid, so the
-        // shuffled order is preserved across restarts instead of re-randomizing.
-        // Only trust it when its track-id set matches the persisted queue - a stale
-        // or corrupted persisted orderedQueue from an older app version must not be
-        // adopted anywhere, including the Spotify Connect restore path below.
-        val persistedOrdered = persisted.orderedQueue
-        val persistedOrderedIsValid = persisted.shuffle && !persistedOrdered.isNullOrEmpty() &&
-            persistedOrdered.map { it.id }.toSet() == persisted.queue.map { it.id }.toSet()
-        if (persistedOrderedIsValid) {
-            context.mutableStatus.value = context.mutableStatus.value.copy(orderedQueue = persistedOrdered!!)
-        }
-
-        setVolume(persisted.volume)
-        setRepeatMode(persisted.repeatMode)
-        if (persisted.positionMs > 0 && !context.spotifyMode) {
-            seekTo(persisted.positionMs)
-        }
-
-        if (context.spotifyMode && persisted.queue.isNotEmpty()) {
-            val restoreTrackIds: List<String>
-            val restoreStartIndex: Int
-            if (persistedOrderedIsValid) {
-                restoreTrackIds = persistedOrdered!!.map { it.id }
-                val expectedTrackId = persisted.queue.getOrNull(startIndex)?.id
-                restoreStartIndex = if (expectedTrackId != null) {
-                    restoreTrackIds.indexOfFirst { normalizeSpotifyTrackId(it) == normalizeSpotifyTrackId(expectedTrackId) }
-                        .takeIf { it >= 0 } ?: 0
-                } else 0
-            } else {
-                restoreTrackIds = context.queueIndexCache.cachedQueueTrackIds
-                restoreStartIndex = startIndex
+            val raw = playbackStateStore.read()
+            if (context.mutableStatus.value.queue.isNotEmpty()) return@withLock
+            if (raw == null) {
+                return@withLock
+            }
+            val persisted = runCatching {
+                json.decodeFromString<PersistedPlaybackState>(raw)
+            }.getOrNull()
+            if (persisted == null) {
+                return@withLock
             }
 
-            spotifyOps.restoreQueueAndPause(restoreTrackIds, restoreStartIndex, persisted.positionMs)
-        }
+            if (persisted.queue.isEmpty()) {
+                return@withLock
+            }
 
-        // Spotify's own pause is only meaningful once something was actually
-        // started (handled above, right after startQueue succeeds). On cold
-        // launch nothing has been started yet, so calling the generic pause()
-        // here for a Spotify current track would just fail against nothing
-        // that was ever playing.
-        if (!shouldAutoPlay && context.mutableStatus.value.currentTrack?.source != SourceType.SPOTIFY) {
-            pause()
-        }
+            setAudioNormalization(
+                persisted.audioNormalizationEnabled,
+                persisted.audioNormalizationStrictMode
+            )
+            setAiDjEnabled(persisted.aiDjEnabled)
+            setShowDjEntriesInQueue(persisted.showDjEntriesInQueue)
 
-        isRestoring = false
-        persistStateAsync()
+            // Set shuffle flag BEFORE setQueue so buildOrderedQueue uses the
+            // persisted value instead of the default (false). This prevents
+            // generating a new random shuffle order on every restore.
+            context.mutableStatus.value = context.mutableStatus.value.copy(shuffle = persisted.shuffle)
+
+            val startIndex = persisted.currentQueueIndex?.coerceIn(0, persisted.queue.lastIndex) ?: 0
+            val shouldAutoPlay = false
+
+            setQueue(persisted.queue, startIndex = startIndex, autoPlay = shouldAutoPlay)
+
+            // setQueue restores app state but not the playback engine's shuffle flag.
+            // Apply it directly so the first sync cannot overwrite persisted state.
+            when {
+                context.spotifyMode -> spotifyPlaybackController.setShuffle(persisted.shuffle)
+                !context.mixedMode -> media3PlaybackController.setShuffle(persisted.shuffle)
+            }
+
+            // Restore the persisted orderedQueue if available and valid, so the
+            // shuffled order is preserved across restarts instead of re-randomizing.
+            // Only trust it when its track-id set matches the persisted queue - a stale
+            // or corrupted persisted orderedQueue from an older app version must not be
+            // adopted anywhere, including the Spotify Connect restore path below.
+            val persistedOrdered = persisted.orderedQueue
+            val persistedOrderedIsValid = persisted.shuffle && !persistedOrdered.isNullOrEmpty() &&
+                persistedOrdered.map { it.id }.toSet() == persisted.queue.map { it.id }.toSet()
+            if (persistedOrderedIsValid) {
+                context.mutableStatus.value = context.mutableStatus.value.copy(orderedQueue = persistedOrdered!!)
+            }
+
+            setVolume(persisted.volume)
+            setRepeatMode(persisted.repeatMode)
+            if (persisted.positionMs > 0 && !context.spotifyMode) {
+                seekTo(persisted.positionMs)
+            }
+
+            if (context.spotifyMode && persisted.queue.isNotEmpty()) {
+                val restoreTrackIds: List<String>
+                val restoreStartIndex: Int
+                if (persistedOrderedIsValid) {
+                    restoreTrackIds = persistedOrdered!!.map { it.id }
+                    val expectedTrackId = persisted.queue.getOrNull(startIndex)?.id
+                    restoreStartIndex = if (expectedTrackId != null) {
+                        restoreTrackIds.indexOfFirst { normalizeSpotifyTrackId(it) == normalizeSpotifyTrackId(expectedTrackId) }
+                            .takeIf { it >= 0 } ?: 0
+                    } else 0
+                } else {
+                    restoreTrackIds = context.queueIndexCache.cachedQueueTrackIds
+                    restoreStartIndex = startIndex
+                }
+
+                spotifyOps.restoreQueueAndPause(restoreTrackIds, restoreStartIndex, persisted.positionMs)
+            }
+
+            // Spotify's own pause is only meaningful once something was actually
+            // started (handled above, right after startQueue succeeds). On cold
+            // launch nothing has been started yet, so calling the generic pause()
+            // here for a Spotify current track would just fail against nothing
+            // that was ever playing.
+            if (!shouldAutoPlay && context.mutableStatus.value.currentTrack?.source != SourceType.SPOTIFY) {
+                pause()
+            }
+
+            isRestoring = false
+            persistStateAsync()
+        } finally {
+            isRestoring = false
+        }
     }
 
     private fun persistStateAsync() {

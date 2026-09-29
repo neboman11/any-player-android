@@ -9,26 +9,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,51 +31,72 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.feature.djfiller.DjVoiceState
+import com.anyplayer.android.feature.djfiller.DjScriptModelState
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.state.transfer.ExportMode
 import com.anyplayer.android.feature.state.transfer.MergePolicy
 
 private enum class DataWorkflow { NONE, EXPORT, IMPORT_STATE, IMPORT_CONFIG }
-private enum class SettingsTab { GENERAL, SPOTIFY, JELLYFIN, PLEX }
+private enum class SettingsTab { GENERAL, PROVIDERS, AI_DJ }
 
-internal data class DjVoiceOption(val id: String, val displayName: String)
+internal data class DjCatalogOption(val id: String, val displayName: String)
 
-internal data class DjVoiceSettingsUiState(
-    val options: List<DjVoiceOption>,
-    val selectedVoiceName: String?,
-    val activeVoiceLabel: String,
+/** Picker state shared by the AI DJ script-model and voice catalogs. */
+internal data class DjCatalogSettingsUiState(
+    val options: List<DjCatalogOption>,
+    val selectedName: String?,
+    val activeLabel: String,
     val canDownload: Boolean
 )
 
 internal fun djVoiceSettingsUiState(
     voiceState: DjVoiceState,
     downloadState: DjModelDownloadState = DjModelDownloadState.NotDownloaded
-): DjVoiceSettingsUiState {
-    val voices = voiceState.catalog?.voices.orEmpty()
-    val selectedVoice = voices.firstOrNull { it.id == voiceState.selectedId }
-    val activeVoiceName = voiceState.activeVoice?.id?.let { activeId ->
-        voices.firstOrNull { it.id == activeId }?.name
-    }
-    return DjVoiceSettingsUiState(
-        options = voices.map { DjVoiceOption(it.id, it.name) },
-        selectedVoiceName = selectedVoice?.name,
-        activeVoiceLabel = when {
-            activeVoiceName != null -> activeVoiceName
-            voiceState.activeVoice != null -> "Unavailable until catalog refresh"
+): DjCatalogSettingsUiState = djCatalogSettingsUiState(
+    options = voiceState.catalog?.voices.orEmpty().map { DjCatalogOption(it.id, it.name) },
+    selectedId = voiceState.selectedId,
+    activeId = voiceState.activeVoice?.id,
+    downloadState = downloadState
+)
+
+internal fun djModelSettingsUiState(
+    modelState: DjScriptModelState,
+    downloadState: DjModelDownloadState
+): DjCatalogSettingsUiState = djCatalogSettingsUiState(
+    options = modelState.catalog?.models.orEmpty().map { DjCatalogOption(it.id, it.name) },
+    selectedId = modelState.selectedId,
+    // A model downloaded before the catalog existed has no ID but is still active.
+    activeId = modelState.activeId ?: (downloadState as? DjModelDownloadState.Ready)?.file?.name,
+    downloadState = downloadState
+)
+
+private fun djCatalogSettingsUiState(
+    options: List<DjCatalogOption>,
+    selectedId: String?,
+    activeId: String?,
+    downloadState: DjModelDownloadState
+): DjCatalogSettingsUiState {
+    val selected = options.firstOrNull { it.id == selectedId }
+    val activeName = activeId?.let { id -> options.firstOrNull { it.id == id }?.displayName }
+    return DjCatalogSettingsUiState(
+        options = options,
+        selectedName = selected?.displayName,
+        activeLabel = when {
+            activeName != null -> activeName
+            activeId != null -> "Unavailable until catalog refresh"
             else -> "None"
         },
-        canDownload = selectedVoice != null &&
+        canDownload = selected != null &&
             downloadState !is DjModelDownloadState.Downloading &&
             (downloadState == DjModelDownloadState.NotDownloaded ||
                 downloadState is DjModelDownloadState.Failed ||
-                selectedVoice.id != voiceState.activeVoice?.id)
+                selected.id != activeId)
     )
 }
 
@@ -115,21 +129,8 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                     text = {
                         when (tab) {
                             SettingsTab.GENERAL -> Text("General")
-                            SettingsTab.SPOTIFY -> SettingsProviderTabLabel(
-                                label = "Spotify",
-                                connected = spotifyStatus.connected,
-                                tooltipText = providerConnectionTooltip(spotifyStatus)
-                            )
-                            SettingsTab.JELLYFIN -> SettingsProviderTabLabel(
-                                label = "Jellyfin",
-                                connected = jellyfinStatus.connected,
-                                tooltipText = providerConnectionTooltip(jellyfinStatus)
-                            )
-                            SettingsTab.PLEX -> SettingsProviderTabLabel(
-                                label = "Plex",
-                                connected = plexStatus.connected,
-                                tooltipText = providerConnectionTooltip(plexStatus)
-                            )
+                            SettingsTab.PROVIDERS -> Text("Providers")
+                            SettingsTab.AI_DJ -> Text("AI DJ")
                         }
                     }
                 )
@@ -203,14 +204,6 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                 }
 
                 HorizontalDivider()
-                Text("Connections", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Provider connection controls are available in the Spotify, Jellyfin, and Plex tabs.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                HorizontalDivider()
                 Text("Playback", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
@@ -229,150 +222,7 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                 }
 
                 HorizontalDivider()
-                Text("AI DJ (Beta)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Every few songs, an on-device AI DJ introduces what's coming up next. " +
-                        "Text generation and speech happen entirely on this device; only a " +
-                        "short fact about the artist is looked up online.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                val showDjEntriesInQueue by viewModel.showDjEntriesInQueue.collectAsState()
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = state.aiDjEnabled,
-                        onClick = { viewModel.setAiDjEnabled(!state.aiDjEnabled) },
-                        label = { Text("Enable AI DJ") }
-                    )
-                    FilterChip(
-                        selected = showDjEntriesInQueue,
-                        onClick = { viewModel.setShowDjEntriesInQueue(!showDjEntriesInQueue) },
-                        label = { Text("Show DJ entries in queue") }
-                    )
-                }
-        if (state.aiDjEnabled) {
-            val djVoiceModelDownloadState by viewModel.djVoiceModelDownloadState.collectAsState()
-            val djVoiceCatalogState by viewModel.djVoiceCatalogState.collectAsState()
-            LaunchedEffect(Unit) { viewModel.refreshDjVoiceCatalog() }
-                    WorkflowStep(number = 1, label = "AI DJ script model") {
-                        when (val downloadState = state.aiDjModelDownloadState) {
-                            is DjModelDownloadState.Ready -> Text(
-                                "Model ready (${downloadState.file.name})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            is DjModelDownloadState.Downloading -> Text(
-                                "Downloading... ${(downloadState.progress * 100).toInt()}%",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            is DjModelDownloadState.Failed -> Column {
-                                Text(
-                                    downloadState.reason,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                                Button(onClick = viewModel::downloadDjModel) { Text("Retry Download") }
-                            }
-                            DjModelDownloadState.NotDownloaded -> Button(onClick = viewModel::downloadDjModel) { Text("Download") }
-                        }
-            }
-            WorkflowStep(number = 2, label = "AI DJ speech voice") {
-                val voiceUiState = djVoiceSettingsUiState(djVoiceCatalogState, djVoiceModelDownloadState)
-
-                OutlinedButton(onClick = viewModel::refreshDjVoiceCatalog) {
-                    Text("Refresh voices")
-                }
-                when {
-                    djVoiceCatalogState.catalog == null -> Text(
-                        "Voice catalog unavailable. Configure and authenticate the sync server, then refresh.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    voiceUiState.options.isEmpty() -> Text(
-                        "The sync server has no AI DJ voices available.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    else -> voiceUiState.options.forEach { voice ->
-                        FilterChip(
-                            selected = voice.id == djVoiceCatalogState.selectedId,
-                            onClick = { viewModel.selectDjVoice(voice.id) },
-                            label = { Text(voice.displayName) }
-                        )
-                    }
-                }
-                Text(
-                    "Selected target: ${voiceUiState.selectedVoiceName ?: "None"}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    "Active voice: ${voiceUiState.activeVoiceLabel}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                val voiceGain by viewModel.djVoiceGain.collectAsState()
-                val voiceGainRange = viewModel.djVoiceGainRange
-                Text(
-                    "Voice volume boost: ${String.format("%.1fx", voiceGain)}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Slider(
-                    value = voiceGain,
-                    valueRange = voiceGainRange,
-                    onValueChange = viewModel::setDjVoiceGain
-                )
-                when (val downloadState = djVoiceModelDownloadState) {
-                    is DjModelDownloadState.Ready -> Column {
-                        Text(
-                            "Voice ready",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (voiceUiState.canDownload) {
-                            Button(onClick = viewModel::downloadDjVoiceModel) { Text("Switch Voice") }
-                        }
-                    }
-                            is DjModelDownloadState.Downloading -> Text(
-                                "Downloading... ${(downloadState.progress * 100).toInt()}%",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            is DjModelDownloadState.Failed -> Column {
-                                Text(
-                                    downloadState.reason,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                        Button(
-                            onClick = viewModel::downloadDjVoiceModel,
-                            enabled = voiceUiState.canDownload
-                        ) { Text("Retry Download") }
-                    }
-                    DjModelDownloadState.NotDownloaded ->
-                        Button(
-                            onClick = viewModel::downloadDjVoiceModel,
-                            enabled = voiceUiState.canDownload
-                        ) { Text("Download") }
-                }
-            }
-                }
-
-                HorizontalDivider()
                 Text("Data", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = viewModel::clearProviderCaches,
-                        enabled = !state.providerConnectionInProgress
-                    ) {
-                        Text("Clear Provider Cache")
-                    }
-                }
-                if (!state.providerConnectionFeedback.isNullOrBlank()) {
-                    Text(
-                        state.providerConnectionFeedback,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
 
                 if (workflow == DataWorkflow.NONE) {
                     Text("Choose what you'd like to do:", style = MaterialTheme.typography.bodyMedium)
@@ -415,134 +265,14 @@ internal fun SettingsSection(viewModel: MainViewModel, state: MainUiState) {
                 }
             }
 
-            SettingsTab.SPOTIFY -> {
-                ProviderConnectionHeader(
-                    name = "Spotify",
-                    feedback = state.providerConnectionFeedback,
-                    connecting = state.providerConnectionInProgress
-                )
-                Button(
-                    onClick = {
-                        if (spotifyStatus.connected) {
-                            viewModel.disconnect(SourceType.SPOTIFY)
-                        } else {
-                            viewModel.beginSpotifyLink()
-                        }
-                    },
-                    enabled = !state.providerConnectionInProgress
-                ) {
-                    Text(if (spotifyStatus.connected) "Disconnect Spotify" else "Link Spotify Account")
-                }
-                spotifyStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
-                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            SettingsTab.JELLYFIN -> {
-                ProviderConnectionHeader(
-                    name = "Jellyfin",
-                    feedback = state.providerConnectionFeedback,
-                    connecting = state.providerConnectionInProgress
-                )
-                OutlinedTextField(
-                    value = state.jellyfinUrlInput,
-                    onValueChange = viewModel::updateJellyfinUrlInput,
-                    label = { Text("Jellyfin URL") },
-                    modifier = Modifier.fillMaxWidth().testTag("field_jellyfin_url")
-                )
-                SecretTextField(
-                    value = state.jellyfinTokenInput,
-                    onValueChange = viewModel::updateJellyfinTokenInput,
-                    label = "Jellyfin API Key",
-                    modifier = Modifier.fillMaxWidth().testTag("field_jellyfin_token")
-                )
-                OutlinedTextField(
-                    value = state.jellyfinPlaylistPageSizeInput,
-                    onValueChange = viewModel::updateJellyfinPlaylistPageSizeInput,
-                    label = { Text("Playlist Page Size") },
-                    placeholder = { Text("300") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 1,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    trailingIcon = {
-                        if (state.jellyfinPageSizeSaved) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = "Saved",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { viewModel.connectJellyfin(state.jellyfinUrlInput, state.jellyfinTokenInput) },
-                        enabled = !state.providerConnectionInProgress
-                    ) { Text("Connect Jellyfin") }
-                    if (jellyfinStatus.connected) {
-                        OutlinedButton(
-                            onClick = { viewModel.disconnect(SourceType.JELLYFIN) },
-                            enabled = !state.providerConnectionInProgress
-                        ) { Text("Disconnect") }
-                    }
-                }
-                jellyfinStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
-                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            SettingsTab.PLEX -> {
-                ProviderConnectionHeader(
-                    name = "Plex",
-                    feedback = state.providerConnectionFeedback,
-                    connecting = state.providerConnectionInProgress
-                )
-                OutlinedTextField(
-                    value = state.plexUrlInput,
-                    onValueChange = viewModel::updatePlexUrlInput,
-                    label = { Text("Plex URL") },
-                    modifier = Modifier.fillMaxWidth().testTag("field_plex_url")
-                )
-                SecretTextField(
-                    value = state.plexTokenInput,
-                    onValueChange = viewModel::updatePlexTokenInput,
-                    label = "Plex Token",
-                    modifier = Modifier.fillMaxWidth().testTag("field_plex_token")
-                )
-                OutlinedTextField(
-                    value = state.plexPlaylistPageSizeInput,
-                    onValueChange = viewModel::updatePlexPlaylistPageSizeInput,
-                    label = { Text("Playlist Page Size") },
-                    placeholder = { Text("300") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 1,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    trailingIcon = {
-                        if (state.plexPageSizeSaved) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = "Saved",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { viewModel.connectPlex(state.plexUrlInput, state.plexTokenInput) },
-                        enabled = !state.providerConnectionInProgress
-                    ) { Text("Connect Plex") }
-                    if (plexStatus.connected) {
-                        OutlinedButton(
-                            onClick = { viewModel.disconnect(SourceType.PLEX) },
-                            enabled = !state.providerConnectionInProgress
-                        ) { Text("Disconnect") }
-                    }
-                }
-                plexStatus.lastError?.takeIf { it.isNotBlank() }?.let { errorText ->
-                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
+            SettingsTab.PROVIDERS -> ProvidersSettingsTab(
+                viewModel = viewModel,
+                state = state,
+                spotifyStatus = spotifyStatus,
+                jellyfinStatus = jellyfinStatus,
+                plexStatus = plexStatus
+            )
+            SettingsTab.AI_DJ -> AiDjSettingsTab(viewModel, state)
         }
 
         if (showSyncOverwriteConfirm) {

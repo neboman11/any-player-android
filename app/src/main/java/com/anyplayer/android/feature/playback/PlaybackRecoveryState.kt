@@ -82,6 +82,12 @@ internal class PlaybackRecoveryState {
         lastAcknowledgedEndOfTrackCount = 0L
     }
 
+    /** Called by the sync loops whenever a snapshot shows Spotify actually playing - the
+     *  only real confirmation that a recovery worked, so only it re-arms the attempt cap. */
+    fun onSpotifyPlaybackObserved() {
+        spotifyRecoveryAttempts = 0
+    }
+
     fun resetSpotifyRecoveryState() {
         spotifyRecoveryInFlight = false
         spotifyRecoveryLastAttemptMs = 0L

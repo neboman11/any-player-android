@@ -13,9 +13,7 @@ import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,15 +69,14 @@ class SpotifyConnectBridge @Inject constructor(
     @Volatile var pollingEnabled: Boolean = true
 
     private val playbackStateCache = SpotifyPlaybackStateCache(END_OF_TRACK_POSITION_TOLERANCE_MS)
-    private var bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var pollJob: Job? = null
 
-    /** Must be called from the hosting Service's onCreate. Starts the background
-     *  poll loop; idempotent. */
-    fun attach() {
-        if (pollJob?.isActive == true) return
-        bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        pollJob = bridgeScope.launch {
+    // Runs for the life of the process, not of the media service: the playback controller
+    // reading snapshot() is a singleton that keeps driving Spotify after Android stops an
+    // idle service, and a dead loop leaves every snapshot null - which mixed-mode sync
+    // treats as a disconnect and "recovers" by restarting the song, over and over.
+    // Network use is still gated on pollingEnabled.
+    init {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             while (true) {
                 if (pollingEnabled) {
                     pollOnce()
@@ -89,13 +86,6 @@ class SpotifyConnectBridge @Inject constructor(
                 delay(POLL_INTERVAL_MS)
             }
         }
-    }
-
-    /** Must be called from the hosting Service's onDestroy. */
-    fun release() {
-        bridgeScope.cancel()
-        pollJob = null
-        playbackStateCache.clear()
     }
 
     private suspend fun pollOnce() {
@@ -124,10 +114,16 @@ class SpotifyConnectBridge @Inject constructor(
     fun isManualPauseExpected(): Boolean =
         playbackStateCache.isManualPauseExpected(SystemClock.elapsedRealtime())
 
-    suspend fun playUri(accessToken: String, trackIds: List<String>, startIndex: Int, deviceId: String): Boolean {
+    suspend fun playUri(
+        accessToken: String,
+        trackIds: List<String>,
+        startIndex: Int,
+        deviceId: String,
+        positionMs: Long = 0L
+    ): Boolean {
         if (spotifyPlaybackUris(trackIds).isEmpty()) return false
         return withContext(Dispatchers.IO) {
-            spotifyPlayerClient.startPlayback(accessToken, trackIds, startIndex, deviceId).also { started ->
+            spotifyPlayerClient.startPlayback(accessToken, trackIds, startIndex, deviceId, positionMs).also { started ->
                 if (started) playbackStateCache.clearManualPause()
             }
         }

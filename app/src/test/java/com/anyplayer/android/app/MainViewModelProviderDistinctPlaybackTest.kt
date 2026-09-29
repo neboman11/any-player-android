@@ -21,14 +21,17 @@ import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import com.anyplayer.android.feature.sync.SyncSnapshotClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.JsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -38,6 +41,7 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.clearInvocations
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -128,6 +132,51 @@ class MainViewModelProviderDistinctPlaybackTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `startup restores persisted playback before pulling sync state`() = runTest {
+        val events = mutableListOf<String>()
+        whenever(syncPreferencesStore.read()).doReturn(
+            SyncPreferences(
+                serverTarget = "http://sync",
+                syncPlaylists = false,
+                syncProviderConfiguration = false,
+                syncSettings = false
+            )
+        )
+        whenever(syncSnapshotClient.getClientId()).doReturn("client")
+        whenever(syncSnapshotClient.observeStateUpdates("http://sync")).doReturn(MutableSharedFlow())
+        runBlocking {
+            whenever(playbackQueueManager.restorePersistedStateNowIfNeeded()).doAnswer {
+                events += "restore"
+                Unit
+            }
+            whenever(syncSnapshotClient.fetchSnapshot("http://sync")).doAnswer {
+                events += "fetch"
+                JsonObject(emptyMap())
+            }
+        }
+
+        MainViewModel(
+            context = context,
+            authRepository = authRepository,
+            playbackQueueManager = playbackQueueManager,
+            stateTransferManager = stateTransferManager,
+            configFileImporter = configFileImporter,
+            configFileExporter = mock(),
+            providerCatalogRepository = providerCatalogRepository,
+            playlistStorageRepository = playlistStorageRepository,
+            customPlaylistEngine = customPlaylistEngine,
+            startupResilienceManager = startupResilienceManager,
+            syncPreferencesStore = syncPreferencesStore,
+            syncSnapshotClient = syncSnapshotClient,
+            djModelManager = mock(),
+            djInterstitialPlayer = mock()
+        )
+        runCurrent()
+
+        assertEquals(listOf("restore", "fetch"), events.take(2))
     }
 
     @Test

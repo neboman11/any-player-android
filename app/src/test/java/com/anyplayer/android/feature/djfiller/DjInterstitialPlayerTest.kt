@@ -3,9 +3,12 @@ package com.anyplayer.android.feature.djfiller
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.feature.djfiller.model.PreparedFiller
+import com.anyplayer.android.feature.djfiller.metadata.DjPassages
+import com.anyplayer.android.feature.djfiller.metadata.DjPassage
 import com.anyplayer.android.feature.playback.Media3PlaybackController
 import java.nio.file.Files
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,6 +21,24 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class DjInterstitialPlayerTest {
+    @Test fun `fact is reported once only after audio starts`() {
+        val audioFile = Files.createTempFile("dj-filler", ".wav").toFile()
+        val controller = mock<Media3PlaybackController>()
+        whenever(controller.insertInterstitial(any(), any())).thenReturn(true)
+        val player = DjInterstitialPlayer(controller)
+        val fact = DjPassages(listOf(DjPassage(7, "Next is a story.", "genius", "https://genius.com/next")))
+        val reported = mutableListOf<DjPassages>()
+        player.onFillerStarted = { reported += it }
+        try {
+            player.insertLocal(PreparedFiller(Track("next", "Next", "Artist", source = SourceType.JELLYFIN), audioFile, fact))
+            assertEquals(0, reported.size)
+            val mediaId = argumentCaptor<String>()
+            verify(controller).insertInterstitial(any(), mediaId.capture())
+            player.onInterstitialStarted(mediaId.firstValue)
+            player.onInterstitialStarted(mediaId.firstValue)
+            assertEquals(listOf(fact), reported)
+        } finally { audioFile.delete() }
+    }
     @Test
     fun `standalone handoff failure deletes generated audio`() {
         val audioFile = Files.createTempFile("dj-filler", ".wav").toFile()

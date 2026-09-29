@@ -121,7 +121,7 @@ class MixedPlaybackOpsTest {
     fun mixedQueue_repeatAll_disablesRepeatOnBothSingleItemPlayers() = runTest {
         val tracks = listOf(track("local1", SourceType.JELLYFIN), track("s1", SourceType.SPOTIFY))
         context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
         whenever(media3.snapshot()).thenReturn(media3Snapshot(0, PlaybackStateType.IDLE))
 
         ops.setQueue(tracks, startIndex = 0, autoPlay = true)
@@ -333,7 +333,7 @@ class MixedPlaybackOpsTest {
         seedQueue(tracks, currentIndex = 1, state = PlaybackStateType.PLAYING)
         context.mutableStatus.value = context.mutableStatus.value.copy(repeatMode = RepeatMode.ALL)
         whenever(media3.snapshot()).thenReturn(media3Snapshot(199_500L, PlaybackStateType.PAUSED))
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
 
         ops.sync()
 
@@ -358,7 +358,7 @@ class MixedPlaybackOpsTest {
             currentTrack = track("spotify:track:abc123", SourceType.SPOTIFY),
             state = PlaybackStateType.PLAYING
         )
-        wheneverBlocking { spotify.startQueue(any(), any()) } doReturn true
+        wheneverBlocking { spotify.startQueue(any(), any(), any()) } doReturn true
 
         ops.next(context.mutableStatus.value)
 

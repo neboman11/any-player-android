@@ -17,12 +17,19 @@ private const val TAG = "SpotifyPlayerClient"
 class SpotifyPlayerClient @Inject constructor(
     private val spotifyApiExecutor: SpotifyApiExecutor
 ) {
-    fun startPlayback(accessToken: String, trackIds: List<String>, startIndex: Int, deviceId: String? = null): Boolean {
+    fun startPlayback(
+        accessToken: String,
+        trackIds: List<String>,
+        startIndex: Int,
+        deviceId: String? = null,
+        positionMs: Long = 0L
+    ): Boolean {
         val uris = spotifyPlaybackUris(trackIds)
         if (uris.isEmpty()) return false
         val offset = spotifyPlaybackOffset(trackIds, startIndex).coerceIn(0, uris.size - 1)
         val urisJson = uris.joinToString(prefix = "[", postfix = "]") { uri -> "\"$uri\"" }
-        val payload = "{\"uris\":$urisJson,\"offset\":{\"position\":$offset}}"
+        val position = if (positionMs > 0) ",\"position_ms\":$positionMs" else ""
+        val payload = "{\"uris\":$urisJson,\"offset\":{\"position\":$offset}$position}"
         val query = buildMap {
             deviceId?.takeIf { it.isNotBlank() }?.let { put("device_id", it) }
         }

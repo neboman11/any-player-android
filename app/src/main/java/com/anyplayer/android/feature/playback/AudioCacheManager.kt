@@ -43,7 +43,6 @@ class AudioCacheManager @Inject constructor(
         private const val TAG = "AudioCacheManager"
         private const val CACHE_MAX_BYTES = 500L * 1024 * 1024
         private const val PREFETCH_AHEAD_COUNT = 10
-        private const val PREFETCH_MAX_BYTES = 512L * 1024
     }
 
     private val databaseProvider = StandaloneDatabaseProvider(context)
@@ -98,7 +97,6 @@ class AudioCacheManager @Inject constructor(
                     )
                     val dataSpec = DataSpec.Builder()
                         .setUri(uri)
-                        .setLength(PREFETCH_MAX_BYTES)
                         .build()
                     runInterruptible { CacheWriter(cacheDataSource, dataSpec, null, null).cache() }
                     CompatLog.d(TAG, "Prefetched audio: ${track.title}")

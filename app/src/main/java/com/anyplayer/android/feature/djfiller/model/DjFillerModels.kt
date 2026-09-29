@@ -2,7 +2,10 @@ package com.anyplayer.android.feature.djfiller.model
 
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.feature.djfiller.metadata.DjPassages
 import java.io.File
+
+enum class DjFillerPreparationStatus { NOT_STARTED, PROCESSING, READY }
 
 /** Synthetic display track shown wherever the UI needs to represent the AI DJ - as the
  *  "now playing" override while a break is actually playing, and as the upcoming-queue
@@ -15,12 +18,12 @@ val AI_DJ_PRESENTATION_TRACK = Track(
     isDjFiller = true
 )
 
-/** A fully-generated, ready-to-play AI DJ voice-over: the [track] it introduces, the
- *  script text that was synthesized (kept for debugging/logging), and the rendered
- *  audio file on disk. */
+/** A fully-generated, ready-to-play AI DJ voice-over: the [track] it introduces, the rendered
+ *  audio file on disk, and the [passages] its script was grounded in (marked played on start). */
 data class PreparedFiller(
     val track: Track,
-    val audioFile: File
+    val audioFile: File,
+    val passages: DjPassages? = null
 )
 
 sealed class DjModelDownloadState {

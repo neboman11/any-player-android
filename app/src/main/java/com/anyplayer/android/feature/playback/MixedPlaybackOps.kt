@@ -68,6 +68,7 @@ internal class MixedPlaybackOps(
      *  Spotify and non-Spotify tracks, per [PlaybackEngineContext.mixedMode] having
      *  already been computed by the caller. [startIndex] is pre-resolved. */
     fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
+        val previous = context.mutableStatus.value
         media3PlaybackController.setRepeatMode(mixedPlayerRepeatMode(context.mutableStatus.value.repeatMode))
         context.recovery.resetSpotifyAutoAdvanceState()
         context.recovery.resetSpotifyRecoveryState()
@@ -77,16 +78,15 @@ internal class MixedPlaybackOps(
         media3PlaybackController.setQueue(emptyList(), 0, false)
         val clampedIndex = startIndex.coerceIn(0, tracks.lastIndex)
         val selectedTrack = tracks[clampedIndex]
+        val orderedQueue = previous.orderedQueue.takeIf {
+            previous.queue == tracks && previous.shuffle && it.isNotEmpty()
+        } ?: QueueOrderingUtils.buildOrderedQueue(tracks, selectedTrack.id, previous.shuffle)
         if (!autoPlay && selectedTrack.source != SourceType.SPOTIFY) {
             media3PlaybackController.setQueue(listOf(selectedTrack), 0, false)
         }
         context.mutableStatus.value = context.mutableStatus.value.copy(
             queue = tracks,
-            orderedQueue = QueueOrderingUtils.buildOrderedQueue(
-                queue = tracks,
-                currentTrackId = selectedTrack.id,
-                shuffleEnabled = context.mutableStatus.value.shuffle
-            ),
+            orderedQueue = orderedQueue,
             currentTrack = selectedTrack,
             state = if (autoPlay) PlaybackStateType.PLAYING else PlaybackStateType.PAUSED,
             position = 0,
@@ -365,6 +365,7 @@ internal class MixedPlaybackOps(
                 }
                 return
             }
+            if (spotifySnapshot.isPlaying) context.recovery.onSpotifyPlaybackObserved()
             val mappedTrackIndex = spotifySnapshot.currentTrackId?.let { id ->
                 context.queueIndexCache.findQueueIndexNear(
                     id,
@@ -375,6 +376,13 @@ internal class MixedPlaybackOps(
             if (mappedTrackIndex != null) {
                 context.queueIndexCache.spotifyCurrentQueueIndex = mappedTrackIndex
                 currentTrack = state.queue[mappedTrackIndex]
+            }
+            if (currentTrack.id != state.currentTrack?.id || context.mutableStatus.value.currentTrack?.id != state.currentTrack?.id) {
+                CompatLog.i(
+                    TAG,
+                    "spotify sync: status=${state.currentTrack?.title} now=${context.mutableStatus.value.currentTrack?.title} " +
+                        "spotifyReports=${spotifySnapshot.currentTrackId} playing=${spotifySnapshot.isPlaying} pos=${spotifySnapshot.progressMs} -> ${currentTrack.title}"
+                )
             }
             val duration = currentTrack.durationMs ?: state.duration
             val nearTrackEnd = isNearTrackEnd(spotifySnapshot.progressMs, duration, 1500L)
@@ -395,6 +403,7 @@ internal class MixedPlaybackOps(
                 val sequence = mixedPlaybackSequence(state)
                 val currentIndex = sequenceIndexOf(sequence, currentTrack.id).takeIf { it >= 0 } ?: 0
                 val nextTrack = nextTrackInSequence(sequence, currentIndex, state.repeatMode)
+                CompatLog.i(TAG, "spotify end: current=${currentTrack.title} seqIndex=$currentIndex/${sequence.size} next=${nextTrack?.title}")
                 if (nextTrack != null) {
                     // AI DJ hook: natural end-of-track only (not the stall/error recovery
                     // fallbacks below) - the shared ExoPlayer is idle here (Spotify leg), so
@@ -516,6 +525,11 @@ internal class MixedPlaybackOps(
                     context.recovery.mixedAutoAdvanceTrackId = currentTrack.id
                     context.recovery.resetMixedMediaEndStallState()
                     val nextTrack = nextTrackInSequence(sequence, currentIndex, state.repeatMode)
+                    CompatLog.i(
+                        TAG,
+                        "local end: current=${currentTrack.title} seqIndex=$currentIndex/${sequence.size} next=${nextTrack?.title} " +
+                            "pos=${snapshot.positionMs}/${snapshot.durationMs} djActive=${djInterstitialPlayer.isPlayingInterstitial}"
+                    )
                     if (nextTrack != null) {
                         // AI DJ hook: natural end-of-track only, mirroring the Spotify-leg
                         // hook above.
@@ -635,6 +649,7 @@ internal class MixedPlaybackOps(
         val target = index.coerceIn(0, state.queue.lastIndex)
         val track = state.queue[target]
         val previousTrack = state.currentTrack
+        CompatLog.i(TAG, "play index=$target track=${track.title} (${track.source}) from=${previousTrack?.title} manualSkip=$manualSkip")
 
         if (manualSkip) {
             context.recovery.manualSkipInFlight = true

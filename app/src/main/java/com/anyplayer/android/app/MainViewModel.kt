@@ -14,8 +14,10 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.djfiller.DjModelManager
+import com.anyplayer.android.feature.djfiller.DjScriptModelState
 import com.anyplayer.android.feature.djfiller.DjVoiceState
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
+import com.anyplayer.android.feature.djfiller.model.DjFillerPreparationStatus
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
 import com.anyplayer.android.feature.playlists.CustomPlaylistEngine
 import com.anyplayer.android.feature.playlists.DistinctPlaylistUtils
@@ -70,6 +72,7 @@ class MainViewModel @Inject constructor(
      *  see [com.anyplayer.android.feature.djfiller.DjFillerScheduler.pendingBreakSongsAway].
      *  0 means the break is scheduled immediately after the current track. */
     val djFillerPendingBreakSongsAway: StateFlow<Int?> = playbackQueueManager.djFillerPendingBreakSongsAway
+    val djFillerPreparationStatus: StateFlow<DjFillerPreparationStatus> = playbackQueueManager.djFillerPreparationStatus
     val showDjEntriesInQueue: StateFlow<Boolean> = playbackQueueManager.showDjEntriesInQueue
     val djVoiceModelDownloadState: StateFlow<DjModelDownloadState> = playbackQueueManager.djVoiceModelDownloadState
     val djVoiceCatalogState: StateFlow<DjVoiceState> = playbackQueueManager.djVoiceCatalogState
@@ -568,7 +571,6 @@ class MainViewModel @Inject constructor(
         providerConnectionStateHolder.loadSavedProviderInputs()
         customPlaylistStateHolder.observeCustomPlaylists()
         restoreStartup()
-        syncStateHolder.startRealtimePlaybackSync()
         enforcePlaybackDisabledState()
     }
 
@@ -688,6 +690,10 @@ class MainViewModel @Inject constructor(
      *  AI DJ never triggers a download on its own. */
     fun downloadDjModel() = djModelManager.startDownload()
 
+    val djScriptModelState: StateFlow<DjScriptModelState> = djModelManager.modelState
+    fun refreshDjModelCatalog() = djModelManager.refreshCatalog()
+    fun selectDjModel(id: String) = djModelManager.selectModel(id)
+
     fun playFromQueue(index: Int) = playbackQueueManager.playFromIndex(index)
     fun playFromSearch(index: Int) = searchStateHolder.playFromSearch(index)
     fun search(query: String, sourceType: SourceType, searchType: SearchType) = searchStateHolder.search(query, sourceType, searchType)
@@ -738,7 +744,13 @@ class MainViewModel @Inject constructor(
     private fun restoreStartup() {
         viewModelScope.launch {
             runStartup(continueWithoutProviders = false)
-            pullSyncState(confirmPlaylistOverwrite = false)
+            playbackQueueManager.signalProviderRestoreComplete()
+            playbackQueueManager.restorePersistedStateNowIfNeeded()
+            try {
+                syncStateHolder.pullSyncStateOnStartup()
+            } finally {
+                syncStateHolder.startRealtimePlaybackSync()
+            }
         }
     }
 
@@ -822,7 +834,6 @@ class MainViewModel @Inject constructor(
             continueWithoutProviders = continueWithoutProviders,
             onProgress = { message -> startupStatus.value = message }
         )
-
         providerStatuses.value = snapshot.providerStatuses
         providerPlaylistBrowsingStateHolder.applyStartupSnapshot(snapshot.providerPlaylists)
         startupWarnings.value = snapshot.warnings

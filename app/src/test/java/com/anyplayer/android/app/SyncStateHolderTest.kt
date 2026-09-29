@@ -25,6 +25,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -33,6 +34,7 @@ import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.never
 import org.mockito.kotlin.whenever
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -75,6 +77,109 @@ class SyncStateHolderTest {
         holder.updateSyncAuthToken("new-token")
         runCurrent()
         verify(syncSnapshotClient, times(2)).observeStateUpdates("http://sync")
+    }
+
+    @Test
+    fun startRealtimePlaybackSync_doesNotPublishInitialEmptyPlayback() = runTest {
+        status.value = status.value.copy(currentTrack = null, queue = emptyList(), state = PlaybackStateType.IDLE)
+        val holder = holder(SyncPreferences(serverTarget = "http://sync"), backgroundScope)
+        whenever(syncSnapshotClient.getClientId()).thenReturn("local-client")
+        whenever(syncSnapshotClient.observeStateUpdates("http://sync")).thenReturn(MutableSharedFlow())
+
+        holder.startRealtimePlaybackSync()
+        runCurrent()
+
+        verify(syncSnapshotClient, never()).pushAppState(any(), any())
+    }
+
+    @Test
+    fun startRealtimePlaybackSync_publishesClearAfterQueueWasLoaded() = runTest {
+        val holder = holder(SyncPreferences(serverTarget = "http://sync"), backgroundScope)
+        whenever(syncSnapshotClient.getClientId()).thenReturn("local-client")
+        whenever(syncSnapshotClient.observeStateUpdates("http://sync")).thenReturn(MutableSharedFlow())
+        whenever(syncSnapshotClient.payloadFromPlayback(any())).thenAnswer { invocation ->
+            val playback = invocation.getArgument<PlaybackStatus>(0)
+            AppStateSyncPayload(
+                if (playback.currentTrack == null) "stopped" else "playing",
+                playback.shuffle, "off", playback.volume, playback.position, playback.duration,
+                playback.currentTrack, playback.queue
+            )
+        }
+        whenever(syncSnapshotClient.pushAppState(any(), any())).thenReturn(true)
+
+        holder.startRealtimePlaybackSync()
+        runCurrent()
+        status.value = status.value.copy(currentTrack = null, queue = emptyList(), state = PlaybackStateType.IDLE)
+        runCurrent()
+
+        verify(syncSnapshotClient, times(2)).pushAppState(any(), any())
+    }
+
+    @Test
+    fun startupPull_keepsLocalPlaybackWhenServerAppStateIsEmpty() = runTest {
+        status.value = status.value.copy(shuffle = true)
+        val holder = holder(SyncPreferences(serverTarget = "http://sync", syncAppState = true,
+            syncPlaylists = false, syncProviderConfiguration = false, syncSettings = false))
+        whenever(syncSnapshotClient.fetchSnapshot("http://sync")).thenReturn(
+            JsonObject(mapOf("app_state" to JsonObject(mapOf(
+                "current_track" to JsonNull,
+                "queue" to JsonArray(emptyList()),
+                "shuffle" to JsonPrimitive(false),
+                "state" to JsonPrimitive("stopped")
+            ))))
+        )
+
+        holder.pullSyncStateOnStartup()
+
+        verify(playbackQueueManager, never()).setQueue(any(), any(), any())
+        verify(playbackQueueManager, never()).setShuffle(false)
+    }
+
+    @Test
+    fun startupPull_selectsRemoteTrackWithinSameQueue() = runTest {
+        val mixedQueue = listOf(track("local"), track("next", SourceType.SPOTIFY))
+        status.value = status.value.copy(shuffle = true, queue = mixedQueue)
+        val holder = holder(SyncPreferences(serverTarget = "http://sync", syncAppState = true,
+            syncPlaylists = false, syncProviderConfiguration = false, syncSettings = false))
+        whenever(syncSnapshotClient.fetchSnapshot("http://sync")).thenReturn(
+            appStateSnapshot(mixedQueue[1], mixedQueue)
+        )
+
+        holder.pullSyncStateOnStartup()
+
+        verify(playbackQueueManager).setQueue(mixedQueue, startIndex = 1, autoPlay = false)
+        verify(playbackQueueManager, never()).setShuffle(true)
+    }
+
+    @Test
+    fun startupPull_doesNotRewindTrackThatAdvancedDuringFetch() = runTest {
+        val mixedQueue = listOf(track("local"), track("next", SourceType.SPOTIFY))
+        status.value = status.value.copy(shuffle = true, queue = mixedQueue)
+        val holder = holder(SyncPreferences(serverTarget = "http://sync", syncAppState = true,
+            syncPlaylists = false, syncProviderConfiguration = false, syncSettings = false))
+        whenever(syncSnapshotClient.fetchSnapshot("http://sync")).thenAnswer {
+            status.value = status.value.copy(currentTrack = mixedQueue[1])
+            appStateSnapshot(mixedQueue[0], mixedQueue)
+        }
+
+        holder.pullSyncStateOnStartup()
+
+        verify(playbackQueueManager, never()).playFromIndex(any())
+        verify(playbackQueueManager, never()).setQueue(any(), any(), any())
+    }
+
+    @Test
+    fun startupPull_doesNotDuplicateCurrentTrackInRemoteQueue() = runTest {
+        val holder = holder(SyncPreferences(serverTarget = "http://sync", syncAppState = true,
+            syncPlaylists = false, syncProviderConfiguration = false, syncSettings = false))
+        val remoteQueue = listOf(track("other"), track("next"))
+        whenever(syncSnapshotClient.fetchSnapshot("http://sync")).thenReturn(
+            appStateSnapshot(track("other"), remoteQueue)
+        )
+
+        holder.pullSyncStateOnStartup()
+
+        verify(playbackQueueManager).setQueue(remoteQueue, startIndex = 0, autoPlay = false)
     }
 
     @Test
@@ -175,10 +280,18 @@ class SyncStateHolderTest {
         )
     }
 
-    private fun track(id: String): Track = Track(
+    private fun track(id: String, source: SourceType = SourceType.CUSTOM): Track = Track(
         id = id,
         title = "Track $id",
         artist = "Artist",
-        source = SourceType.CUSTOM
+        source = source
     )
+
+    private fun appStateSnapshot(currentTrack: Track, queue: List<Track>) = JsonObject(mapOf(
+        "app_state" to JsonObject(mapOf(
+            "current_track" to Json.encodeToJsonElement(Track.serializer(), currentTrack),
+            "queue" to JsonArray(queue.map { Json.encodeToJsonElement(Track.serializer(), it) }),
+            "shuffle" to JsonPrimitive(true)
+        ))
+    ))
 }
