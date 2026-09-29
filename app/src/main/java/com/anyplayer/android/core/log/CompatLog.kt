@@ -16,9 +16,15 @@ data class AiDjLogEntry(val timestampMs: Long, val level: String, val tag: Strin
  */
 object CompatLog {
     private val mutableAiDjLogs = MutableStateFlow<List<AiDjLogEntry>>(emptyList())
+    private val mutableAiDjDebugLoggingEnabled = MutableStateFlow(false)
     val aiDjLogs: StateFlow<List<AiDjLogEntry>> = mutableAiDjLogs.asStateFlow()
+    val aiDjDebugLoggingEnabled: StateFlow<Boolean> = mutableAiDjDebugLoggingEnabled.asStateFlow()
 
     fun clearAiDjLogs() { mutableAiDjLogs.value = emptyList() }
+
+    fun setAiDjDebugLoggingEnabled(enabled: Boolean) {
+        mutableAiDjDebugLoggingEnabled.value = enabled
+    }
 
     // ponytail: playback tags are here to debug the mixed-queue replay bug from the in-app log; drop once fixed.
     private val extraInAppLogTags = setOf(
@@ -26,7 +32,9 @@ object CompatLog {
     )
 
     private fun recordAiDj(level: String, tag: String, message: String) {
-        if (!tag.startsWith("Dj") && tag !in extraInAppLogTags) return
+        val isStandardDjLog = tag.startsWith("Dj")
+        val isExtraDebugLog = tag in extraInAppLogTags && mutableAiDjDebugLoggingEnabled.value
+        if (!isStandardDjLog && !isExtraDebugLog) return
         mutableAiDjLogs.update { (it + AiDjLogEntry(System.currentTimeMillis(), level, tag, message)).takeLast(200) }
     }
 

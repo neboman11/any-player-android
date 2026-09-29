@@ -264,7 +264,7 @@ val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
     inputs.property("sherpaOnnxAarSha256", sherpaOnnxAarSha256)
     outputs.file(sherpaOnnxAarFile)
     doLast {
-        if (!sherpaOnnxAarFile.exists()) {
+        if (!sherpaOnnxAarFile.exists() || sherpaOnnxAarFile.length() == 0L) {
             sherpaOnnxAarFile.parentFile.mkdirs()
             logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
             URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
@@ -276,9 +276,21 @@ val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
             .digest(sherpaOnnxAarFile.readBytes())
             .joinToString("") { "%02x".format(it) }
         if (actualSha256 != sherpaOnnxAarSha256) {
-            throw GradleException(
-                "Downloaded sherpa-onnx AAR SHA-256 mismatch: expected $sherpaOnnxAarSha256 but got $actualSha256"
-            )
+            logger.warn("Corrupt sherpa-onnx AAR detected at ${sherpaOnnxAarFile.absolutePath}; deleting and re-downloading")
+            sherpaOnnxAarFile.delete()
+            sherpaOnnxAarFile.parentFile.mkdirs()
+            logger.lifecycle("Re-downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
+            URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
+                sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            val recheckedSha256 = MessageDigest.getInstance("SHA-256")
+                .digest(sherpaOnnxAarFile.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            if (recheckedSha256 != sherpaOnnxAarSha256) {
+                throw GradleException(
+                    "Downloaded sherpa-onnx AAR SHA-256 mismatch after re-download: expected $sherpaOnnxAarSha256 but got $recheckedSha256"
+                )
+            }
         }
     }
 }

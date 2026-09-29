@@ -100,6 +100,7 @@ class SettingsScreenTest {
     fun aiDjTabShowsControlsAndLogs() {
         composeRule.onNodeWithTag("settings_tab_AI_DJ").performClick()
         composeRule.onNodeWithText("Enable AI DJ").assertExists()
+        composeRule.onNodeWithText("Enable debug logging").assertExists()
         composeRule.onNodeWithText("AI DJ Logs").assertExists()
         composeRule.onNodeWithText("Clear logs").assertExists()
     }

@@ -199,12 +199,18 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
     val logs by CompatLog.aiDjLogs.collectAsState()
+    val aiDjDebugLoggingEnabled by CompatLog.aiDjDebugLoggingEnabled.collectAsState()
     val clipboard = LocalClipboardManager.current
     val timeFormat = DateFormat.getTimeInstance(DateFormat.MEDIUM)
     val lines = logs.asReversed().map { entry ->
         "${timeFormat.format(Date(entry.timestampMs))} ${entry.level}/${entry.tag}: ${entry.message}"
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = aiDjDebugLoggingEnabled,
+            onClick = { CompatLog.setAiDjDebugLoggingEnabled(!aiDjDebugLoggingEnabled) },
+            label = { Text("Enable debug logging") }
+        )
         OutlinedButton(onClick = CompatLog::clearAiDjLogs, enabled = logs.isNotEmpty()) {
             Text("Clear logs")
         }
