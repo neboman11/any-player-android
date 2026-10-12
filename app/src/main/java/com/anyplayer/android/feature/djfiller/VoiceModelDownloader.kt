@@ -3,6 +3,7 @@ package com.anyplayer.android.feature.djfiller
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
 import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import kotlinx.coroutines.CoroutineScope
@@ -122,6 +123,10 @@ class VoiceModelDownloader(
     )
     val voiceState: StateFlow<DjVoiceState> = mutableVoiceState.asStateFlow()
 
+    // Filled in the background by init below, for the same main-thread reason.
+    private val mutableDownloaded = MutableStateFlow<List<DjDownloadedFile>>(emptyList())
+    val downloaded: StateFlow<List<DjDownloadedFile>> = mutableDownloaded.asStateFlow()
+
     init {
         scope.launch {
             runCatching { migrateLegacyDefault() }
@@ -133,6 +138,7 @@ class VoiceModelDownloader(
             if (mutableVoiceState.value.activeVoice == null) {
                 activeVoice()?.let { updateVoiceState(activeVoice = it) }
             }
+            refreshDownloaded()
         }
     }
 
@@ -172,11 +178,38 @@ class VoiceModelDownloader(
         }
     }
 
-    /** Deletes every downloaded voice bundle and the active-voice marker; the selection stays. */
-    fun deleteDownloadedVoices() {
-        voiceRootDir.deleteRecursively()
-        mutableDownloadState.value = DjModelDownloadState.NotDownloaded
-        updateVoiceState(activeVoice = null)
+    /** Deletes one downloaded voice bundle; true once it's gone. Deleting the active voice
+     *  also clears the active-voice marker (the selection stays). */
+    fun deleteDownloadedVoice(item: DjDownloadedFile): Boolean {
+        val id = item.id ?: return false
+        if (mutableDownloaded.value.none { it.id == id && it.version == item.version }) return false
+        val active = activeVoiceMarker()
+        if (active?.id == id && active.version == item.version) {
+            File(voiceRootDir, ACTIVE_VOICE_FILE).delete()
+            mutableDownloadState.value = DjModelDownloadState.NotDownloaded
+            updateVoiceState(activeVoice = null)
+        }
+        val directory = voiceDirectory(id, item.version)
+        val deleted = directory.deleteRecursively()
+        directory.parentFile?.takeIf { it.list()?.isEmpty() == true }?.delete()
+        refreshDownloaded()
+        if (!deleted) CompatLog.w(TAG, "could not delete voice bundle $id/${item.version}")
+        return deleted
+    }
+
+    /** Lists `<id>/<version>` bundle directories; staging and partial downloads are dot-prefixed. */
+    private fun refreshDownloaded() {
+        val active = activeVoiceMarker()
+        mutableDownloaded.value = voiceRootDir.listFiles()
+            ?.filter { it.isDirectoryNoFollow() && SAFE_COMPONENT.matches(it.name) }
+            ?.flatMap { idDir ->
+                idDir.listFiles()?.filter { it.isDirectoryNoFollow() && SAFE_COMPONENT.matches(it.name) }?.map { dir ->
+                    val size = dir.listFiles()?.filter { it.isRegularFileNoFollow() }?.sumOf(File::length) ?: 0L
+                    DjDownloadedFile(idDir.name, dir.name, size, active?.id == idDir.name && active.version == dir.name)
+                }.orEmpty()
+            }
+            ?.sortedWith(compareBy({ it.id }, { it.version }))
+            .orEmpty()
     }
 
     suspend fun refreshCatalog(): DjVoiceCatalog? {
@@ -230,6 +263,7 @@ class VoiceModelDownloader(
             check(writeActiveVoice(ActiveVoice(descriptor.id, descriptor.version))) { "could not activate downloaded voice" }
             mutableDownloadState.value = DjModelDownloadState.Ready(alreadyInstalled)
             updateVoiceState(activeVoice = descriptor)
+            refreshDownloaded()
             return
         }
         mutableDownloadState.value = DjModelDownloadState.Downloading(0f)
@@ -285,6 +319,7 @@ class VoiceModelDownloader(
         check(writeActiveVoice(ActiveVoice(descriptor.id, descriptor.version))) { "could not activate downloaded voice" }
         mutableDownloadState.value = DjModelDownloadState.Ready(destination)
         updateVoiceState(activeVoice = descriptor)
+        refreshDownloaded()
     }
 
     private fun currentVoiceState(): DjModelDownloadState =

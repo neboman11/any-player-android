@@ -1,5 +1,6 @@
 package com.anyplayer.android.ui.settings
 
+import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -30,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import java.text.DateFormat
 import java.util.Locale
@@ -209,15 +213,32 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
             }
         }
         Text("Downloaded on-device models", style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = viewModel::deleteDjModels,
-                enabled = state.aiDjModelDownloadState !is DjModelDownloadState.Downloading
-            ) { Text("Delete script models") }
-            OutlinedButton(
-                onClick = viewModel::deleteDjVoices,
-                enabled = djVoiceModelDownloadState !is DjModelDownloadState.Downloading
-            ) { Text("Delete voices") }
+        val downloadedModels by viewModel.djDownloadedModels.collectAsState()
+        val downloadedVoices by viewModel.djDownloadedVoices.collectAsState()
+        if (downloadedModels.isEmpty() && downloadedVoices.isEmpty()) {
+            Text(
+                "Nothing downloaded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        downloadedModels.forEach { item ->
+            DownloadedFileRow(
+                label = "Script model: " +
+                    downloadedFileLabel(item, djScriptModelState.catalog?.models?.firstOrNull { it.id == item.id }?.name),
+                item = item,
+                deleteEnabled = state.aiDjModelDownloadState !is DjModelDownloadState.Downloading,
+                onDelete = { viewModel.deleteDjModel(item) }
+            )
+        }
+        downloadedVoices.forEach { item ->
+            DownloadedFileRow(
+                label = "Voice: " +
+                    downloadedFileLabel(item, djVoiceCatalogState.catalog?.voices?.firstOrNull { it.id == item.id }?.name),
+                item = item,
+                deleteEnabled = djVoiceModelDownloadState !is DjModelDownloadState.Downloading,
+                onDelete = { viewModel.deleteDjVoice(item) }
+            )
         }
     }
 
@@ -267,5 +288,25 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                     .padding(8.dp)
             )
         }
+    }
+}
+
+private fun downloadedFileLabel(item: DjDownloadedFile, catalogName: String?): String =
+    if (item.id == null) item.version else "${catalogName ?: item.id} (${item.version})"
+
+/** One downloaded file with its own Delete button; the row goes away once the delete succeeds. */
+@Composable
+private fun DownloadedFileRow(label: String, item: DjDownloadedFile, deleteEnabled: Boolean, onDelete: () -> Unit) {
+    val context = LocalContext.current
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text(
+                Formatter.formatShortFileSize(context, item.sizeBytes) + if (item.active) " · in use" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        OutlinedButton(onClick = onDelete, enabled = deleteEnabled) { Text("Delete") }
     }
 }

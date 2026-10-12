@@ -19,6 +19,7 @@ import com.anyplayer.android.feature.djfiller.DjScriptGenerator
 import com.anyplayer.android.feature.djfiller.DjVoiceSynthesizer
 import com.anyplayer.android.feature.djfiller.DjScriptModelState
 import com.anyplayer.android.feature.djfiller.DjVoiceState
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.djfiller.model.DjFillerPreparationStatus
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
@@ -712,13 +713,15 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun deleteDjModels() {
-        djModelManager.deleteDownloadedModels()
-        viewModelScope.launch { djScriptGenerator.release() }
+    val djDownloadedModels: StateFlow<List<DjDownloadedFile>> = djModelManager.downloaded
+    val djDownloadedVoices: StateFlow<List<DjDownloadedFile>> = djVoiceSynthesizer.downloaded
+
+    fun deleteDjModel(item: DjDownloadedFile) {
+        if (djModelManager.deleteDownloadedModel(item) && item.active) viewModelScope.launch { djScriptGenerator.release() }
     }
 
-    fun deleteDjVoices() {
-        viewModelScope.launch { djVoiceSynthesizer.deleteDownloadedVoices() }
+    fun deleteDjVoice(item: DjDownloadedFile) {
+        viewModelScope.launch { djVoiceSynthesizer.deleteDownloadedVoice(item) }
     }
 
     fun playFromQueue(index: Int) = playbackQueueManager.playFromIndex(index)

@@ -2,6 +2,7 @@ package com.anyplayer.android.feature.djfiller
 
 import android.content.Context
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import com.k2fsa.sherpa.onnx.GeneratedAudio
@@ -20,7 +21,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,6 +99,7 @@ class DjVoiceSynthesizer @Inject constructor(
     )
     val downloadState: StateFlow<DjModelDownloadState> = voiceModelDownloader.downloadState
     val voiceState: StateFlow<DjVoiceState> = voiceModelDownloader.voiceState
+    val downloaded: StateFlow<List<DjDownloadedFile>> = voiceModelDownloader.downloaded
 
     private val mutableVoiceGain = MutableStateFlow(
         syncPreferencesStore.djVoiceGain().coerceIn(MIN_VOICE_GAIN, MAX_VOICE_GAIN)
@@ -276,14 +277,17 @@ class DjVoiceSynthesizer @Inject constructor(
         loadedVoiceDir = null
     }
 
-    /** Releases the loaded voice and deletes every downloaded voice bundle. */
-    suspend fun deleteDownloadedVoices() {
-        downloadJob?.cancelAndJoin()
-        loadMutex.withLock {
-            tts?.release()
-            tts = null
-            loadedVoiceDir = null
-            withContext(Dispatchers.IO) { voiceModelDownloader.deleteDownloadedVoices() }
+    /** Deletes one downloaded voice bundle, first releasing it if it's the loaded voice;
+     *  true once it's gone. Refused while a voice is downloading. */
+    suspend fun deleteDownloadedVoice(item: DjDownloadedFile): Boolean {
+        if (downloadJob?.isActive == true) return false
+        return loadMutex.withLock {
+            if (loadedVoiceDir?.parentFile?.name == item.id && loadedVoiceDir?.name == item.version) {
+                tts?.release()
+                tts = null
+                loadedVoiceDir = null
+            }
+            withContext(Dispatchers.IO) { voiceModelDownloader.deleteDownloadedVoice(item) }
         }
     }
 }
