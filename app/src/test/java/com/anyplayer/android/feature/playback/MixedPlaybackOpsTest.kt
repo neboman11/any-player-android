@@ -167,26 +167,24 @@ class MixedPlaybackOpsTest {
     fun sync_spotifyManualPauseGrace_clearsStallWatchWithoutRecovery() = runTest {
         val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
-        context.recovery.spotifyMidTrackStall.trackId = "s1"
 
         whenever(spotify.isManualPauseExpected()).thenReturn(true)
 
         ops.sync()
 
-        assertNull(context.recovery.spotifyMidTrackStall.trackId)
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
     }
 
     @Test
-    fun sync_spotifyTrackSinglePollPause_doesNotForceRestart() = runTest {
+    fun sync_spotifyTrackExternalPause_isHonoredWithoutRecovery() = runTest {
         val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
         seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
         wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s1", playing = false)
 
-        ops.sync()
+        repeat(10) { ops.sync() }
 
         verifyBlocking(spotifyOps, never()) { maybeRecoverSpotifyTrack(any(), any(), any()) }
-        assertEquals("s1", context.recovery.spotifyMidTrackStall.trackId)
+        assertEquals(PlaybackStateType.PAUSED, context.mutableStatus.value.state)
     }
 
     @Test
@@ -203,20 +201,6 @@ class MixedPlaybackOpsTest {
 
         assertEquals("s2", context.mutableStatus.value.currentTrack?.id)
         assertEquals(1, context.queueIndexCache.spotifyCurrentQueueIndex)
-    }
-
-    @Test
-    fun sync_spotifyTrackStallPersistsPastThreshold_recoversViaMaybeRecover() = runTest {
-        val tracks = listOf(track("s1", SourceType.SPOTIFY), track("local1", SourceType.JELLYFIN))
-        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
-        wheneverBlocking { spotify.snapshot() } doReturn spotifySnapshot("s1", playing = false)
-
-        ops.sync()
-        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
-        ops.sync()
-
-        verifyBlocking(spotifyOps) { maybeRecoverSpotifyTrack(eq(listOf("s1")), eq(0), any()) }
-        assertNull(context.recovery.spotifyMidTrackStall.trackId)
     }
 
     @Test
@@ -378,5 +362,17 @@ class MixedPlaybackOpsTest {
         assertEquals("local1", context.mutableStatus.value.currentTrack?.id)
         assertEquals(PlaybackStateType.PLAYING, context.mutableStatus.value.state)
         assertEquals(0, context.recovery.spotifyRecoveryAttempts)
+    }
+
+    @Test
+    fun playMixedTrackAtIndex_latestRequestClearsManualSkipFlagAfterItSettles() = runTest {
+        val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { media3.setQueue(any(), any(), any()) } doReturn 0
+
+        ops.playMixedTrackAtIndex(1, manualSkip = true)
+        ops.playMixedTrackAtIndex(0, manualSkip = false)
+
+        assertEquals(false, context.recovery.manualSkipInFlight)
     }
 }

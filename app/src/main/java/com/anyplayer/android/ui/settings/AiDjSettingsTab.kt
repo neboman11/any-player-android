@@ -1,5 +1,6 @@
 package com.anyplayer.android.ui.settings
 
+import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -30,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.anyplayer.android.app.MainUiState
 import com.anyplayer.android.app.MainViewModel
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import java.text.DateFormat
 import java.util.Locale
@@ -39,10 +43,16 @@ import java.util.Date
 @Composable
 internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
     Text("AI DJ (Beta)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    val djRemoteGeneration by viewModel.djRemoteGeneration.collectAsState()
     Text(
-        "Every few songs, an on-device AI DJ introduces what's coming up next. " +
-            "Text generation and speech happen entirely on this device; only the " +
-            "song, artist and album are sent to your sync server to fetch background passages.",
+        if (djRemoteGeneration) {
+            "Every few songs, an AI DJ introduces what's coming up next. Your sync server " +
+                "writes and voices each introduction from background passages about the song."
+        } else {
+            "Every few songs, an AI DJ introduces what's coming up next. Text generation and " +
+                "speech happen entirely on this device; only the song, artist and album are " +
+                "sent to your sync server to fetch background passages."
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
@@ -60,12 +70,25 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
         )
     }
     if (state.aiDjEnabled) {
+        Text("Generate DJ breaks on", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = djRemoteGeneration,
+                onClick = { viewModel.setDjRemoteGeneration(true) },
+                label = { Text("Sync server") }
+            )
+            FilterChip(
+                selected = !djRemoteGeneration,
+                onClick = { viewModel.setDjRemoteGeneration(false) },
+                label = { Text("This device") }
+            )
+        }
         val djVoiceModelDownloadState by viewModel.djVoiceModelDownloadState.collectAsState()
         val djVoiceCatalogState by viewModel.djVoiceCatalogState.collectAsState()
         LaunchedEffect(Unit) { viewModel.refreshDjVoiceCatalog() }
         val djScriptModelState by viewModel.djScriptModelState.collectAsState()
         LaunchedEffect(Unit) { viewModel.refreshDjModelCatalog() }
-        WorkflowStep(number = 1, label = "AI DJ script model") {
+        if (!djRemoteGeneration) WorkflowStep(number = 1, label = "AI DJ script model") {
             val modelUiState = djModelSettingsUiState(djScriptModelState, state.aiDjModelDownloadState)
             OutlinedButton(onClick = viewModel::refreshDjModelCatalog) { Text("Refresh models") }
             when {
@@ -124,7 +147,7 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                 ) { Text("Download") }
             }
         }
-        WorkflowStep(number = 2, label = "AI DJ speech voice") {
+        WorkflowStep(number = if (djRemoteGeneration) 1 else 2, label = "AI DJ speech voice") {
             val voiceUiState = djVoiceSettingsUiState(djVoiceCatalogState, djVoiceModelDownloadState)
             OutlinedButton(onClick = viewModel::refreshDjVoiceCatalog) { Text("Refresh voices") }
             when {
@@ -150,7 +173,7 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                 "Selected target: ${voiceUiState.selectedName ?: "None"}",
                 style = MaterialTheme.typography.bodySmall
             )
-            Text("Active voice: ${voiceUiState.activeLabel}", style = MaterialTheme.typography.bodySmall)
+            if (!djRemoteGeneration) Text("Active voice: ${voiceUiState.activeLabel}", style = MaterialTheme.typography.bodySmall)
             val voiceGain by viewModel.djVoiceGain.collectAsState()
             Text("Voice level: ${String.format(Locale.US, "%+.1f dB", 20 * log10(voiceGain))}", style = MaterialTheme.typography.bodySmall)
             Slider(
@@ -158,7 +181,7 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                 valueRange = viewModel.djVoiceGainRange,
                 onValueChange = viewModel::setDjVoiceGain
             )
-            when (val downloadState = djVoiceModelDownloadState) {
+            if (!djRemoteGeneration) when (val downloadState = djVoiceModelDownloadState) {
                 is DjModelDownloadState.Ready -> Column {
                     Text(
                         "Voice ready",
@@ -188,6 +211,34 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                     enabled = voiceUiState.canDownload
                 ) { Text("Download") }
             }
+        }
+        Text("Downloaded on-device models", style = MaterialTheme.typography.bodySmall)
+        val downloadedModels by viewModel.djDownloadedModels.collectAsState()
+        val downloadedVoices by viewModel.djDownloadedVoices.collectAsState()
+        if (downloadedModels.isEmpty() && downloadedVoices.isEmpty()) {
+            Text(
+                "Nothing downloaded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        downloadedModels.forEach { item ->
+            DownloadedFileRow(
+                label = "Script model: " +
+                    downloadedFileLabel(item, djScriptModelState.catalog?.models?.firstOrNull { it.id == item.id }?.name),
+                item = item,
+                deleteEnabled = state.aiDjModelDownloadState !is DjModelDownloadState.Downloading,
+                onDelete = { viewModel.deleteDjModel(item) }
+            )
+        }
+        downloadedVoices.forEach { item ->
+            DownloadedFileRow(
+                label = "Voice: " +
+                    downloadedFileLabel(item, djVoiceCatalogState.catalog?.voices?.firstOrNull { it.id == item.id }?.name),
+                item = item,
+                deleteEnabled = djVoiceModelDownloadState !is DjModelDownloadState.Downloading,
+                onDelete = { viewModel.deleteDjVoice(item) }
+            )
         }
     }
 
@@ -237,5 +288,25 @@ internal fun AiDjSettingsTab(viewModel: MainViewModel, state: MainUiState) {
                     .padding(8.dp)
             )
         }
+    }
+}
+
+private fun downloadedFileLabel(item: DjDownloadedFile, catalogName: String?): String =
+    if (item.id == null) item.version else "${catalogName ?: item.id} (${item.version})"
+
+/** One downloaded file with its own Delete button; the row goes away once the delete succeeds. */
+@Composable
+private fun DownloadedFileRow(label: String, item: DjDownloadedFile, deleteEnabled: Boolean, onDelete: () -> Unit) {
+    val context = LocalContext.current
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text(
+                Formatter.formatShortFileSize(context, item.sizeBytes) + if (item.active) " · in use" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        OutlinedButton(onClick = onDelete, enabled = deleteEnabled) { Text("Delete") }
     }
 }

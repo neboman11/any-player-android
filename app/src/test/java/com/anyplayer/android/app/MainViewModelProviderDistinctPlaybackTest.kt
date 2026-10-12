@@ -125,7 +125,10 @@ class MainViewModelProviderDistinctPlaybackTest {
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = syncSnapshotClient,
             djModelManager = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
+            djScriptGenerator = mock(),
+            djVoiceSynthesizer = mock()
         )
     }
 
@@ -172,7 +175,10 @@ class MainViewModelProviderDistinctPlaybackTest {
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = syncSnapshotClient,
             djModelManager = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
+            djScriptGenerator = mock(),
+            djVoiceSynthesizer = mock()
         )
         runCurrent()
 

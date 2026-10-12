@@ -43,20 +43,11 @@ internal class SpotifyPlaybackOps(
         // poll's own cycle - not just right after a poll fires.
         private val SPOTIFY_SNAPSHOT_AWAIT_TIMEOUT_MS = SpotifyConnectBridge.POLL_INTERVAL_MS + 1000L
 
-        // A mid-track pause reported by a single poll is ambiguous - it could be a
-        // legitimate pause from another Connect client, or the poll simply landing
-        // right after a track started before the bridge caught up. Requiring the same
-        // (track, position) to persist across several poll cycles before treating it
-        // as a genuine stuck session filters out that single-poll race while still
-        // recovering from a real stall within a bounded time.
-        private val MID_TRACK_STALL_THRESHOLD_MS = SpotifyConnectBridge.POLL_INTERVAL_MS * 3
-
-        // The opposite failure mode: Spotify's own server keeps reporting `is_playing: true`
-        // with a frozen position - e.g. a ghost/zombie Connect session left behind after the
-        // app hosting playback was killed abruptly rather than cleanly paused. A longer
-        // threshold than the mid-track-stall one above, since there's no urgency (nothing
-        // ever recovers from this on its own) and it gives normal ~1s progress_ms ticks
-        // plenty of margin against a false positive from a single coincidental repeat.
+        // Spotify's own server keeps reporting `is_playing: true` with a frozen position -
+        // e.g. a ghost/zombie Connect session left behind after the app hosting playback
+        // was killed abruptly rather than cleanly paused. Several poll cycles give normal
+        // ~1s progress_ms ticks plenty of margin against a false positive from a single
+        // coincidental repeat.
         private val GHOST_PLAYING_STALL_THRESHOLD_MS = SpotifyConnectBridge.POLL_INTERVAL_MS * 5
     }
 
@@ -80,7 +71,7 @@ internal class SpotifyPlaybackOps(
         context.lastPrefetchedForTrackId = null
         context.recovery.resetSpotifyAutoAdvanceState()
         context.recovery.resetSpotifyRecoveryState()
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.recovery.resetMixedMediaEndStallState()
         context.queueIndexCache.rebuildQueueCaches(tracks)
         context.queueIndexCache.spotifyCurrentQueueIndex = startIndex
@@ -171,7 +162,7 @@ internal class SpotifyPlaybackOps(
         val state = context.mutableStatus.value
         // An explicit play/pause command is unambiguous user intent - it can't be
         // mistaken for a stall, so it always cancels any in-progress stall watch.
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.scope.launch {
             val success = if (state.state == PlaybackStateType.PLAYING) {
                 spotifyPlaybackController.pause()
@@ -197,7 +188,7 @@ internal class SpotifyPlaybackOps(
             return
         }
         val state = context.mutableStatus.value
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.scope.launch {
             val success = resumeOrReloadSpotifyQueue(state)
             if (success) {
@@ -255,7 +246,7 @@ internal class SpotifyPlaybackOps(
             context.mutableStatus.value = context.mutableStatus.value.copy(state = PlaybackStateType.PAUSED)
             return
         }
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.scope.launch {
             val success = spotifyPlaybackController.pause()
             context.mutableStatus.value = context.mutableStatus.value.copy(
@@ -359,7 +350,7 @@ internal class SpotifyPlaybackOps(
     fun next(state: PlaybackStatus) {
         context.recovery.manualSkipInFlight = true
         context.recovery.resetSpotifyRecoveryState()
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.scope.launch {
             try {
                 val activeQueue = spotifyPlaybackQueue(state)
@@ -444,7 +435,7 @@ internal class SpotifyPlaybackOps(
     fun previous(state: PlaybackStatus) {
         context.recovery.manualSkipInFlight = true
         context.recovery.resetSpotifyRecoveryState()
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.scope.launch {
             try {
                 val activeQueue = spotifyPlaybackQueue(state)
@@ -481,7 +472,6 @@ internal class SpotifyPlaybackOps(
 
     suspend fun sync() {
         if (spotifyPlaybackController.isManualPauseExpected()) {
-            context.recovery.clearMidTrackStallWatch()
             context.recovery.clearGhostPlayingStallWatch()
             return
         }
@@ -548,45 +538,14 @@ internal class SpotifyPlaybackOps(
         ) {
             return
         }
-        // A mid-track pause (state PLAYING, snapshot not playing, not near the end) is
-        // reflected as PAUSED by the sync below on its own, since a single poll can't
-        // tell a legitimate remote pause apart from a genuine stuck Connect session.
-        // Only recover once the same (track, position) has persisted across several
-        // poll cycles - see MID_TRACK_STALL_THRESHOLD_MS. The state write below flips
-        // state.state to PAUSED after the first stalled poll, so continuing to watch an
-        // already-detected stall across later polls can't gate on state.state staying
-        // PLAYING - it uses spotifyMidTrackStall.trackId being already set instead. A
-        // fresh watch still only ever starts from an unexpected PLAYING->not-playing
-        // transition, never from an explicit pause (pause()/togglePlayPause() clear the
-        // watch directly), so a deliberate pause can't be mistaken for a stall.
-        val startingNewStallWatch = state.state == PlaybackStateType.PLAYING && !spotifySnapshot.isPlaying
-        val continuingKnownStallWatch = context.recovery.spotifyMidTrackStall.trackId != null && !spotifySnapshot.isPlaying
-        if ((startingNewStallWatch || continuingKnownStallWatch) &&
-            !context.recovery.manualSkipInFlight && state.queue.isNotEmpty()
-        ) {
-            val stalledMs = context.recovery.spotifyMidTrackStall.update(
-                System.currentTimeMillis(), state.currentTrack?.id, spotifySnapshot.progressMs
-            )
-            if (stalledMs >= MID_TRACK_STALL_THRESHOLD_MS) {
-                val currentIndex = context.queueIndexCache.currentQueueIndex(state)
-                CompatLog.w(TAG, "Spotify mid-track stall persisted ${stalledMs}ms; attempting recovery at index=$currentIndex")
-                context.recovery.clearMidTrackStallWatch()
-                maybeRecoverSpotifyTrack(
-                    queueTrackIds = context.queueIndexCache.cachedQueueTrackIds,
-                    startIndex = currentIndex,
-                    failureMessage = "Spotify playback stalled mid-track"
-                )
-                return
-            }
-        } else {
-            context.recovery.clearMidTrackStallWatch()
-        }
+        // A mid-track pause (snapshot not playing, not near the end) is reflected as PAUSED
+        // by the sync below and deliberately never auto-recovered: Spotify reports an
+        // external pause (another app taking audio focus, another Connect client) exactly
+        // like a stuck session, and restarting playback over it fights the user.
 
-        // The opposite failure mode: Spotify's own server keeps reporting `is_playing: true`
-        // with a frozen (track, position) - e.g. a ghost/zombie Connect session left behind
-        // after the app hosting playback was killed abruptly instead of cleanly paused. The
-        // mid-track-stall watch above can never catch this since it only fires when the
-        // snapshot reports NOT playing - this only ever fires while it reports playing.
+        // Spotify's own server keeps reporting `is_playing: true` with a frozen (track,
+        // position) - e.g. a ghost/zombie Connect session left behind after the app hosting
+        // playback was killed abruptly instead of cleanly paused.
         if (spotifySnapshot.isPlaying && !nearTrackEnd &&
             !context.recovery.manualSkipInFlight && !context.recovery.spotifyAutoAdvanceInFlight &&
             state.queue.isNotEmpty()

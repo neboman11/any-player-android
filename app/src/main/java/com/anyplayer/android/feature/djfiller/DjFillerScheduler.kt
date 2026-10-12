@@ -36,7 +36,8 @@ class DjFillerScheduler @Inject constructor(
     private val djVoiceSynthesizer: DjVoiceSynthesizer,
     private val djPassageRepository: DjPassageRepository,
     private val djFillerAudioCache: DjFillerAudioCache,
-    private val djInterstitialPlayer: DjInterstitialPlayer
+    private val djInterstitialPlayer: DjInterstitialPlayer,
+    private val djRemoteBreakGenerator: DjRemoteBreakGenerator
 ) {
     // Local/provider-streamed mode has no app-level "about to advance" hook to pull a
     // ready filler from (ExoPlayer auto-advances its whole preloaded queue with no call
@@ -116,13 +117,15 @@ class DjFillerScheduler @Inject constructor(
         djPassageRepository: DjPassageRepository,
         djFillerAudioCache: DjFillerAudioCache,
         djInterstitialPlayer: DjInterstitialPlayer,
+        djRemoteBreakGenerator: DjRemoteBreakGenerator,
         schedulerDispatcher: CoroutineDispatcher
     ) : this(
         djScriptGenerator,
         djVoiceSynthesizer,
         djPassageRepository,
         djFillerAudioCache,
-        djInterstitialPlayer
+        djInterstitialPlayer,
+        djRemoteBreakGenerator
     ) {
         scope = CoroutineScope(SupervisorJob() + schedulerDispatcher)
     }
@@ -454,6 +457,21 @@ class DjFillerScheduler @Inject constructor(
                 return PreparedFiller(nextTrack, cachedFile, passages)
             }
             djFillerAudioCache.delete(cachedFile)
+        }
+        if (djRemoteBreakGenerator.isEnabled()) {
+            val outputFile = djFillerAudioCache.newOutputFile()
+            val generated = runCatching {
+                djRemoteBreakGenerator.generate(nextTrack, passages, outputFile)
+            }.getOrElse {
+                outputFile.delete()
+                throw it
+            }
+            if (!generated) {
+                outputFile.delete()
+                CompatLog.w(TAG, "AI DJ: sync server produced no break for trackId=${nextTrack.id}; see the AI DJ log above for the reason")
+                return null
+            }
+            return PreparedFiller(track = nextTrack, audioFile = outputFile, passages = passages)
         }
         if (!djVoiceSynthesizer.isAvailable()) {
             CompatLog.w(TAG, "AI DJ: no usable on-device TTS voice, skipping this cycle")

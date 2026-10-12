@@ -14,8 +14,12 @@ import com.anyplayer.android.core.model.UnionPlaylistSource
 import com.anyplayer.android.core.storage.repository.PlaylistStorageRepository
 import com.anyplayer.android.feature.auth.ProviderAuthRepository
 import com.anyplayer.android.feature.djfiller.DjModelManager
+import com.anyplayer.android.feature.djfiller.DjRemoteBreakGenerator
+import com.anyplayer.android.feature.djfiller.DjScriptGenerator
+import com.anyplayer.android.feature.djfiller.DjVoiceSynthesizer
 import com.anyplayer.android.feature.djfiller.DjScriptModelState
 import com.anyplayer.android.feature.djfiller.DjVoiceState
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.djfiller.model.DjFillerPreparationStatus
 import com.anyplayer.android.feature.playback.PlaybackQueueManager
@@ -60,7 +64,10 @@ class MainViewModel @Inject constructor(
     private val syncPreferencesStore: SyncPreferencesStore,
     private val syncSnapshotClient: SyncSnapshotClient,
     private val djModelManager: DjModelManager,
-    private val djInterstitialPlayer: com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
+    private val djInterstitialPlayer: com.anyplayer.android.feature.djfiller.DjInterstitialPlayer,
+    private val djRemoteBreakGenerator: DjRemoteBreakGenerator,
+    private val djScriptGenerator: DjScriptGenerator,
+    private val djVoiceSynthesizer: DjVoiceSynthesizer
 ) : ViewModel() {
     /** Non-null while an AI DJ voice-over is playing between songs - see
      *  [com.anyplayer.android.feature.djfiller.DjInterstitialPlayer]. UI surfaces
@@ -693,6 +700,31 @@ class MainViewModel @Inject constructor(
     val djScriptModelState: StateFlow<DjScriptModelState> = djModelManager.modelState
     fun refreshDjModelCatalog() = djModelManager.refreshCatalog()
     fun selectDjModel(id: String) = djModelManager.selectModel(id)
+
+    /** True (the default) when the sync server generates AI DJ breaks instead of this device. */
+    val djRemoteGeneration: StateFlow<Boolean> = djRemoteBreakGenerator.enabled
+
+    fun setDjRemoteGeneration(remote: Boolean) {
+        djRemoteBreakGenerator.setEnabled(remote)
+        // On-device models only hold memory once loaded; free them when they're no longer used.
+        if (remote) viewModelScope.launch {
+            djScriptGenerator.release()
+            djVoiceSynthesizer.release()
+        }
+    }
+
+    val djDownloadedModels: StateFlow<List<DjDownloadedFile>> = djModelManager.downloaded
+    val djDownloadedVoices: StateFlow<List<DjDownloadedFile>> = djVoiceSynthesizer.downloaded
+
+    fun deleteDjModel(item: DjDownloadedFile) {
+        viewModelScope.launch {
+            if (djModelManager.deleteDownloadedModel(item) && item.active) djScriptGenerator.release()
+        }
+    }
+
+    fun deleteDjVoice(item: DjDownloadedFile) {
+        viewModelScope.launch { djVoiceSynthesizer.deleteDownloadedVoice(item) }
+    }
 
     fun playFromQueue(index: Int) = playbackQueueManager.playFromIndex(index)
     fun playFromSearch(index: Int) = searchStateHolder.playFromSearch(index)

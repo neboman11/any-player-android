@@ -498,9 +498,14 @@ class PlaybackQueueManagerTest {
 
     @Test
     fun mixedMode_next_movesToNextTrackInOrderedQueueRegardlessOfSource() {
+        // Slow the local start's IO hop so it finishes after next(); its stale status
+        // write must not put "a" back as the current track.
+        whenever(spotify.normalizeVolumeForSource(any(), any())).thenAnswer { Thread.sleep(100); it.arguments[0] }
         manager.setQueue(listOf(localTrack("a"), spotifyTrack("s1")))
 
         manager.next()
+        verify(media3, timeout(2000)).setVolume(any())
+        Thread.sleep(50)
 
         assertEquals("s1", manager.status.value.currentTrack?.id)
         verifyBlocking(spotify) { startQueue(listOf("s1"), 0) }

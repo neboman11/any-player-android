@@ -38,7 +38,7 @@ internal class LocalPlaybackOps(
         context.queueIndexCache.rebuildQueueCaches(tracks)
         context.recovery.resetSpotifyAutoAdvanceState()
         context.recovery.resetSpotifyRecoveryState()
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.recovery.resetMixedMediaEndStallState()
         val mappedIndex = media3PlaybackController.setQueue(tracks, startIndex, autoPlay)
         context.scope.launch {

@@ -2,6 +2,7 @@ package com.anyplayer.android.feature.djfiller
 
 import android.content.Context
 import com.anyplayer.android.core.log.CompatLog
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import com.k2fsa.sherpa.onnx.GeneratedAudio
@@ -10,6 +11,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import com.k2fsa.sherpa.onnx.WaveReader
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -97,6 +99,7 @@ class DjVoiceSynthesizer @Inject constructor(
     )
     val downloadState: StateFlow<DjModelDownloadState> = voiceModelDownloader.downloadState
     val voiceState: StateFlow<DjVoiceState> = voiceModelDownloader.voiceState
+    val downloaded: StateFlow<List<DjDownloadedFile>> = voiceModelDownloader.downloaded
 
     private val mutableVoiceGain = MutableStateFlow(
         syncPreferencesStore.djVoiceGain().coerceIn(MIN_VOICE_GAIN, MAX_VOICE_GAIN)
@@ -139,10 +142,12 @@ class DjVoiceSynthesizer @Inject constructor(
         }
     }
 
-    private suspend fun ensureLoaded(): OfflineTts? {
-        return loadMutex.withLock {
-            val voiceDir = voiceModelDownloader.voiceDirOrNull() ?: return@withLock null
-            if (loadedVoiceDir == voiceDir) tts?.let { return@withLock it }
+    /** Caller holds [loadMutex]: synthesis runs under it too, so [release] can't free an
+     *  engine mid-generation. */
+    private fun loadedEngine(): OfflineTts? {
+        return run {
+            val voiceDir = voiceModelDownloader.voiceDirOrNull() ?: return null
+            if (loadedVoiceDir == voiceDir) tts?.let { return it }
             // Switching voices abandons the previously loaded native ONNX model; release it
             // deterministically instead of relying on the finalizer to eventually reclaim it.
             tts?.release()
@@ -150,14 +155,14 @@ class DjVoiceSynthesizer @Inject constructor(
             loadedVoiceDir = null
             val modelFile = voiceDir.listFiles()?.firstOrNull {
                 it.extension == "onnx" && it.isRegularFileNoFollow()
-            } ?: return@withLock null
+            } ?: return null
             val tokensFile = File(voiceDir, "tokens.txt")
-            if (!tokensFile.isRegularFileNoFollow()) return@withLock null
+            if (!tokensFile.isRegularFileNoFollow()) return null
 
             val espeakReady = runCatching { ensureEspeakDataExtracted() }
                 .onFailure { CompatLog.e(TAG, "failed to extract espeak-ng-data asset", it) }
                 .isSuccess
-            if (!espeakReady) return@withLock null
+            if (!espeakReady) return null
 
             // Kokoro bundles ship a voices.bin speaker-embedding table alongside the model;
             // Piper/VITS bundles don't, so its presence is what distinguishes the two.
@@ -236,19 +241,53 @@ class DjVoiceSynthesizer @Inject constructor(
      *  (never throws) on any failure - missing/corrupt voice model, out-of-memory, malformed
      *  output - so a DJ break generation cycle is silently skipped rather than crashing playback. */
     suspend fun synthesizeToFile(text: String, outputFile: File): Boolean {
-        val engine = ensureLoaded() ?: run {
-            CompatLog.w(TAG, "no usable on-device voice model loaded, skipping this cycle")
-            return false
-        }
         return runCatching {
             withContext(Dispatchers.Default) {
-                val config = loadMutex.withLock { voiceConfig }
-                val generated = engine.generate(text = text, sid = config.speakerId, speed = config.speed)
-                val processed = DjVoiceProcessor.process(generated.samples, generated.sampleRate, mutableVoiceGain.value)
-                processed.isNotEmpty() && GeneratedAudio(processed, generated.sampleRate).save(outputFile.absolutePath)
+                loadMutex.withLock {
+                    val engine = loadedEngine() ?: run {
+                        CompatLog.w(TAG, "no usable on-device voice model loaded, skipping this cycle")
+                        return@withLock false
+                    }
+                    val generated = engine.generate(text = text, sid = voiceConfig.speakerId, speed = voiceConfig.speed)
+                    val processed = DjVoiceProcessor.process(generated.samples, generated.sampleRate, mutableVoiceGain.value)
+                    processed.isNotEmpty() && GeneratedAudio(processed, generated.sampleRate).save(outputFile.absolutePath)
+                }
             }
         }.onFailure {
             CompatLog.e(TAG, "AI DJ speech synthesis failed", it)
         }.getOrDefault(false)
+    }
+
+    /** Applies the same loudness normalization and level trim as on-device speech to a WAV
+     *  rendered by the sync server, in place. Returns false (never throws) on any failure. */
+    suspend fun normalizeWaveFile(file: File): Boolean = runCatching {
+        withContext(Dispatchers.Default) {
+            val wave = WaveReader.readWave(file.absolutePath)
+            val processed = DjVoiceProcessor.process(wave.samples, wave.sampleRate, mutableVoiceGain.value)
+            processed.isNotEmpty() && GeneratedAudio(processed, wave.sampleRate).save(file.absolutePath)
+        }
+    }.onFailure {
+        CompatLog.e(TAG, "AI DJ server audio could not be decoded", it)
+    }.getOrDefault(false)
+
+    /** Frees the loaded voice model; the next on-device synthesis reloads it. */
+    suspend fun release() = loadMutex.withLock {
+        tts?.release()
+        tts = null
+        loadedVoiceDir = null
+    }
+
+    /** Deletes one downloaded voice bundle, first releasing it if it's the loaded voice;
+     *  true once it's gone. Refused while a voice is downloading. */
+    suspend fun deleteDownloadedVoice(item: DjDownloadedFile): Boolean {
+        if (downloadJob?.isActive == true) return false
+        return loadMutex.withLock {
+            if (loadedVoiceDir?.parentFile?.name == item.id && loadedVoiceDir?.name == item.version) {
+                tts?.release()
+                tts = null
+                loadedVoiceDir = null
+            }
+            withContext(Dispatchers.IO) { voiceModelDownloader.deleteDownloadedVoice(item) }
+        }
     }
 }

@@ -64,6 +64,36 @@ class DjModelManagerTest {
     }
 
     @Test
+    fun `each downloaded model is listed and deleted on its own`() = runTest {
+        val filesDir = Files.createTempDirectory("dj-model-manager-test").toFile()
+        val modelDir = File(filesDir, "dj_models")
+        val active = File(modelDir, "gemma-4-e2b/v1.litertlm").apply { parentFile.mkdirs(); writeText("active") }
+        val other = File(modelDir, "gemma-4-e4b/v2.litertlm").apply { parentFile.mkdirs(); writeText("other") }
+        File(modelDir, "gemma-4-e4b/v3.litertlm.part").writeText("partial")
+        File(modelDir, "active-model").writeText("gemma-4-e2b/v1.litertlm")
+
+        try {
+            val manager = DjModelManager(context(filesDir), mock(), Json, preferences(), StandardTestDispatcher(testScheduler))
+            val listed = manager.downloaded.value
+            assertEquals(listOf("gemma-4-e2b" to true, "gemma-4-e4b" to false), listed.map { it.id to it.active })
+
+            assertTrue(manager.deleteDownloadedModel(listed[1]))
+            assertFalse(other.exists())
+            assertEquals(active, manager.modelFileOrNull())
+            assertEquals(listOf("gemma-4-e2b"), manager.downloaded.value.map { it.id })
+
+            assertTrue(manager.deleteDownloadedModel(listed[0]))
+            assertFalse(active.exists())
+            assertEquals(null, manager.modelFileOrNull())
+            assertEquals(DjModelDownloadState.NotDownloaded, manager.downloadState.value)
+            assertTrue(manager.downloaded.value.isEmpty())
+            assertFalse(manager.deleteDownloadedModel(listed[0]))
+        } finally {
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `failed switch keeps the previously active model`() = runTest {
         val filesDir = Files.createTempDirectory("dj-model-manager-test").toFile()
         val legacy = File(filesDir, "dj_models/v0.task").apply { parentFile.mkdirs(); writeText("legacy") }

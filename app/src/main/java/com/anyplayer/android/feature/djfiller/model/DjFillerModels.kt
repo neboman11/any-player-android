@@ -26,6 +26,11 @@ data class PreparedFiller(
     val passages: DjPassages? = null
 )
 
+/** A downloaded script model file or voice bundle, listed in Settings so each can be deleted.
+ *  [id] is null for a script model downloaded before the catalog existed; [version] is then
+ *  its file name. */
+data class DjDownloadedFile(val id: String?, val version: String, val sizeBytes: Long, val active: Boolean)
+
 sealed class DjModelDownloadState {
     data object NotDownloaded : DjModelDownloadState()
     data class Downloading(val progress: Float) : DjModelDownloadState()

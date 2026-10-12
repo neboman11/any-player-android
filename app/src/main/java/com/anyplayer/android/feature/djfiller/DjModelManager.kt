@@ -4,6 +4,7 @@ import android.content.Context
 import com.anyplayer.android.core.log.CompatLog
 import com.anyplayer.android.core.network.normalizeSyncServerAuthToken
 import com.anyplayer.android.core.network.normalizeSyncServerBaseUrl
+import com.anyplayer.android.feature.djfiller.model.DjDownloadedFile
 import com.anyplayer.android.feature.djfiller.model.DjModelDownloadState
 import com.anyplayer.android.feature.sync.SyncPreferencesStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -105,6 +107,9 @@ class DjModelManager private constructor(
     )
     val modelState: StateFlow<DjScriptModelState> = mutableModelState.asStateFlow()
 
+    private val mutableDownloaded = MutableStateFlow(scanDownloaded())
+    val downloaded: StateFlow<List<DjDownloadedFile>> = mutableDownloaded.asStateFlow()
+
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private var downloadJob: Job? = null
 
@@ -133,6 +138,42 @@ class DjModelManager private constructor(
     fun startDownload() {
         if (downloadJob?.isActive == true) return
         downloadJob = scope.launch { runDownload() }
+    }
+
+    /** Deletes one downloaded model file; true once it's gone. Deleting the active model also
+     *  clears the active marker (the selection stays), and the caller should release the
+     *  loaded model ([DjScriptGenerator.release]). */
+    suspend fun deleteDownloadedModel(item: DjDownloadedFile): Boolean = withContext(Dispatchers.IO) {
+        if (downloadJob?.isActive == true) return@withContext false
+        val file = mutableDownloaded.value.firstOrNull { it.id == item.id && it.version == item.version }
+            ?.let { modelFile(it) } ?: return@withContext false
+        if (file == activeFile) {
+            File(modelDir, ACTIVE_MODEL_FILE).delete()
+            activeFile = null
+            mutableDownloadState.value = DjModelDownloadState.NotDownloaded
+            mutableModelState.value = mutableModelState.value.copy(activeId = null)
+        }
+        val deleted = file.delete()
+        if (item.id != null) file.parentFile?.takeIf { it.list()?.isEmpty() == true }?.delete()
+        mutableDownloaded.value = scanDownloaded()
+        if (!deleted) CompatLog.w(TAG, "could not delete model file ${file.name}")
+        deleted
+    }
+
+    private fun modelFile(item: DjDownloadedFile): File =
+        if (item.id == null) File(modelDir, item.version) else File(File(modelDir, item.id), item.version)
+
+    /** Finished downloads only: `<id>/<version>.<format>` plus pre-catalog root-level files. */
+    private fun scanDownloaded(): List<DjDownloadedFile> {
+        val active = activeFile
+        val legacy = modelDir.listFiles()?.filter { it.isFile && it.extension == LEGACY_FORMAT }
+            ?.map { DjDownloadedFile(null, it.name, it.length(), it == active) }.orEmpty()
+        val catalogued = modelDir.listFiles()?.filter { it.isDirectory && SAFE_COMPONENT.matches(it.name) }
+            ?.flatMap { idDir ->
+                idDir.listFiles()?.filter { it.isFile && it.extension in FORMATS }
+                    ?.map { DjDownloadedFile(idDir.name, it.name, it.length(), it == active) }.orEmpty()
+            }.orEmpty()
+        return (catalogued + legacy).sortedWith(compareBy({ it.id }, { it.version }))
     }
 
     private fun fetchCatalog(): DjScriptModelCatalog? {
@@ -238,6 +279,7 @@ class DjModelManager private constructor(
         mutableModelState.value = mutableModelState.value.copy(activeId = descriptor.id)
         file.parentFile?.listFiles()?.filter { it != file && it.isFile }?.forEach(File::delete)
         modelDir.listFiles()?.filter { it.isFile && it.extension == LEGACY_FORMAT }?.forEach(File::delete)
+        mutableDownloaded.value = scanDownloaded()
         return DjModelDownloadState.Ready(file)
     }
 
