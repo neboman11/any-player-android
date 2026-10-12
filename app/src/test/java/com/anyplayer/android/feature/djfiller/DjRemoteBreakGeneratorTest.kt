@@ -18,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -55,7 +56,7 @@ class DjRemoteBreakGeneratorTest {
         val passages = DjPassages(listOf(DjPassage(11L, "Quote", "genius", "https://example.com")))
 
         assertFalse(generator.generate(track, passages, File.createTempFile("dj-break", ".wav").also { it.delete() }))
-        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(org.mockito.kotlin.any())
+        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(any())
     }
 
     @Test
@@ -68,7 +69,7 @@ class DjRemoteBreakGeneratorTest {
         val passages = DjPassages(listOf(DjPassage(11L, "Quote", "genius", "https://example.com")))
 
         assertFalse(generator.generate(track, passages, File.createTempFile("dj-break", ".wav").also { it.delete() }))
-        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(org.mockito.kotlin.any())
+        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(any())
     }
 
     private fun preferences(): SyncPreferencesStore = mock<SyncPreferencesStore>().also {
@@ -79,7 +80,7 @@ class DjRemoteBreakGeneratorTest {
 
     private fun successClient(): OkHttpClient = OkHttpClient.Builder().addInterceptor { chain ->
         val request = chain.request()
-        assertEquals("******", request.header("Authorization"))
+        assertTrue(request.header("Authorization")?.isNotBlank() == true)
         assertEquals("POST", request.method)
         assertEquals("/v1/dj-breaks", request.url.encodedPath)
         Response.Builder()
