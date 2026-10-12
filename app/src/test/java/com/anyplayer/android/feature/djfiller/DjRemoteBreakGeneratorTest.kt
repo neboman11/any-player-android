@@ -19,8 +19,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.coVerify
+import org.mockito.kotlin.coWhenever
 import org.mockito.kotlin.mock
-import org.mockito.kotlin.verify
+import org.mockito.kotlin.never
 import org.mockito.kotlin.whenever
 import java.io.File
 
@@ -31,7 +33,7 @@ class DjRemoteBreakGeneratorTest {
         val output = File.createTempFile("dj-break", ".wav")
         val prefs = preferences()
         val voice = mock<DjVoiceSynthesizer>()
-        whenever(voice.normalizeWaveFile(any())).thenReturn(true)
+        coWhenever(voice.normalizeWaveFile(any())).thenReturn(true)
         val generator = DjRemoteBreakGenerator(successClient(), Json, prefs, voice)
 
         try {
@@ -40,7 +42,7 @@ class DjRemoteBreakGeneratorTest {
 
             assertTrue(generator.generate(track, passages, output))
             assertTrue(output.readText().startsWith("server-audio"))
-            verify(voice).normalizeWaveFile(output)
+            coVerify(voice).normalizeWaveFile(output)
         } finally {
             output.delete()
         }
@@ -56,7 +58,7 @@ class DjRemoteBreakGeneratorTest {
         val passages = DjPassages(listOf(DjPassage(11L, "Quote", "genius", "https://example.com")))
 
         assertFalse(generator.generate(track, passages, File.createTempFile("dj-break", ".wav").also { it.delete() }))
-        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(any())
+        coVerify(voice, never()).normalizeWaveFile(any())
     }
 
     @Test
@@ -69,7 +71,7 @@ class DjRemoteBreakGeneratorTest {
         val passages = DjPassages(listOf(DjPassage(11L, "Quote", "genius", "https://example.com")))
 
         assertFalse(generator.generate(track, passages, File.createTempFile("dj-break", ".wav").also { it.delete() }))
-        verify(voice, org.mockito.kotlin.never()).normalizeWaveFile(any())
+        coVerify(voice, never()).normalizeWaveFile(any())
     }
 
     private fun preferences(): SyncPreferencesStore = mock<SyncPreferencesStore>().also {
