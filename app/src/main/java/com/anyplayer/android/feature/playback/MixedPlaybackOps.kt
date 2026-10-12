@@ -11,6 +11,7 @@ import com.anyplayer.android.feature.djfiller.DjInterstitialPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Mixed-mode (a queue containing both Spotify and local/Media3 tracks) branch
@@ -35,6 +36,11 @@ internal class MixedPlaybackOps(
     companion object {
         private const val TAG = "MixedPlaybackOps"
     }
+
+    // Bumped by every playMixedTrackAtIndex call. A start suspended on IO (volume
+    // normalization) must not write its track back into the status after a newer
+    // start (e.g. a quick next()) has already replaced it.
+    private val latestPlayRequest = AtomicLong()
 
     private fun mixedPlaybackSequence(state: PlaybackStatus): List<Track> =
         state.orderedQueue.takeIf { it.isNotEmpty() } ?: state.queue
@@ -628,6 +634,7 @@ internal class MixedPlaybackOps(
         if (manualSkip) {
             context.recovery.manualSkipInFlight = true
         }
+        val request = latestPlayRequest.incrementAndGet()
         context.scope.launch {
             if (previousTrack?.source == SourceType.SPOTIFY && track.source != SourceType.SPOTIFY) {
                 spotifyPlaybackController.pause()
@@ -661,6 +668,7 @@ internal class MixedPlaybackOps(
                 applyNormalizedMedia3Volume(context.mutableStatus.value.volume, track.source)
                 mappedIndex >= 0
             }
+            if (request != latestPlayRequest.get()) return@launch
 
             context.mutableStatus.value = context.mutableStatus.value.copy(
                 currentTrack = track,
