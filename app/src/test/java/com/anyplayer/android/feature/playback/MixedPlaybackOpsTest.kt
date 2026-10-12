@@ -363,4 +363,16 @@ class MixedPlaybackOpsTest {
         assertEquals(PlaybackStateType.PLAYING, context.mutableStatus.value.state)
         assertEquals(0, context.recovery.spotifyRecoveryAttempts)
     }
+
+    @Test
+    fun playMixedTrackAtIndex_latestRequestClearsManualSkipFlagAfterItSettles() = runTest {
+        val tracks = listOf(track("local1", SourceType.JELLYFIN), track("local2", SourceType.JELLYFIN))
+        seedQueue(tracks, currentIndex = 0, state = PlaybackStateType.PLAYING)
+        wheneverBlocking { media3.setQueue(any(), any(), any()) } doReturn 0
+
+        ops.playMixedTrackAtIndex(1, manualSkip = true)
+        ops.playMixedTrackAtIndex(0, manualSkip = false)
+
+        assertEquals(false, context.recovery.manualSkipInFlight)
+    }
 }

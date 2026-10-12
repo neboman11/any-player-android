@@ -678,7 +678,7 @@ internal class MixedPlaybackOps(
                 errorMessage = if (success) null else spotifyOps.spotifyErrorOrDefault("Failed to start track")
             )
             persistStateAsync()
-            if (manualSkip) {
+            if (request == latestPlayRequest.get()) {
                 context.recovery.manualSkipInFlight = false
             }
         }
