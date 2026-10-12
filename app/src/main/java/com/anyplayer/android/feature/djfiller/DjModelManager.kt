@@ -135,6 +135,16 @@ class DjModelManager private constructor(
         downloadJob = scope.launch { runDownload() }
     }
 
+    /** Deletes every downloaded script model and the active marker; the selection stays.
+     *  The caller should also release the loaded model ([DjScriptGenerator.release]). */
+    fun deleteDownloadedModels() {
+        if (downloadJob?.isActive == true) return
+        activeFile = null
+        modelDir.deleteRecursively()
+        mutableDownloadState.value = DjModelDownloadState.NotDownloaded
+        mutableModelState.value = mutableModelState.value.copy(activeId = null)
+    }
+
     private fun fetchCatalog(): DjScriptModelCatalog? {
         val failure = { reason: String ->
             mutableModelState.value = mutableModelState.value.copy(catalog = null, catalogError = reason)

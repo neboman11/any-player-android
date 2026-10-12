@@ -58,7 +58,7 @@ class DjFillerSchedulerTest {
         val facts = mock<DjPassageRepository>()
         val selected = passages()
         whenever(facts.findPassages(any())).thenReturn(selected)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), mock(), StandardTestDispatcher(testScheduler))
         try {
             scheduler.setEnabled(true)
             val songsBeforeBreak = scheduler.pendingBreakSongsAway.value!!
@@ -91,7 +91,7 @@ class DjFillerSchedulerTest {
         val selected = passages()
         whenever(facts.findPassages(any())).thenReturn(selected)
         whenever(interstitial.insertLocal(any())).thenReturn(true)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), StandardTestDispatcher(testScheduler))
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -123,7 +123,7 @@ class DjFillerSchedulerTest {
         whenever(media3.isPlayingInterstitial).thenReturn(true)
         whenever(facts.findPassages(any())).thenReturn(null)
         val interstitial = DjInterstitialPlayer(media3)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         val queue = (1..20).map { track("t$it") }
         scheduler.onStatusUpdated(statusWith("t1", queue))
@@ -150,7 +150,7 @@ class DjFillerSchedulerTest {
         whenever(cache.load("next")).thenReturn(audio)
         whenever(cache.loadPassages("next")).thenReturn(selected)
         whenever(cache.save("next", audio, selected)).thenReturn(audio)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), mock(), StandardTestDispatcher(testScheduler))
         try {
             scheduler.setEnabled(true)
             assertEquals(DjFillerPreparationStatus.NOT_STARTED, scheduler.preparationStatus.value)
@@ -177,7 +177,7 @@ class DjFillerSchedulerTest {
         whenever(facts.findPassages(any())).thenReturn(passages())
         whenever(voice.isAvailable()).thenReturn(true)
         whenever(script.generateScript(any(), any())).thenThrow(CancellationException("superseded"))
-        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         forceDueOnNextTrack()
         CompatLog.clearAiDjLogs()
@@ -200,7 +200,7 @@ class DjFillerSchedulerTest {
         val voice = mock<DjVoiceSynthesizer>()
         whenever(facts.findPassages(any())).thenReturn(passages())
         whenever(voice.isAvailable()).thenReturn(true)
-        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         forceDueOnNextTrack()
         CompatLog.clearAiDjLogs()
@@ -221,7 +221,7 @@ class DjFillerSchedulerTest {
         val voice = mock<DjVoiceSynthesizer>()
         whenever(facts.findPassages(any())).thenReturn(passages())
         whenever(voice.isAvailable()).thenReturn(true)
-        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(script, voice, facts, mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
         whenever(script.generateScript(any(), any())).thenAnswer {
             scheduler.onQueueReplaced()
             null
@@ -248,7 +248,7 @@ class DjFillerSchedulerTest {
         whenever(cache.load("next")).thenReturn(audio)
         whenever(cache.loadPassages("next")).thenReturn(passages())
         whenever(facts.findPassages(any())).thenReturn(null)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, testDispatcher)
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), testDispatcher)
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -272,7 +272,7 @@ class DjFillerSchedulerTest {
         whenever(cache.save("next", audio, passages())).thenReturn(audio)
         whenever(facts.findPassages(any())).thenReturn(passages())
         whenever(interstitial.insertLocal(any())).thenReturn(true)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, testDispatcher)
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), testDispatcher)
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -299,7 +299,7 @@ class DjFillerSchedulerTest {
         whenever(cache.loadPassages("next")).thenReturn(passages())
         whenever(cache.save("next", audio, passages())).thenReturn(audio)
         whenever(facts.findPassages(any())).thenReturn(passages())
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, testDispatcher)
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), testDispatcher)
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -325,7 +325,7 @@ class DjFillerSchedulerTest {
         whenever(cache.save("next", audio, passages())).thenReturn(audio)
         whenever(interstitial.isPlayingInterstitial).thenReturn(true)
         whenever(facts.findPassages(any())).thenReturn(passages())
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, testDispatcher)
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), testDispatcher)
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -352,7 +352,7 @@ class DjFillerSchedulerTest {
         val interstitial = mock<DjInterstitialPlayer>()
         val selected = passages()
         whenever(facts.findPassages(any())).thenReturn(selected)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, interstitial, mock(), StandardTestDispatcher(testScheduler))
         try {
             scheduler.setEnabled(true)
             val songsBeforeBreak = scheduler.pendingBreakSongsAway.value!!
@@ -398,7 +398,7 @@ class DjFillerSchedulerTest {
         whenever(voice.isAvailable()).thenReturn(true)
         whenever(script.generateScript(any(), any())).thenReturn("intro")
         whenever(voice.synthesizeToFile("intro", freshAudio)).thenReturn(true)
-        scheduler = DjFillerScheduler(script, voice, facts, cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(script, voice, facts, cache, mock(), mock(), StandardTestDispatcher(testScheduler))
         try {
             scheduler.setEnabled(true)
             forceDueOnNextTrack()
@@ -427,7 +427,7 @@ class DjFillerSchedulerTest {
         whenever(facts.findPassages(any())).thenReturn(passages())
         whenever(script.generateScript(any(), anyOrNull())).thenReturn("intro")
         whenever(voice.synthesizeToFile(any(), any())).thenReturn(true)
-        scheduler = DjFillerScheduler(script, voice, facts, cache, mock(), UnconfinedTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(script, voice, facts, cache, mock(), mock(), UnconfinedTestDispatcher(testScheduler))
         scheduler.configureLocalModeProvider { true }
         try {
             scheduler.setEnabled(true)
@@ -453,7 +453,7 @@ class DjFillerSchedulerTest {
         whenever(cache.load("t3")).thenReturn(audio)
         whenever(cache.loadPassages("t3")).thenReturn(selected)
         whenever(cache.save("t3", audio, selected)).thenReturn(audio)
-        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), facts, cache, mock(), mock(), StandardTestDispatcher(testScheduler))
         try {
             scheduler.setEnabled(true)
             val field = DjFillerScheduler::class.java.getDeclaredField("songsUntilBreak")
@@ -491,6 +491,7 @@ class DjFillerSchedulerTest {
             djPassageRepository = mock(),
             djFillerAudioCache = mock(),
             djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
             schedulerDispatcher = testDispatcher
         )
     }
@@ -557,7 +558,7 @@ class DjFillerSchedulerTest {
 
     @Test
     fun `break becomes due after three to five real tracks`() = runTest {
-        scheduler = DjFillerScheduler(mock(), mock(), mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         val queue = (1..10).map { track("t$it") }
         val first = scheduler.pendingBreakSongsAway.value!!
@@ -594,7 +595,7 @@ class DjFillerSchedulerTest {
 
     @Test
     fun `backward track bounces and same-track restarts do not move the break`() = runTest {
-        scheduler = DjFillerScheduler(mock(), mock(), mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), mock(), mock(), mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         val queue = (1..10).map { track("t$it") }
         scheduler.onStatusUpdated(statusWith("t1", queue).copy(position = 5_000L))
@@ -620,7 +621,7 @@ class DjFillerSchedulerTest {
     fun `cold start adopts the break already saved for an upcoming track`() = runTest {
         val cache = mock<DjFillerAudioCache>()
         whenever(cache.readyTrackId()).thenReturn("t2")
-        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, mock(), StandardTestDispatcher(testScheduler))
+        scheduler = DjFillerScheduler(mock(), mock(), mock(), cache, mock(), mock(), StandardTestDispatcher(testScheduler))
         scheduler.setEnabled(true)
         val queue = (1..10).map { track("t$it") }
 

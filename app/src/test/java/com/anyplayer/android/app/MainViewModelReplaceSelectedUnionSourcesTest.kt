@@ -104,7 +104,10 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = mock(),
             djModelManager = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
+            djScriptGenerator = mock(),
+            djVoiceSynthesizer = mock()
         )
     }
 
@@ -204,7 +207,10 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = mock(),
             djModelManager = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
+            djScriptGenerator = mock(),
+            djVoiceSynthesizer = mock()
         )
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(
             id = "s-provider",
@@ -267,7 +273,10 @@ class MainViewModelReplaceSelectedUnionSourcesTest {
             syncPreferencesStore = syncPreferencesStore,
             syncSnapshotClient = mock(),
             djModelManager = mock(),
-            djInterstitialPlayer = mock()
+            djInterstitialPlayer = mock(),
+            djRemoteBreakGenerator = mock(),
+            djScriptGenerator = mock(),
+            djVoiceSynthesizer = mock()
         )
 
         val source = com.anyplayer.android.core.model.UnionPlaylistSource(

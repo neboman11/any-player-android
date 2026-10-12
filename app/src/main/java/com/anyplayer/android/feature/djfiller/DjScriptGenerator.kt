@@ -92,6 +92,12 @@ class DjScriptGenerator @Inject constructor(
         return LoadedModel(modelFile, infer, engine::close)
     }
 
+    /** Frees the loaded model's memory; the next on-device generation reloads it. */
+    suspend fun release() = mutex.withLock {
+        loaded?.let { runCatching(it.close) }
+        loaded = null
+    }
+
     /** Runs on-device inference off the calling dispatcher; returns null (never throws) on
      *  any failure - missing/corrupt model, out-of-memory, malformed output - so a DJ
      *  break generation cycle is silently skipped rather than crashing playback. */

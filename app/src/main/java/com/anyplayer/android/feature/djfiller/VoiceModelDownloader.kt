@@ -172,6 +172,13 @@ class VoiceModelDownloader(
         }
     }
 
+    /** Deletes every downloaded voice bundle and the active-voice marker; the selection stays. */
+    fun deleteDownloadedVoices() {
+        voiceRootDir.deleteRecursively()
+        mutableDownloadState.value = DjModelDownloadState.NotDownloaded
+        updateVoiceState(activeVoice = null)
+    }
+
     suspend fun refreshCatalog(): DjVoiceCatalog? {
         val base = configuredBaseUrl() ?: return null
         val responseResult = runCatching {
