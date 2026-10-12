@@ -73,6 +73,9 @@ jobs:
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
       - name: Generate local.properties
+        env:
+          # Without the secret (e.g. fork PRs) the APK builds but can't sign in to Spotify.
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
           if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
@@ -80,13 +83,21 @@ jobs:
             exit 1
           fi
           echo "sdk.dir=$SDK_ROOT" > local.properties
-          echo "spotifyClientId=ci-placeholder-client-id" >> local.properties
+          echo "spotifyClientId=${SPOTIFY_CLIENT_ID:-ci-placeholder-client-id}" >> local.properties
 
       - name: Grant execute permission
         run: chmod +x gradlew
 
       - name: Assemble debug
         run: ./gradlew --no-daemon --warning-mode=summary :app:assembleDebug -PandroidNdkDir="$ANDROID_NDK_HOME"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: any-player-debug-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.ref_name }}-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Unit tests
         run: ./gradlew --no-daemon --warning-mode=summary :app:testDebugUnitTest -PandroidNdkDir="$ANDROID_NDK_HOME"
