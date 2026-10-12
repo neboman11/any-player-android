@@ -27,11 +27,8 @@ import org.mockito.kotlin.whenever
 import org.mockito.kotlin.wheneverBlocking
 
 /**
- * Regression coverage for [SpotifyPlaybackOps.sync]'s mid-track-stall recovery
- * (finding #4 of the PR #33 review): a single poll reporting the track as paused
- * mid-playback must not force a restart (that reintroduces the spurious-restart
- * bug fixed 3 times before), but a stall that persists past
- * [SpotifyPlaybackOps.Companion] MID_TRACK_STALL_THRESHOLD_MS must recover.
+ * Regression coverage for [SpotifyPlaybackOps.sync]: a mid-track pause reported by
+ * Spotify (e.g. another app taking audio focus) must never force a restart.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SpotifyPlaybackOpsTest {
@@ -99,56 +96,18 @@ class SpotifyPlaybackOpsTest {
     )
 
     @Test
-    fun sync_singlePollMidTrackPause_doesNotForceRestart() = runTest {
-        // Covers the scenario the removed force-restart used to misfire on: a
-        // single stalled poll alone (e.g. right after a track starts, before the
-        // bridge's next poll catches up) must never be enough to recover.
+    fun sync_externalMidTrackPause_isHonoredWithoutRestart() = runTest {
+        // Another app taking audio focus pauses Spotify itself; that looks identical to a
+        // stuck session, however many polls it persists across, and must never restart.
         val tracks = listOf(track("a"), track("b"))
         seedPlayingState(tracks)
         wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a")
 
-        ops.sync()
+        repeat(10) { ops.sync() }
 
         verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
-        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
-        assertEquals(5_000L, context.recovery.spotifyMidTrackStall.positionMs)
-    }
-
-    @Test
-    fun sync_stallPersistsPastThreshold_recoversViaStartQueue() = runTest {
-        val tracks = listOf(track("a"), track("b"))
-        seedPlayingState(tracks)
-        wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a")
-
-        ops.sync() // seeds the dwell timer at "now"
-        // Simulate the dwell threshold having elapsed without a real delay.
-        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
-
-        ops.sync()
-
-        verifyBlocking(spotify) { startQueue(tracks.map { it.id }, 0, 5_000L) }
-        assertNull(context.recovery.spotifyMidTrackStall.trackId)
-    }
-
-    @Test
-    fun sync_playbackResumes_resetsDwellTimer() = runTest {
-        val tracks = listOf(track("a"), track("b"))
-        seedPlayingState(tracks)
-        wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a")
-        ops.sync()
-        assertEquals("a", context.recovery.spotifyMidTrackStall.trackId)
-
-        wheneverBlocking { spotify.snapshot() } doReturn stalledSnapshot("a", playing = true)
-        ops.sync()
-
-        assertNull(context.recovery.spotifyMidTrackStall.trackId)
-
-        // Even after the threshold elapses, no recovery should fire - the dwell
-        // window was reset by the resumed playback, not just carried forward.
-        context.recovery.spotifyMidTrackStall.sinceMs -= (SpotifyConnectBridge.POLL_INTERVAL_MS * 3 + 1)
-        ops.sync()
-
-        verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
+        verifyBlocking(spotify, never()) { play() }
+        assertEquals(PlaybackStateType.PAUSED, context.mutableStatus.value.state)
     }
 
     @Test
@@ -180,14 +139,12 @@ class SpotifyPlaybackOpsTest {
     fun sync_manualPauseGrace_clearsStallWatchesWithoutRestarting() = runTest {
         val tracks = listOf(track("a"), track("b"))
         seedPlayingState(tracks)
-        context.recovery.spotifyMidTrackStall.trackId = "a"
         context.recovery.spotifyGhostPlayingStall.trackId = "a"
 
         whenever(spotify.isManualPauseExpected()).thenReturn(true)
 
         ops.sync()
 
-        assertNull(context.recovery.spotifyMidTrackStall.trackId)
         assertNull(context.recovery.spotifyGhostPlayingStall.trackId)
         verifyBlocking(spotify, never()) { startQueue(any(), any(), any()) }
     }

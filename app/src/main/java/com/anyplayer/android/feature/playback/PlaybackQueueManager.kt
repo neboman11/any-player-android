@@ -274,7 +274,7 @@ class PlaybackQueueManager @Inject constructor(
         context.lastPrefetchedForTrackId = null
         context.recovery.resetSpotifyAutoAdvanceState()
         context.recovery.resetSpotifyRecoveryState()
-        context.recovery.resetSpotifyMidTrackStallState()
+        context.recovery.clearGhostPlayingStallWatch()
         context.recovery.resetMixedMediaEndStallState()
         context.playableQueueIndices = emptyList()
         context.spotifyQueueRequiresReload = false
@@ -537,7 +537,7 @@ class PlaybackQueueManager @Inject constructor(
             // spotifyOps.next()) - without it, a stall watch armed for the real track just
             // before the break started stays stale and can misfire once playback resumes.
             context.recovery.resetSpotifyRecoveryState()
-            context.recovery.resetSpotifyMidTrackStallState()
+            context.recovery.clearGhostPlayingStallWatch()
             media3PlaybackController.skipInterstitial()
             return
         }

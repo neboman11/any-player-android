@@ -4,8 +4,8 @@ package com.anyplayer.android.feature.playback
  *  distinguish a genuine stall from a single-poll race (e.g. the bridge simply hasn't
  *  caught up yet right after a track starts). Single owner for the "same track & position
  *  -> accumulate elapsed time since first observed, else (re)start the watch" logic that
- *  was previously hand-copied at every call site (SpotifyPlaybackOps.sync's two watches,
- *  MixedPlaybackOps.sync's two watches) - a fix to that logic (e.g. suppressing it during
+ *  was previously hand-copied at every call site (SpotifyPlaybackOps.sync's watch,
+ *  MixedPlaybackOps.sync's watches) - a fix to that logic (e.g. suppressing it during
  *  a manual skip) now only needs applying once, here, instead of at each copy. */
 internal class StallWatch {
     // Not private-set: PlaybackRecoveryState lives in this module's test source set too,
@@ -54,18 +54,11 @@ internal class PlaybackRecoveryState {
     var spotifyRecoveryLastAttemptMs = 0L
     var spotifyRecoveryAttempts = 0
 
-    /** Dwell-time bookkeeping for a Spotify track that stays reported as
-     *  PLAYING-but-not-actually-playing (not near track end): distinguishes a
-     *  genuine stuck Connect session from the single-poll lag right after a
-     *  track starts, or a momentary state read mid-transition. See
-     *  [SpotifyPlaybackOps.sync] / [MixedPlaybackOps.sync]. */
-    val spotifyMidTrackStall = StallWatch()
-
-    /** Dwell-time bookkeeping for the opposite case: Spotify's own server keeps reporting
-     *  `is_playing: true` with a frozen position - e.g. a ghost/zombie Connect session left
-     *  behind after the app hosting playback was killed abruptly rather than cleanly paused.
-     *  The mid-track-stall watch above can't catch this since it only fires when the
-     *  snapshot reports NOT playing. See [SpotifyPlaybackOps.sync]. */
+    /** Dwell-time bookkeeping for Spotify's own server reporting `is_playing: true` with a
+     *  frozen position - e.g. a ghost/zombie Connect session left behind after the app
+     *  hosting playback was killed abruptly rather than cleanly paused. A reported pause is
+     *  never watched: it is indistinguishable from an external pause (another app taking
+     *  audio focus), which must be honored. See [SpotifyPlaybackOps.sync]. */
     val spotifyGhostPlayingStall = StallWatch()
 
     /** Tracks retries of a Media3 (Jellyfin/local) player that entered a fatal error state -
@@ -94,28 +87,14 @@ internal class PlaybackRecoveryState {
         spotifyRecoveryAttempts = 0
     }
 
-    fun clearMidTrackStallWatch() {
-        spotifyMidTrackStall.clear()
-    }
-
     fun clearGhostPlayingStallWatch() {
         spotifyGhostPlayingStall.clear()
-    }
-
-    /** Called at every deliberate-user-action call site (play/pause/skip/etc) to cancel
-     *  whichever stall watch might be running. [SpotifyPlaybackOps.sync]'s own per-tick
-     *  maintenance of each watch uses the private single-watch clears above instead, since
-     *  each watch's condition naturally not holding on a given tick (e.g. mid-track-stall's
-     *  `!isPlaying` being false) must NOT be treated as clearing the *other*, unrelated watch. */
-    fun resetSpotifyMidTrackStallState() {
-        clearMidTrackStallWatch()
-        clearGhostPlayingStallWatch()
     }
 
     fun resetSpotifyConnectionState() {
         resetSpotifyAutoAdvanceState()
         resetSpotifyRecoveryState()
-        resetSpotifyMidTrackStallState()
+        clearGhostPlayingStallWatch()
     }
 
     fun resetMixedMediaEndStallState() {
