@@ -31,7 +31,7 @@ class DjRemoteBreakGeneratorTest {
         val output = File.createTempFile("dj-break", ".wav")
         val prefs = preferences()
         val voice = mock<DjVoiceSynthesizer>()
-        whenever(voice.normalizeWaveFile(output)).thenReturn(true)
+        whenever(voice.normalizeWaveFile(any())).thenReturn(true)
         val generator = DjRemoteBreakGenerator(successClient(), Json, prefs, voice)
 
         try {
