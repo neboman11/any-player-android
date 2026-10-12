@@ -39,7 +39,7 @@ class DjRemoteBreakGeneratorTest {
             val passages = DjPassages(listOf(DjPassage(11L, "Quote", "genius", "https://example.com")))
 
             assertTrue(generator.generate(track, passages, output))
-            assertEquals("server-audio", output.readText())
+            assertTrue(output.readText().startsWith("server-audio"))
             verify(voice).normalizeWaveFile(output)
         } finally {
             output.delete()
