@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -142,10 +143,10 @@ class DjModelManager private constructor(
     /** Deletes one downloaded model file; true once it's gone. Deleting the active model also
      *  clears the active marker (the selection stays), and the caller should release the
      *  loaded model ([DjScriptGenerator.release]). */
-    fun deleteDownloadedModel(item: DjDownloadedFile): Boolean {
-        if (downloadJob?.isActive == true) return false
+    suspend fun deleteDownloadedModel(item: DjDownloadedFile): Boolean = withContext(Dispatchers.IO) {
+        if (downloadJob?.isActive == true) return@withContext false
         val file = mutableDownloaded.value.firstOrNull { it.id == item.id && it.version == item.version }
-            ?.let { modelFile(it) } ?: return false
+            ?.let { modelFile(it) } ?: return@withContext false
         if (file == activeFile) {
             File(modelDir, ACTIVE_MODEL_FILE).delete()
             activeFile = null
@@ -156,7 +157,7 @@ class DjModelManager private constructor(
         if (item.id != null) file.parentFile?.takeIf { it.list()?.isEmpty() == true }?.delete()
         mutableDownloaded.value = scanDownloaded()
         if (!deleted) CompatLog.w(TAG, "could not delete model file ${file.name}")
-        return deleted
+        deleted
     }
 
     private fun modelFile(item: DjDownloadedFile): File =

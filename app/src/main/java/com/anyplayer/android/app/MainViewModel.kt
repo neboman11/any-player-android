@@ -717,7 +717,9 @@ class MainViewModel @Inject constructor(
     val djDownloadedVoices: StateFlow<List<DjDownloadedFile>> = djVoiceSynthesizer.downloaded
 
     fun deleteDjModel(item: DjDownloadedFile) {
-        if (djModelManager.deleteDownloadedModel(item) && item.active) viewModelScope.launch { djScriptGenerator.release() }
+        viewModelScope.launch {
+            if (djModelManager.deleteDownloadedModel(item) && item.active) djScriptGenerator.release()
+        }
     }
 
     fun deleteDjVoice(item: DjDownloadedFile) {
