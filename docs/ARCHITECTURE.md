@@ -586,14 +586,24 @@ Accepted after an independent review (Media3 1.5.1 behaviour verified against th
 ### 12.6 Sync (§5.6)
 - Field edits persist on commit (IME done / focus loss, debounced) — DJ features read the persisted
   target/token; the WebSocket restarts only on Connect.
+- Commit drafts also when switching settings tabs or leaving Settings; complete an already-started
+  preferences write even if the destination's ViewModel is cleared. Persisting a target/token alone
+  never redirects automatic pushes or realtime; they retain the last start/Connect account.
 - Push only after a non-empty queue has been observed post-restore; never push SYNC/RESTORE-origin
   changes; keep the 3.5 s post-apply suppression as a backstop; keep "apply startup pull only if
   local playback didn't change during the fetch".
 - Push on discrete events only (track/content/state/shuffle/repeat/volume change, pause and seek
   with exact position) — never periodically. WS events fetch `GET /v1/state/app-state` when only
   `app_state` changed, falling back to `/v1/snapshot?since_version`.
+- Realtime applies only the event's namespace, never snapshot playback for playlist/settings/provider
+  events, and silently skips unconfirmed playlist overwrites. A slow initial Room emission is treated
+  conservatively as existing local playlists, not coroutine cancellation. Synced normalization is
+  persisted as well as applied to playback. Config import summaries/errors reach Settings' transfer
+  status; changed provider URLs are revalidated and catalog refreshed without restarting startup.
 - Startup network work (catalog refresh, sync pull) is gated on the UI reaching STARTED
   (`ProcessLifecycleOwner`) or playback starting; restore steps run for every process start.
+- Construct the DJ coordinator only after this gate, because enabled DJ generation performs network
+  work immediately.
 
 ### 12.7 AI DJ (§8)
 - A pending break plays only when the cursor reaches `targetUid` by advance (auto or manual Next)
@@ -602,15 +612,23 @@ Accepted after an independent review (Media3 1.5.1 behaviour verified against th
 - The engine validates `PendingBreak.beforeUid` against `upcoming()`; dropped breaks (target passed,
   queue replaced, disabled) are reported via `EngineEvent.BreakDropped(id)` so the coordinator
   deletes the file.
+- Coordinator retains every started delivery until `BreakEnded`, ignoring any spurious `BreakDropped`
+  for it. Only never-started deliveries may be deleted on drop.
 - Finished audio is kept keyed by track id (+passage chunk ids) so a target flip-back reuses it;
   in-flight generation is cancelled only on disable or queue replace.
+- A one-song backward bounce retains the furthest scheduling anchor and ready target. Finished-audio
+  cache keeps at most three entries and evicts the matching source copy on `BreakStarted`.
 - LLM released on disable, `onTrimMemory`, or after N minutes without playback (not per break).
+- UI-hidden memory trims do not unload models; background-or-higher trims and low-memory callbacks do.
+  Native linkage/initialization failures are diagnosed without crashing DJ scopes.
 - `DjDiagnostics` in-memory ring buffer (200) backs the "AI DJ Logs" panel ("Enable debug
   logging", Clear, Copy).
 - Named legacy migrations: root `dj_models/*.task` without marker; `dj_tts/voice/active-version`
   + `default/` → `default/default`; delete `dj_fact_repository` prefs; sweep `ready.wav`,
   `ready-track-id`, `ready-passages.json`, `ready-fact.json`, `dj_models/**/*.part`, voice
   staging `.tmp`/`.zip.part`.
+- Legacy voice migration moves files in place without duplicating large bundles and resumes partially
+  moved layouts. Initialized artifact reads/catalog refresh bypass an in-progress download's mutex.
 
 ### 12.8 Misc
 - Normalization uses `Float` math exactly as Rust; parity test over 0..100 for each source.

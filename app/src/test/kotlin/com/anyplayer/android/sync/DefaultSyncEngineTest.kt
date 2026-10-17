@@ -25,24 +25,91 @@ class DefaultSyncEngineTest {
     private lateinit var server: MockWebServer
     private lateinit var http: OkHttpClient
     @Before fun before() { server = MockWebServer(); server.start(); http = OkHttpClient() }
-    @After fun after() { http.dispatcher.cancelAll(); http.connectionPool.evictAll(); server.shutdown(); http.dispatcher.executorService.shutdown() }
+    @After fun after() {
+        http.dispatcher.cancelAll()
+        http.connectionPool.evictAll()
+        http.dispatcher.executorService.shutdown()
+        assertTrue(http.dispatcher.executorService.awaitTermination(5, TimeUnit.SECONDS))
+        server.shutdown()
+    }
 
     private fun preferences() = SyncPreferences(serverTarget = server.url("/").toString(), authToken = " Bearer secret ", syncPlaylists = false, syncProviderConfiguration = false, syncSettings = false)
-    private inner class Fixture(scope: TestScope, preferences: SyncPreferences = preferences(), online: Boolean = false) {
+    private inner class Fixture(
+        scope: TestScope, preferences: SyncPreferences = preferences(), online: Boolean = false,
+        playlistSource: com.anyplayer.android.data.playlists.PlaylistRepository? = null,
+    ) {
         val engine = FakeEngine()
         val settings = FakeSyncSettings(preferences)
         val playerSettings = FakePlayerSettings()
         val playlists = FakePlaylists()
         val config = FakeConfig()
         val network = MutableStateFlow(online)
-        val sync = DefaultSyncEngine(engine, settings, playerSettings, playlists, config, SyncClient(http),
+        val backoffs = mutableListOf<Long>()
+        val importStatus = SyncImportStatus()
+        val imports = SyncImports(config, com.anyplayer.android.ui.settings.FakeConnections(),
+            com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
+        val sync = DefaultSyncEngine(engine, settings, playerSettings, playlistSource ?: playlists, config, SyncClient(http),
             object : SyncNetwork { override val available = network }, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler),
-            { scope.testScheduler.currentTime }, { it })
+            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports)
         suspend fun start() {
             server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
             sync.start()
             sync.state.first { it.status == "Sync pull complete." }
         }
+    }
+    @Test fun `slow Room emission conservatively skips playlists without disabling realtime`() = runTest {
+        val slow = object : com.anyplayer.android.data.playlists.PlaylistRepository by unused() {
+            override val customPlaylists = flow<List<CustomPlaylist>> { awaitCancellation() }
+        }
+        val f = Fixture(this, preferences().copy(syncPlaylists = true), online = true, playlistSource = slow)
+        val opened = CompletableDeferred<Unit>()
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"playlists\":[]}"))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.complete(Unit) }
+        }))
+        f.sync.start()
+        opened.await()
+        assertEquals("Sync cancelled: playlist overwrite requires confirmation.", f.sync.state.value.status)
+        assertTrue(f.config.imports.isEmpty())
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("/v1/ws", request().path)
+        f.network.value = false
+        runCurrent()
+    }
+
+    @Test fun `editing persisted target cannot redirect automatic pushes without Connect`() = runTest {
+        val f = Fixture(this)
+        f.start(); request(); runCurrent()
+        f.settings.update { it.copy(serverTarget = server.url("/unconfirmed").toString(), authToken = "unconfirmed") }
+        server.enqueue(MockResponse().setBody("{}"))
+        f.engine.setQueue(listOf(song)); runCurrent()
+        val push = request()
+        assertEquals("/v1/state/app-state", push.path)
+        assertEquals("Bearer secret", push.getHeader("Authorization"))
+    }
+
+    @Test fun `healthy socket resets reconnect delay after each later drop`() = runTest {
+        val f = Fixture(this, online = true)
+        val connected = kotlinx.coroutines.channels.Channel<WebSocket>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        fun response() = MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { connected.trySend(webSocket) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+        })
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
+        server.enqueue(response())
+        f.sync.start()
+        repeat(2) {
+            val socket = connected.receive()
+            f.sync.state.first { it.realtimeConnected }
+            server.enqueue(response())
+            socket.close(1000, "drop")
+            f.sync.state.first { !it.realtimeConnected }
+            runCurrent()
+        }
+        connected.receive()
+        assertEquals(listOf(1_000L, 1_000L), f.backoffs)
+        f.network.value = false
+        runCurrent()
     }
     private suspend fun request() = withContext(Dispatchers.IO) { server.takeRequest(5, TimeUnit.SECONDS) ?: error("Expected sync request") }
     private fun json(text: String) = AppJson.parseToJsonElement(text).jsonObject
@@ -161,6 +228,8 @@ class DefaultSyncEngineTest {
         f.sync.state.first { it.status == "Sync pull complete." }
         assertEquals(MergePolicy.MERGE_KEEP_LOCAL, f.config.imports.single().second)
         assertTrue("normalization:true:true" in f.engine.calls)
+        assertTrue(f.playerSettings.settings.value.normalizationEnabled)
+        assertTrue(f.playerSettings.settings.value.normalizationStrict)
         assertEquals(3L, f.sync.lastSyncVersion)
     }
 
@@ -186,6 +255,44 @@ class DefaultSyncEngineTest {
         assertEquals("/v1/snapshot?since_version=1", request().path)
         assertEquals(song, f.engine.queue.value.current?.track)
         assertEquals(4L, f.sync.lastSyncVersion)
+    }
+    @Test fun `realtime domain updates never replay app state or unrelated domains`() = runTest {
+        for (namespace in listOf("playlists", "settings", "provider_configuration")) {
+            val prefs = preferences().copy(syncPlaylists = true, syncProviderConfiguration = true, syncSettings = true)
+            val f = Fixture(this, prefs)
+            f.playlists.customPlaylists.value = listOf(localPlaylist)
+            server.enqueue(MockResponse().setBody(buildJsonObject {
+                put("version", 2); put("app_state", appState())
+                put("settings", json("{\"audio_normalization_enabled\":true}"))
+                put("playlists", JsonArray(emptyList()))
+                put("provider_configuration", JsonObject(emptyMap()))
+            }.toString()))
+            f.sync.receiveUpdate(prefs, SyncUpdate(namespace, 2, "other"))
+            assertTrue(f.engine.queue.value.entries.isEmpty())
+            assertFalse(f.engine.calls.any { it.startsWith("seek:") || it == "play" })
+            assertFalse(f.sync.state.value.status.contains("confirmation"))
+            assertEquals(namespace == "settings", f.playerSettings.settings.value.normalizationEnabled)
+            assertEquals(if (namespace == "provider_configuration") 1 else 0, f.config.imports.size)
+            request()
+        }
+    }
+
+    @Test fun `startup duration and anchor updates do not veto remote state`() = runTest {
+        val f = Fixture(this)
+        val fetchStarted = CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                fetchStarted.complete(Unit)
+                check(release.await(5, TimeUnit.SECONDS))
+                return MockResponse().setBody(buildJsonObject { put("version", 9); put("app_state", appState()) }.toString())
+            }
+        }
+        f.sync.start(); fetchStarted.await()
+        f.engine.player.value = f.engine.player.value.copy(durationMs = 100_000, anchorElapsedRealtimeMs = 300)
+        release.countDown()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals(song, f.engine.queue.value.current?.track)
     }
 
     @Test fun `startup pull does not rewind local changes during fetch`() = runTest {
@@ -259,7 +366,7 @@ class DefaultSyncEngineTest {
         requests.forEach { assertEquals("this-client", json(it.body.readUtf8()).string("client_id")) }
     }
 
-    @Test fun `offline realtime waits for connectivity and persisted credentials restart socket`() = runTest {
+    @Test fun `offline realtime waits for connectivity and credentials restart only on connect`() = runTest {
         val f = Fixture(this)
         f.start(); request(); runCurrent()
         assertEquals(1, server.requestCount)
@@ -271,13 +378,18 @@ class DefaultSyncEngineTest {
         f.network.value = true
         connected.receive()
         assertEquals("/v1/ws", request().path)
-        server.enqueue(socketResponse())
         f.settings.update { it.copy(authToken = "replacement") }
+        runCurrent()
+        assertEquals(2, server.requestCount)
+        server.enqueue(MockResponse().setBody("{\"version\":2,\"app_state\":{}}"))
+        server.enqueue(socketResponse())
+        f.sync.connect()
         connected.receive()
+        assertEquals("/v1/snapshot", request().path)
         assertEquals("Bearer replacement", request().getHeader("Authorization"))
         f.network.value = false; runCurrent()
         advanceTimeBy(120_000); runCurrent()
-        assertEquals(3, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun `discrete changes coalesce at least two seconds apart without periodic pushes`() = runTest {

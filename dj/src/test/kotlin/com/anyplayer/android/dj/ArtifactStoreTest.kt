@@ -5,6 +5,7 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -136,6 +137,51 @@ class ArtifactStoreTest {
         assertEquals(File(dir, "default/default"), store.activeFileOrNull())
         assertFalse(File(dir, "active-version").exists())
         assertTrue(completeVoice(File(dir, "default/default")))
+    }
+    @Test fun `partially moved legacy voice resumes without copying model bytes`() = runBlocking {
+        val dir = temporary.newFolder("partial-voices")
+        File(dir, "default/default").mkdirs()
+        val model = File(dir, "default/model.onnx").apply { writeText("model") }
+        val identity = java.nio.file.Files.readAttributes(model.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java).fileKey()
+        File(dir, "default/default/tokens.txt").writeText("tokens")
+        File(dir, "active-version").writeText("default")
+        val store = voices(dir)
+        store.initialize()
+        val moved = File(dir, "default/default/model.onnx")
+        assertEquals(identity, java.nio.file.Files.readAttributes(moved.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java).fileKey())
+        assertTrue(completeVoice(store.activeFileOrNull()!!))
+        assertFalse(model.exists())
+        assertFalse(File(dir, "active-version").exists())
+    }
+
+    @Test fun `initialized artifact reads and catalog refresh do not wait for download mutex`() = runBlocking {
+        File(root, "old.task").writeText("old")
+        models.initialize()
+        val descriptor = model()
+        catalog(descriptor); models.refreshCatalog()
+        val requested = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.path!!.endsWith("/download")) {
+                    requested.complete(Unit)
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    return MockResponse().setBody("model")
+                }
+                return MockResponse().setBody(buildJsonObject {
+                    put("default_id", descriptor.id); put("models", Json.encodeToJsonElement(listOf(descriptor)))
+                }.toString())
+            }
+        }
+        val download = async(kotlinx.coroutines.Dispatchers.IO) { models.downloadSelected() }
+        try {
+            requested.await()
+            kotlinx.coroutines.withTimeout(1_000) { models.initialize(); models.refreshCatalog() }
+            assertEquals("old.task", models.activeFileOrNull()!!.name)
+        } finally {
+            release.countDown()
+            download.await()
+        }
     }
     @Test fun `deleting active artifact clears marker and download state`() = runBlocking {
         catalog(model()); models.refreshCatalog(); bytes("model".toByteArray()); models.downloadSelected()

@@ -42,7 +42,7 @@ interface DjController {
 }
 
 @Singleton
-class DefaultDjController @Inject internal constructor(
+class DefaultDjController internal constructor(
     private val player: PlayerSettingsStore,
     private val settings: DjSettingsStore,
     coordinator: DjCoordinator,
@@ -50,8 +50,14 @@ class DefaultDjController @Inject internal constructor(
     private val voices: ArtifactStore<VoiceDescriptor>,
     private val local: OnDeviceBreakGenerator,
     private val diagnostics: DjDiagnostics,
+    private val scope: CoroutineScope,
 ) : DjController {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Inject constructor(
+        player: PlayerSettingsStore, settings: DjSettingsStore, coordinator: DjCoordinator,
+        models: ArtifactStore<ModelDescriptor>, voices: ArtifactStore<VoiceDescriptor>,
+        local: OnDeviceBreakGenerator, diagnostics: DjDiagnostics,
+    ) : this(player, settings, coordinator, models, voices, local, diagnostics,
+        CoroutineScope(SupervisorJob() + Dispatchers.IO))
     override val enabled = player.settings.map { it.aiDjEnabled }.stateIn(scope, SharingStarted.Eagerly, false)
     override val showEntriesInQueue = player.settings.map { it.showDjEntriesInQueue }.stateIn(scope, SharingStarted.Eagerly, false)
     override val remoteGeneration = settings.settings.map { it.remoteGeneration }.stateIn(scope, SharingStarted.Eagerly, true)
@@ -70,19 +76,20 @@ class DefaultDjController @Inject internal constructor(
     private var modelJob: Job? = null
     private var voiceJob: Job? = null
     init {
-        scope.launch { models.initialize() }
-        scope.launch { voices.initialize() }
-        scope.launch {
+        action { models.initialize() }
+        action { voices.initialize() }
+        action {
             settings.awaitLoaded()
             settings.settings.collect { models.select(it.selectedModelId); voices.select(it.selectedVoiceId) }
         }
     }
-    private fun action(block: suspend () -> Unit) { scope.launch {
-        try { block() } catch (e: Exception) {
+    private fun action(block: suspend () -> Unit) { launchAction(block) }
+    private fun launchAction(block: suspend () -> Unit): Job = scope.launch {
+        try { block() } catch (e: Throwable) {
             if (e is CancellationException) throw e
             diagnostics.log("DjController", "DJ action failed", e)
         }
-    } }
+    }
     override fun setEnabled(enabled: Boolean) { player.update { it.copy(aiDjEnabled = enabled) } }
     override fun setShowEntriesInQueue(show: Boolean) { player.update { it.copy(showDjEntriesInQueue = show) } }
     override fun setRemoteGeneration(remote: Boolean) = action { settings.update { it.copy(remoteGeneration = remote) }; if (remote) local.release() }
@@ -95,7 +102,7 @@ class DefaultDjController @Inject internal constructor(
     }
     override fun downloadModel() {
         if (modelJob?.isActive == true) return
-        modelJob = scope.launch {
+        modelJob = launchAction {
             if (models.catalog.value.items.isEmpty()) models.refreshCatalog()
             val selected = settings.awaitLoaded().selectedModelId ?: models.catalog.value.defaultId
             if (selected != null) { settings.update { it.copy(selectedModelId = selected) }; models.select(selected) }
@@ -104,7 +111,7 @@ class DefaultDjController @Inject internal constructor(
     }
     override fun downloadVoice() {
         if (voiceJob?.isActive == true) return
-        voiceJob = scope.launch {
+        voiceJob = launchAction {
             if (voices.catalog.value.items.isEmpty()) voices.refreshCatalog()
             val selected = settings.awaitLoaded().selectedVoiceId ?: voices.catalog.value.defaultId
             if (selected != null) { settings.update { it.copy(selectedVoiceId = selected) }; voices.select(selected) }

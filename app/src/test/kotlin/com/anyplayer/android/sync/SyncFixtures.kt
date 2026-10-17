@@ -70,8 +70,10 @@ internal class FakePlaylists : PlaylistRepository by unused<PlaylistRepository>(
 
 internal class FakeConfig : ConfigFiles {
     val imports = mutableListOf<Pair<JsonElement, MergePolicy>>()
+    var summary = ImportSummary()
+    var onImport: suspend () -> Unit = {}
     override suspend fun importJson(config: JsonElement, policy: MergePolicy, dryRun: Boolean): ImportSummary {
-        check(!dryRun); imports += config to policy; return ImportSummary()
+        check(!dryRun); onImport(); imports += config to policy; return summary
     }
     override suspend fun import(input: InputStream, policy: MergePolicy, dryRun: Boolean): ImportSummary = error("unused")
     override suspend fun exportPlaylistsJson(): JsonElement = JsonArray(emptyList())

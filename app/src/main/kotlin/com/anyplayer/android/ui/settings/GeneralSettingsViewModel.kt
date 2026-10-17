@@ -10,6 +10,7 @@ import com.anyplayer.android.data.sync.SyncEngine
 import com.anyplayer.android.data.sync.SyncUiState
 import com.anyplayer.android.data.transfer.*
 import com.anyplayer.android.playback.PlaybackEngine
+import com.anyplayer.android.sync.SyncImportStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
@@ -19,6 +20,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 
 data class GeneralSettingsState(
     val serverTarget: String = "",
@@ -41,6 +44,7 @@ class GeneralSettingsViewModel @Inject constructor(
     private val transfer: StateTransfer,
     private val config: ConfigFiles,
     private val documents: SettingsDocuments,
+    private val syncImports: SyncImportStatus,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(GeneralSettingsState())
     val state = mutableState.asStateFlow()
@@ -59,11 +63,19 @@ class GeneralSettingsViewModel @Inject constructor(
         }
         viewModelScope.launch { syncEngine.state.collect { sync -> mutableState.update { it.copy(sync = sync) } } }
         viewModelScope.launch { playerSettings.settings.collect { settings -> mutableState.update { it.copy(normalization = settings.normalizationEnabled) } } }
+        viewModelScope.launch {
+            syncImports.message.filterNotNull().collect { message -> mutableState.update { it.copy(transferStatus = message) } }
+        }
     }
 
     fun editTarget(value: String) { targetDirty = true; mutableState.update { it.copy(serverTarget = value) } }
     fun editToken(value: String) { tokenDirty = true; mutableState.update { it.copy(authToken = value) } }
-    fun commitFields() { viewModelScope.launch { persistFields() } }
+    fun commitFields() {
+        // Disposal may immediately clear this ViewModel. Finish this bounded preferences write.
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            withContext(NonCancellable) { persistFields() }
+        }
+    }
 
     private suspend fun persistFields(): Boolean = commits.withLock {
         val target = state.value.serverTarget

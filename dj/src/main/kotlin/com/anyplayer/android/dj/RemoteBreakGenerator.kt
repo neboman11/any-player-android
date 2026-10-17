@@ -41,7 +41,7 @@ class RemoteBreakGenerator internal constructor(
                     input.use { stream -> file.outputStream().use { stream.copyTo(it) } }
                 }
             voices.normalizeWaveFile(file)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (e is CancellationException) throw e
             diagnostics.log("DjRemote", "Remote break generation failed", e); false
         }

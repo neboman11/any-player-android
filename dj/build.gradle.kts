@@ -52,6 +52,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation("org.mockito:mockito-core:5.15.2")
 }
 
 // Fetched once and cached in libs/ (gitignored) rather than committed.

@@ -18,8 +18,9 @@ class SettingsViewModelsTest {
     private val viewModels = mutableListOf<androidx.lifecycle.ViewModel>()
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun tearDown() { viewModels.forEach { it.viewModelScope.cancel() }; Dispatchers.resetMain() }
-    private fun general(settings: FakeSyncSettings = FakeSyncSettings(), sync: FakeSync = FakeSync(), transfer: FakeTransfer = FakeTransfer(), engine: FakeEngine = FakeEngine()): GeneralSettingsViewModel =
-        GeneralSettingsViewModel(settings, FakePlayerSettings(), sync, engine, transfer, transfer, FakeDocuments()).also { viewModels += it }
+    private fun general(settings: FakeSyncSettings = FakeSyncSettings(), sync: FakeSync = FakeSync(), transfer: FakeTransfer = FakeTransfer(), engine: FakeEngine = FakeEngine(),
+        syncImports: com.anyplayer.android.sync.SyncImportStatus = com.anyplayer.android.sync.SyncImportStatus()): GeneralSettingsViewModel =
+        GeneralSettingsViewModel(settings, FakePlayerSettings(), sync, engine, transfer, transfer, FakeDocuments(), syncImports).also { viewModels += it }
     private fun providers(auth: FakeAuth, catalog: FakeCatalog): ProvidersSettingsViewModel = ProvidersSettingsViewModel(auth, FakeConnections(), catalog,
         object : SpotifyRedirectSource { override val redirects = MutableSharedFlow<String>() }).also { viewModels += it }
 
@@ -36,6 +37,38 @@ class SettingsViewModelsTest {
         val saved = settings.writes.receive()
         assertEquals("https://sync.test", saved.serverTarget)
         assertEquals("secret", saved.authToken)
+    }
+    @Test fun disposalCommitSurvivesViewModelCancellation() = runTest(dispatcher) {
+        val settings = FakeSyncSettings()
+        val vm = general(settings)
+        runCurrent(); vm.editTarget("https://new.test"); vm.editToken("new-token")
+        vm.commitFields()
+        vm.viewModelScope.cancel()
+        val saved = settings.writes.receive()
+        assertEquals("https://new.test", saved.serverTarget)
+        assertEquals("new-token", saved.authToken)
+    }
+    @Test fun syncImportResultReachesStateTransferStatusLine() = runTest(dispatcher) {
+        val status = com.anyplayer.android.sync.SyncImportStatus()
+        val vm = general(syncImports = status)
+        runCurrent()
+        status.publish("Sync import failed: invalid config")
+        runCurrent()
+        assertEquals("Sync import failed: invalid config", vm.state.value.transferStatus)
+    }
+
+    @Test fun spotifyCallbackShowsFinishingLoginUntilAuthenticationCompletes() = runTest(dispatcher) {
+        val completion = CompletableDeferred<Unit>()
+        val auth = FakeAuth().apply { onCompleteSpotify = { completion.await() } }
+        val callbacks = MutableSharedFlow<String>()
+        val vm = ProvidersSettingsViewModel(auth, FakeConnections(), FakeCatalog(),
+            object : SpotifyRedirectSource { override val redirects = callbacks }).also { viewModels += it }
+        runCurrent()
+        callbacks.emit("anyplayer://spotify-callback?code=code")
+        vm.state.first { it.feedback == "Finishing Spotify login..." }
+        assertTrue(vm.state.value.busy)
+        completion.complete(Unit)
+        assertEquals("Spotify connected successfully.", vm.state.first { !it.busy }.feedback)
     }
     @Test fun connectCommitsDraftBeforeConnecting() = runTest(dispatcher) {
         val settings = FakeSyncSettings(); val sync = FakeSync(); val vm = general(settings, sync)
@@ -73,6 +106,23 @@ class SettingsViewModelsTest {
         auth.failure = "invalid token"
         vm.connect(SourceType.PLEX)
         assertEquals("Plex connection failed: invalid token", vm.state.first { !it.busy }.feedback)
+    }
+    @Test fun providerEmptyAndDisconnectFeedbackMatchesLegacy() = runTest(dispatcher) {
+        val vm = providers(FakeAuth(), FakeCatalog())
+        runCurrent(); vm.connect(SourceType.JELLYFIN)
+        assertEquals("Connecting to Jellyfin...", vm.state.value.feedback)
+        assertEquals("Jellyfin connected, but no provider playlists were returned.", vm.state.first { !it.busy }.feedback)
+        vm.disconnect(SourceType.JELLYFIN)
+        assertEquals("Disconnected jellyfin.", vm.state.first { !it.busy }.feedback)
+    }
+    @Test fun providerFailureAvoidsDoublePrefixAndHandlesBlankMessage() = runTest(dispatcher) {
+        val auth = FakeAuth().apply { failure = "Plex connection failed: denied" }
+        val vm = providers(auth, FakeCatalog())
+        runCurrent(); vm.connect(SourceType.PLEX)
+        assertEquals("Plex connection failed: denied", vm.state.first { !it.busy }.feedback)
+        auth.failure = " "
+        vm.connect(SourceType.PLEX)
+        assertEquals("Plex connection failed.", vm.state.first { !it.busy }.feedback)
     }
     @Test fun missingSpotifyClientIdUsesSetupMessage() = runTest(dispatcher) {
         val auth = FakeAuth().apply { failure = "Spotify client ID is required" }
@@ -125,7 +175,7 @@ class SettingsViewModelsTest {
         }
         val vm = providers(FakeAuth(), catalog)
         runCurrent(); vm.connect(SourceType.PLEX)
-        assertEquals("Plex connection failed: offline", vm.state.first { !it.busy }.feedback)
+        assertEquals("Plex connected, but playlist refresh failed: offline", vm.state.first { !it.busy }.feedback)
     }
     @Test fun pageSizeSavedFeedbackFollowsRepositoryCompletion() = runTest(dispatcher) {
         val auth = FakeAuth(); val vm = providers(auth, FakeCatalog())

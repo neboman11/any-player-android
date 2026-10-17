@@ -86,7 +86,8 @@ class SyncClient @Inject constructor(private val http: OkHttpClient) {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { close() }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { close(t) }
         })
-        awaitClose { socket.close(1000, "closed"); socket.cancel() }
+        // Cancellation must not enqueue a close watchdog on an already abandoned socket.
+        awaitClose { socket.cancel() }
     }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try { block() } catch (e: Exception) {
