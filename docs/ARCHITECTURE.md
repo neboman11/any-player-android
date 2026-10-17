@@ -1,44 +1,42 @@
-# Any Player Android — Architecture (v2 rewrite)
+# Any Player Android — Architecture (integrated v2)
 
-This document is the design the v2 rewrite is built from. The legacy app's behaviour was
-captured per domain before the rewrite (UI, playback, providers/auth, storage/sync, AI DJ);
-this design keeps every user-visible feature and every persisted contract, and removes the
-structural and performance problems listed in §10.
+This document describes the built Kotlin multi-module system. The legacy behavior
+specifications informed the rewrite; wire formats, persisted data and Android entry
+points remain compatible. Sections 1–11 describe the implementation. Section 12
+preserves the design-review amendments as a review record, not a second API reference;
+its accepted decisions are incorporated below. Code is authoritative for exact signatures.
 
 ## 1. Goals and non-goals
 
-Goals
-- Same features: Spotify (Connect remote control), Jellyfin and Plex (local ExoPlayer
-  streaming), mixed queues, shuffle/repeat, custom STANDARD/UNION playlists with "distinct"
-  playback, search, sync server (snapshot/push/WebSocket), state export/import, config-file
-  import, AI DJ breaks (remote + on-device LLM/TTS), MediaSession/Android Auto, notification.
-- Existing installs upgrade in place: Room `any_player.db` v2, EncryptedSharedPreferences
-  `provider_connections`, `spotify_auth_session`, `sync_preferences`, `playback_state`,
-  DJ files under `filesDir`, export-file formats, deep link `anyplayer://spotify-callback`.
-- No main-thread disk/crypto/network; no always-on polling loops; per-screen state; position
-  updates never recompose anything but the position widgets.
-
-Non-goals
-- New product features beyond what the bug fixes require (e.g. a richer Android Auto tree).
-- Changing server protocols (sync server, DJ endpoints, provider APIs).
+- Spotify Connect remote control and local Media3 streaming for Jellyfin/Plex share
+  mixed queues, shuffle/repeat, STANDARD/UNION custom playlists, distinct playback and search.
+- State/config import/export, sync snapshot/push/WebSocket, remote/on-device AI DJ,
+  MediaSession, Android Auto browsing and notification controls remain supported.
+- Existing installs upgrade in place: application id `com.anyplayer.android`, versionCode
+  2, Room `any_player.db` v3 with migrations from v1/v2, encrypted preference files/keys,
+  DJ files and `anyplayer://spotify-callback` are preserved.
+- Disk/crypto/network stay off Main. Playback state is event-driven; position widgets
+  extrapolate anchors. Spotify alone polls its remote device while holding a run.
+- New product features, a richer Auto catalog tree and server protocol changes are not
+  part of this rewrite.
 
 ## 2. Key decisions
 
-| # | Decision | Why |
+| # | Decision | Result |
 |---|---|---|
-| D1 | Gradle multi-module: `:core:model` (pure Kotlin/JVM), `:core:data`, `:playback`, `:dj`, `:app` | Enforced layering, parallel compilation, JVM-only unit tests for the core logic |
-| D2 | Drop the Rust FFI (`any_player_ffi_android`). Jellyfin, Plex, Spotify catalog clients and the volume-normalization formula are implemented in Kotlin | Rust was used as a blocking per-call HTTP client (new reqwest client per call, whole playlist re-fetched per page → quadratic), Jellyfin/Plex could not connect without the `.so`, and it forced a sibling-repo NDK build. Normalization is 10 lines of math. The desktop app keeps using the shared Rust core |
-| D3 | One app-owned queue model for every source mix (no "local/spotify/mixed" modes) | Legacy had three engines with divergent shuffle/repeat/previous semantics and a shared mutable bag |
-| D4 | Backends play **runs**: maximal consecutive play-order slices that belong to one backend | Keeps native gapless ExoPlayer playback and native Spotify auto-advance while the app owns order |
-| D5 | Queue entries get a stable unique `uid` | Duplicate track ids broke LazyColumn keys, "play from queue", DJ index heuristics |
-| D6 | State split into `QueueState` (changes on edits/track changes) and `PlayerState` (changes on transitions) with a **position anchor**; nobody polls for position | Legacy rewrote one giant status every 500 ms on Main and recomposed the whole app |
-| D7 | MediaSession player is a `SimpleBasePlayer` derived from engine state; Media3's `DefaultMediaNotificationProvider` owns the notification | Legacy ForwardingPlayer hid ExoPlayer's listeners and re-synthesised events from a polled flow |
-| D8 | Queue persisted in Room (`queue_entries`), small playback state in plain SharedPreferences, written on change (debounced) | Legacy re-encoded and AES-encrypted the whole queue every ~3 s |
-| D9 | Encrypted stores stay EncryptedSharedPreferences (same files/keys) but are opened lazily on IO and cached in memory as `StateFlow` | Zero migration risk; removes Keystore/Tink init and decrypts from the main thread |
-| D10 | Provider caches become normalized Room tables (`cached_playlists`, `cached_tracks`); `app_cache_entries` blobs are dropped in migration 2→3 | Blob cache silently refused >500 KB and decoded whole blobs per access |
-| D11 | AI DJ schedule is a pure reducer driven by engine cursor events; breaks are a first-class engine plan item | Removes 500 ms polling, 7 hand-wired advance hooks and ~12 `isPlayingInterstitial` branches |
-| D12 | Navigation Compose, one ViewModel per screen, immutable UI models, stable keys (`uid`/original index) | Legacy had one 907-line ViewModel and a 57-field UiState passed to every screen |
-| D13 | Restore never starts audible Spotify playback; queue restores paused, Spotify starts on first play with `position_ms` | Legacy hijacked the user's active Connect device on every cold start |
+| D1 | Five Gradle modules | Pure JVM model logic with Android integration in separate modules |
+| D2 | Kotlin provider clients and normalization replace Rust FFI | No Rust/NDK build or sibling checkout; DJ native runtimes are prebuilt dependencies |
+| D3 | One app-owned queue for all source mixes | Shared shuffle/repeat/previous semantics |
+| D4 | Backends play bounded runs of one backend kind | Native Exo/Spotify advance with app-owned order; upcoming runs reconcile as playback advances |
+| D5 | Stable queue-entry `uid` | Duplicate track ids identify distinct occurrences |
+| D6 | Queue content, cursor and anchored player state are separate | `contentVersion` changes only for entries/order; position does not republish whole state |
+| D7 | `SessionPlayer : SimpleBasePlayer` projects engine state | Media3 owns media notifications and controller events |
+| D8 | Room queue content/cursor; plain non-secret playback settings | No recurring encrypted whole-queue writes |
+| D9 | Lazy IO secure-store loading with in-memory flows | Existing encrypted files remain compatible |
+| D10 | Normalized Room provider/union caches | Legacy blob rows import once; legacy tables remain for compatibility |
+| D11 | Pure DJ reducer plus event-driven coordinator | Breaks are first-class plan items with explicit delivery lifetimes |
+| D12 | Navigation Compose and per-screen ViewModels | Immutable screen state, stable occurrence keys, off-main list transforms |
+| D13 | Paused local restore | No audible Spotify takeover until Play; saved position accompanies first load |
 
 ## 3. Modules and dependency rules
 
@@ -56,438 +54,397 @@ graph TD
   data --> model
 ```
 
-| Module | Type | Package root | Contents |
-|---|---|---|---|
-| `:core:model` | Kotlin/JVM library | `com.anyplayer.android.core.model` | Serializable domain models (wire-compatible), `QueueState` + pure queue ops, run planning, dedupe, volume normalization, DJ break schedule reducer, JSON instance factory |
-| `:core:data` | Android library | `com.anyplayer.android.data` | Room DB + DAOs, secure/plain stores, OkHttp + suspend helpers, Spotify/Jellyfin/Plex clients, auth, catalog repository, playlists repository, sync engine, state transfer, startup coordinator |
-| `:playback` | Android library | `com.anyplayer.android.playback` | `PlaybackEngine`, backends (Exo, Spotify Connect), audio cache, queue persistence, MediaLibraryService + session player |
-| `:dj` | Android library | `com.anyplayer.android.dj` | DJ coordinator, generators (remote/on-device), LLM runtime, sherpa TTS + voice processor, artifact downloads, passage repository |
-| `:app` | Android application | `com.anyplayer.android` | Application, MainActivity, navigation, screens, ViewModels, Hilt wiring of app-level bindings |
+### Module map
 
-Rules: `:core:model` has no Android imports. UI never touches DAOs, OkHttp or ExoPlayer.
-Feature modules expose interfaces + `StateFlow`s; `MutableStateFlow` is never public.
+| Module / package root | Main classes and contracts |
+|---|---|
+| `:core:model` — `com.anyplayer.android.core.model` | `Track`, `Playlist`, `QueueState`, `QueueOps`, `Run`, `PendingBreak`, `BreakSchedule`, `Dedupe`, `VolumeNormalization`, `AppJson`; `planRun`/`reduce` pure functions |
+| `:core:data` — `com.anyplayer.android.data` | `AppDatabase`, `CustomPlaylistDao`, `QueueDao`, `CatalogCacheDao`, `LegacyCacheImporter`; `SecureConnectionStore`, `SecurePrefs`; `DefaultAuthRepository`, `DefaultSpotifyTokenProvider`; `JellyfinClient`, `PlexClient`, `SpotifyClient`, `ProviderRegistry`; `RoomCatalogRepository`, `RoomPlaylistRepository`, `PlaylistImporter`, `LegacyStateTransfer`, `LegacyConfigFiles`; settings/store, `SyncEngine` and `AppStartup` contracts |
+| `:playback` — `com.anyplayer.android.playback` | `PlaybackEngine`, `DefaultPlaybackEngine`, `PlaybackBackend`, `ExoBackend`, `SpotifyBackend`, `SpotifyPlayerApi`, `SpotifyDeviceResolver`, `AudioCache`, `RoomPlaybackPersistence`, `LegacyPlaybackStateMigrator`, `SessionPlayer`; `AnyPlayerMediaLibraryService` retains `com.anyplayer.android.feature.playback.service` |
+| `:dj` — `com.anyplayer.android.dj` | `DjController`, `DefaultDjController`, `DjCoordinator`, `DjAudioFiles`, `PassageRepository`, `RemoteBreakGenerator`, `OnDeviceBreakGenerator`, `ScriptGenerator`, `VoiceSynthesizer`, `VoiceProcessor`, `ArtifactStore`, `DjDiagnostics` |
+| `:app` — `com.anyplayer.android` | `AnyPlayerApplication`, `MainActivity`, `DefaultAppStartup`, `ProcessStartupGate`, `DefaultSyncEngine`, `SyncClient`, `SyncImports`, `AppModule`; `ShellViewModel` and screen ViewModels under `ui` |
+
+`:core:model` is pure Kotlin/JVM with no Android imports. The other four modules use
+Android. UI consumes repository/controller/engine contracts, never DAOs, OkHttp or
+ExoPlayer. Mutable flows stay private. Sync/startup **interfaces** live in
+`core/data/.../sync/SyncContracts.kt`; implementations live in `app/.../sync` and
+`app/.../startup` to compose data, playback and DJ without reverse dependencies.
+
+Hilt singleton bindings supply repositories, stores and engines. `AppModule` provides
+`@Named("spotifyClientId") String`, `@Named("appVersionCode") Int` and
+`@Named("appVersionName") String` from BuildConfig, plus the legacy-cache startup adapter.
+`DefaultAppStartup` resolves the singleton `DjController` after the startup gate;
+constructing its `DjCoordinator` starts scheduling even before the DJ screen is opened.
 
 ## 4. Domain model (`:core:model`)
 
-Wire-compatible with legacy JSON (Room converters, sync, export) — names/serial names unchanged:
-
-```kotlin
-@Serializable enum class SourceType { @SerialName("spotify") SPOTIFY, @SerialName("jellyfin") JELLYFIN,
-  @SerialName("plex") PLEX, @SerialName("custom") CUSTOM, @SerialName("all") ALL }
-@Serializable enum class PlaylistType { @SerialName("standard") STANDARD, @SerialName("union") UNION }
-@Serializable enum class RepeatMode { @SerialName("off") OFF, @SerialName("one") ONE, @SerialName("all") ALL }
-@Serializable enum class PlaybackStateType { idle, playing, paused, buffering, error } // serial names lowercase
-@Serializable data class Track(id, title, artist, album?=null, durationMs?=null, source, url?=null,
-  imageUrl?=null, bitrateKbps?=null, sampleRateHz?=null, enriched?=null, isDjFiller=false)
-@Serializable data class Playlist(id, name, owner, trackCount, source, imageUrl?=null, tracks?=null, description?=null)
-@Serializable data class CustomPlaylist(id, name, description?, imageUrl?, createdAt, updatedAt, trackCount, playlistType, isDistinct=false)
-@Serializable data class PlaylistTrack(id, playlistId, trackSource, trackId, position, addedAt, title, artist, album?, durationMs?, imageUrl?, url?)
-@Serializable data class UnionPlaylistSource(id, unionPlaylistId, sourceType, sourcePlaylistId, position, addedAt)
-@Serializable data class PlaybackStatus(...) // kept only for sync/export wire format (legacy shape)
-```
-`AppJson`: `Json { ignoreUnknownKeys = true; explicitNulls = false }` (encodeDefaults false) —
-identical to legacy so export integrity hashes reproduce byte-for-byte.
+Serializable domain models retain legacy JSON names, lowercase source/repeat/state
+serial names and STANDARD/UNION playlist semantics. `PlaybackStatus` remains a legacy
+wire/transfer shape, not the live UI state. `AppJson` ignores unknown keys, omits explicit
+nulls and leaves defaults unencoded; transfer integrity depends on that encoding.
 
 ### 4.1 Queue model
 
-```kotlin
-data class QueueEntry(val uid: Long, val track: Track)
+`QueueEntry(uid: Long, track: Track)` gives each occurrence a unique identity.
+`QueueState` contains insertion-order `entries`, play-order `order` (entry indices),
+play-order `cursor` (-1 when nothing is current), shuffle/repeat flags, `playNextOffset`,
+`contentVersion` and `nextUid`. Accessors include `current`, `entryAt`, `upcoming`,
+`history` and `orderPosOfUid`.
 
-data class QueueState(
-  val entries: List<QueueEntry> = emptyList(),   // insertion order ("queue")
-  val order: List<Int> = emptyList(),            // indices into entries, play order
-  val cursor: Int = -1,                          // position in `order`; -1 = nothing current
-  val shuffle: Boolean = false,
-  val repeat: RepeatMode = RepeatMode.OFF,
-  val playNextOffset: Int = 0,                   // stacking for "play next"
-  val version: Long = 0,                         // bumps on any change
-  val nextUid: Long = 1,
-) {
-  val current: QueueEntry?            // entries[order[cursor]]
-  fun entryAt(orderPos: Int): QueueEntry
-  fun upcoming(): List<QueueEntry>    // order after cursor
-  fun history(): List<QueueEntry>     // order before cursor
-}
-
-object QueueOps {  // pure; Random injected
-  fun replace(s, tracks, startIndex, random): QueueState     // startIndex into tracks; shuffle → current first, rest shuffled
-  fun playNext(s, track): QueueState                          // insert after cursor + playNextOffset; offset++ ; empty queue → single entry cursor 0
-  fun advance(s, wrap: Boolean): QueueState?                  // cursor+1; repeat ALL wraps; null at end
-  fun back(s): QueueState?                                    // cursor-1, null at start
-  fun jumpToEntry(s, entryIndex): QueueState                  // cursor = order.indexOf(entryIndex)
-  fun jumpToUid(s, uid): QueueState
-  fun setShuffle(s, on, random): QueueState                   // on: current stays at cursor, rest shuffled; off: order = identity, cursor = current's entry index
-  fun setRepeat(s, mode): QueueState
-  fun remove(s, uid): QueueState
-}
-```
-Rules (unified; legacy per-mode divergences resolved):
-- `playNextOffset` resets to 0 on every cursor move and on `replace` (legacy bug B4).
-- Repeat ALL wraps for manual next and auto-advance alike. Repeat ONE is handed to the backend.
-- Previous: if position > 3000 ms → seek 0; else `back`; at start → seek 0.
-- Shuffle start: `replace(..., startIndex=0)` with shuffle on and >1 track picks a random start
-  (legacy rule; no longer excludes Spotify tracks because every source mix uses the same model).
+`QueueOps` is pure and accepts `Random` where needed:
+- `replace(s, tracks, startIndex, random, randomStart=false)` preserves explicit starts.
+  Random starts require a user play request at index 0 with shuffle on and >1 track;
+  sync/restore never randomize.
+- `playNext` inserts after current+offset in **both** insertion and play order, stacking
+  calls in call order. Empty queues become one current entry.
+- `advance`, `back` and `jumpToUid` move the cursor and reset the play-next offset.
+  Only entries/order changes bump `contentVersion`; cursor and repeat changes do not.
+- `setShuffle` preserves current identity (and history when enabling), while disabling
+  restores insertion order. There is no `jumpToEntry` or queue `remove` API.
+- Repeat ALL wraps manual/automatic next; ONE is delegated to backends. Engine previous
+  seeks to 0 above 3000 ms, otherwise moves back; at the start it seeks to 0.
 
 ### 4.2 Run planning
 
-```kotlin
-enum class BackendKind { EXO, SPOTIFY, UNPLAYABLE }
-fun backendFor(track: Track): BackendKind  // SPOTIFY source → SPOTIFY; http/https/file/content/android.resource url → EXO; else UNPLAYABLE
+`backendFor` recognizes valid normalized 22-character alphanumeric Spotify ids as
+SPOTIFY. Other sources with http/https/file/content/android.resource URLs use EXO;
+everything else is UNPLAYABLE.
 
-sealed interface PlanItem { data class Song(val entry: QueueEntry, val orderPos: Int) : PlanItem
-                            data class Break(val breakId: String, val audioUri: String) : PlanItem }
-
-data class Run(val kind: BackendKind, val items: List<PlanItem>)   // Break items only in EXO runs
-fun planRun(state: QueueState, fromOrderPos: Int, pendingBreak: PendingBreak?, maxItems: Int = 50): Run
-```
-- A run starts at `fromOrderPos` and extends while the next item has the same backend kind,
-  without wrapping, up to `maxItems`.
-- `PendingBreak(beforeUid, breakId, audioUri)`: in an EXO run the break is spliced as an item
-  immediately before `beforeUid`; a SPOTIFY run stops before `beforeUid`, and the break is
-  played as a single-item EXO run at the boundary.
-- UNPLAYABLE entries are skipped (engine advances past them, error message surfaced once).
+`planRun(state, fromOrderPos, pendingBreak, maxItems=50): Run?` skips UNPLAYABLE entries
+inside runs and returns null if no playable entry remains. Runs are EXO or SPOTIFY,
+never UNPLAYABLE; they do not wrap and end at the next different playable backend.
+`PlanItem.Song` carries entry/order position; `PlanItem.Break` carries break id/audio URI.
+`PendingBreak(beforeUid, breakId, audioUri)` splices before the target in EXO runs;
+Spotify stops before it and the engine uses a single-item EXO `breakRun` at the boundary.
+The engine additionally enforces advance-only delivery (§8.2).
 
 ### 4.3 Other pure logic
-- `Dedupe` (legacy `DistinctPlaylistUtils`; key `trim().lowercase(ROOT)` of title|artist;
-  must pass `dedup_spec.json` fixture).
-- `VolumeNormalization.effective(volume, source, enabled)` — port of Rust
-  `effective_output_volume` with target 85: Spotify `((v*85+50)/100)`, others `round(v*factor)`
-  where `factor = clamp((0.04+0.85*0.18)/0.22, 0.1, 1.0)`; disabled → v.
-- `BreakSchedule` reducer (§8.1).
-- `normalizePlaylistId(source, id)`, `normalizeSpotifyTrackId`, `trackIdsMatch`.
+
+- `Dedupe` uses normalized title/artist keys and the `dedup_spec.json` fixture.
+- `VolumeNormalization` ports Rust output math with **Float** parity over 0..100 for
+  every source; Spotify uses the 85 target and other sources the clamped attenuation.
+- Playlist/Spotify id normalization and `trackIdsMatch` preserve provider identifiers.
+- `BreakSchedule`/`reduce` implement §8.1 independently of Android.
 
 ## 5. Data layer (`:core:data`)
 
 ### 5.1 Room `any_player.db`
-- Keep v2 entities **identical** (`custom_playlists`, `playlist_tracks`, `union_playlist_sources`,
-  `provider_playlist_preferences`; enum columns stored as UPPERCASE `.name`; ISO text timestamps;
-  `MIGRATION_1_2` kept; custom playlist upsert = INSERT OR IGNORE + UPDATE, never REPLACE).
-- Version 3 adds, via `MIGRATION_2_3`:
-  - `queue_entries(position INTEGER PK, uid INTEGER NOT NULL, trackJson TEXT NOT NULL)` +
-    `queue_order(position INTEGER PK, entryIndex INTEGER NOT NULL)`.
-  - `cached_playlists(source TEXT, id TEXT, name, owner, trackCount INTEGER, imageUrl, description,
-    position INTEGER, updatedAtMs INTEGER, PRIMARY KEY(source,id))`.
-  - `cached_tracks(ownerKey TEXT, position INTEGER, trackJson TEXT, PRIMARY KEY(ownerKey, position))`
-    where ownerKey = `p:<source>:<playlistId>` (provider) or `u:<unionId>` (union materialization),
-    and `cached_track_owners(ownerKey PK, updatedAtMs, trackCount)`.
-  - Drops `app_cache_entries` (cache only) and `column_preferences` (no UI; export keeps the
-    `columnPreferences` field in the model so old files re-encode identically).
-- Schemas exported to `core/data/schemas`; legacy `1.json`/`2.json` copied there.
-- Mutations are single `@Transaction` DAO methods (append track = insert at `COUNT(*)` +
-  `trackCount+1`), serialized per playlist.
 
-### 5.2 Stores
-| Store | Backing | Notes |
-|---|---|---|
-| `SecurePrefs` | EncryptedSharedPreferences factory, shared MasterKey (AES256_GCM, default alias), keys AES256_SIV / values AES256_GCM | opened lazily on `Dispatchers.IO`, one instance per file |
-| `ConnectionStore` | `provider_connections`, keys `SPOTIFY`/`JELLYFIN`/`PLEX`, value `StoredConnection` JSON | `StateFlow<Map<SourceType, StoredConnection>>`; new optional field `jellyfinUserId` (falls back to legacy `refreshToken` for JELLYFIN) |
-| `SpotifyAuthSessionStore` | `spotify_auth_session` keys `state`,`codeVerifier`,`clientId`,`redirectUri` | |
-| `SyncSettingsStore` | `sync_preferences`: `sync_preferences_json`, `sync_client_id` | `StateFlow<SyncPreferences>`; writes only on explicit save |
-| `DjSettingsStore` | `sync_preferences`: `selected_dj_voice_id`, `selected_dj_model_id`, `dj_remote_generation` (default true), `dj_voice_level` (default 1.0) | same file, separate class |
-| `PlayerSettingsStore` | plain SharedPreferences `player_settings` | shuffle, repeat, volume, cursor, positionMs, normalization flags, aiDjEnabled, showDjEntriesInQueue |
-| `LegacyPlaybackStateMigrator` | reads ESP `playback_state` key `status` once → Room queue + `player_settings`, then removes key | |
+`AppDatabase` is version 3 with exported schemas in `core/data/schemas`.
+`MIGRATION_1_2` retains the legacy distinct-playlist changes. `MIGRATION_2_3` only adds:
+- `queue_entries(uid INTEGER PK, seq INTEGER, trackJson TEXT)`.
+- `queue_meta(id=0 PK, orderUids TEXT, cursorUid INTEGER, contentVersion INTEGER)`;
+  `orderUids` is comma-separated uid order. Cursor updates are content-version-qualified.
+- `cached_playlists` keyed by `(source,id)`, with display/order/freshness fields.
+- `cached_tracks(ownerKey,position,trackJson)` and
+  `cached_track_owners(ownerKey,updatedAtMs,trackCount)`, using provider `p:<source>:<id>`
+  and union `u:<id>` owners.
 
-All store reads happen once per process on IO; consumers observe `StateFlow`s.
+Legacy `custom_playlists`, `playlist_tracks`, `union_playlist_sources`,
+`provider_playlist_preferences`, `column_preferences` and `app_cache_entries` remain.
+Column preferences still round-trip through transfer. `LegacyCacheImporter` converts
+legacy provider/union cache rows in the background, then deletes converted rows; migration
+SQL never parses JSON. Catalog refresh removes vanished playlists' cached tracks in the
+same transaction.
 
-### 5.3 Networking
-- One `OkHttpClient` (connect 15 s, read 30 s, ping 30 s for WS); `suspend fun Call.await()`
-  via `enqueue` with cancellation.
-- `retrying { }` coroutine helper: 429 (any method) and 5xx (GET/HEAD) → `Retry-After`
-  seconds (≤60) else 0.5·2ⁿ s (≤10 s), max 5 retries, `delay` not `Thread.sleep`.
-- `SpotifyTokenProvider`: single-flight refresh (Mutex), refresh at `expiresAt-5min`, used by
-  every Spotify call (catalog, search, player). 401 → one forced refresh + retry.
+DAO transactions preserve count/timestamp/children consistency. Custom playlist upsert
+uses INSERT OR IGNORE + UPDATE, not REPLACE; appends use `COALESCE(MAX(position)+1,0)`
+to tolerate legacy gaps. Room opens lazily on its first off-main query; there is no
+destructive migration fallback.
 
-### 5.4 Providers
-```kotlin
-interface ProviderClient {
-  val source: SourceType
-  suspend fun validate(conn: StoredConnection): ValidationResult
-  suspend fun playlists(conn: StoredConnection): List<Playlist>                    // all pages
-  suspend fun playlistTracks(conn: StoredConnection, playlistId: String): List<Track> // all pages, one pass
-  suspend fun search(conn: StoredConnection, query: String, type: SearchType, limit: Int): SearchResult // only the requested type
-}
-```
-Implementations follow the legacy Rust contracts exactly (endpoints, headers, field mapping,
-stream URL formats):
-- Jellyfin: `X-Emby-Token` + `X-Emby-Authorization: MediaBrowser ...`; user resolved once at
-  connect (`/Users`, matching stored id else first) and persisted as `jellyfinUserId`;
-  stream `{base}/Audio/{id}/universal?UserId=..&Container=..&AudioCodec=..`; page size from
-  connection (default 300, clamp 1..1000).
-- Plex: `X-Plex-Token` query param, `Accept: application/json`; no per-request TCP probe;
-  stream `{base}{Media[0].Part[0].key}?X-Plex-Token=..`.
-- Spotify: Web API v1; playlists via `me/playlists` all pages; tracks via
-  `playlists/{id}/tracks?market=from_token` pages of 100; search single page of 50 per type.
-- `ProviderRegistry` maps `SourceType → ProviderClient`.
+### 5.2 Stores and compatibility
 
-`CatalogRepository`
-- `playlists: Flow<List<Playlist>>` from `cached_playlists` (instant on startup).
-- `refreshPlaylists(sources = connected)`: per provider in parallel; replaces that provider's
-  rows; failures reported per provider, cache kept.
-- `tracks(source, id, forceRefresh=false)`: cache-first; refresh if forced, missing, or older
-  than 6 h (background revalidate when stale-but-present). Writes `cached_tracks` in one transaction.
-- `refreshAll(onProgress)`: playlists then tracks with Semaphore(4); one playlist failing does
-  not abort the others; progress strings kept from legacy.
-- `search(query, source, type)`: blank → empty; only requested type; providers in parallel;
-  order Jellyfin, Plex, Spotify.
+| Contract / implementation | Backing and behavior |
+|---|---|
+| `SecurePrefs` | Lazy IO EncryptedSharedPreferences, shared default MasterKey AES256_GCM; key AES256_SIV/value AES256_GCM |
+| `ConnectionStore` / `SecureConnectionStore` | `provider_connections`, uppercase source keys, `StoredConnection` JSON; mutex-protected writes and in-memory connections |
+| `SpotifyAuthSessionStore` | `spotify_auth_session`: state, codeVerifier, clientId, redirectUri |
+| `SyncSettingsStore` | Encrypted `sync_preferences`: `sync_preferences_json`, `sync_client_id`; in-memory `preferences` flow |
+| `DjSettingsStore` | Same encrypted file: selected voice/model ids, remote-generation flag (default true), voice level (default 1.0) |
+| `PlayerSettingsStore` | Plain `player_settings`: shuffle/repeat/volume/position, normalization enabled/strict, DJ enabled/queue-display flags; no cursor |
+| `LegacyPlaybackStateMigrator` (`:playback`) | Reads encrypted `playback_state`/`status` once, maps occurrence-aware legacy ordered queue and insertion-space cursor, commits Room and flags before removing legacy key |
 
-`AuthRepository`
-- `connections: StateFlow<Map<SourceType, ProviderConnectionProfile>>`.
-- `connectJellyfin/connectPlex(url, token, pageSize)`, `beginSpotifyAuth()`, `completeSpotifyAuth(uri)`,
-  `disconnect(source)`, `updatePageSize`. PKCE flow, error strings and ordering identical to legacy;
-  scopes = legacy effective scope set (no `streaming`).
-- Restore at startup: no network for Jellyfin/Plex; Spotify refreshes only if token expiring. A
-  network failure never marks a provider disconnected; auth failures (401) do.
+Secure stores load on IO and expose in-memory flows plus `awaitLoaded`; an initial empty
+connection snapshot is not proof of disconnection. New `jellyfinUserId` is resolved lazily
+for legacy connections on the first provider call, then persisted; legacy refresh-token
+data is not interpreted as a Jellyfin user id.
 
-### 5.5 Playlists
-`PlaylistRepository` (custom playlists) — legacy `CustomPlaylistEngine` semantics, minus the
-playback dependency: it returns track lists; callers hand them to the engine.
-- create (blank → "Untitled Playlist"), rename, delete (cascade + union cache), addTrack,
-  removeTrackAt, reorder, union sources add/replace/reorder, `materializeUnion(id, force)`
-  (sources fetched in parallel with order preserved, nested UNION sources resolved one level,
-  `(source,id)` identity dedupe, cached under `u:<id>`, `trackCount` updated),
-  `tracksForPlayback(id)` (applies title|artist dedupe when distinct), `providerDistinct` prefs.
+### 5.3 Networking and providers
 
-Implementation: `RoomPlaylistRepository` uses transactional `CustomPlaylistDao` operations and a
-separate `UnionCacheDao`. `PlaylistSourceEditor` exposes incremental add/remove/reorder edits
-without changing the shared repository contract. Source edits commit sources, normalized cache,
-and count/timestamp together after bounded parallel fetches; a CUSTOM union source expands one
-level only. UI observation never starts provider requests.
+The provider/data HTTP helpers use OkHttp asynchronous `Call.await` with cancellation.
+`executeRetrying` closes rejected responses before suspending: retry 429 for any method,
+5xx only for GET/HEAD, up to five retries, numeric Retry-After capped at 60 s or exponential
+0.5 s backoff capped at 10 s. `DefaultSpotifyTokenProvider` single-flights refresh and is
+used by catalog/search/player calls; 401 gets one forced refresh/retry.
 
-### 5.6 Sync
-`SyncEngine` (`@Singleton`, application scope) — wire protocol unchanged
-(`GET /v1/snapshot[?since_version]`, `PUT /v1/state/{app-state|playlists|settings|provider-configuration}`
-with `{client_id,data}`, WS `/v1/ws` events), status strings unchanged.
-- Settings edits are drafts in the UI; persisted + (re)connected only on **Connect/Save**.
-- Realtime push on discrete changes (queue version, current entry, play state, seek, volume,
-  shuffle, repeat), throttled to ≥2 s and ≤1 per 15 s when only position drifts; never per tick.
-- WS reconnect with exponential backoff (1 s → 60 s, jitter), paused while no network.
-- Startup pull runs after the UI is up and does **not** re-run startup; a provider-config change
-  re-validates only that provider.
-- Legacy fixes: `lastSyncVersion` advanced on every applied snapshot.
+`ProviderClient` exposes source, validate, playlists, playlistTracks and typed search.
+`ProviderRegistry` maps sources to `JellyfinClient`, `PlexClient`, `SpotifyClient`:
+- Jellyfin uses legacy Emby token/authorization headers, resolves `/Users` when needed
+  and generates `/Audio/{id}/universal` stream URLs; page size defaults to 300.
+- Plex uses `X-Plex-Token`, JSON responses and the media Part stream path.
+- Spotify uses Web API playlists/tracks/search and PKCE auth, not a native audio decoder.
+  `DefaultAuthRepository.profiles` is UI-facing; `ConnectionStore.connections` holds
+  persisted credentials. Restore is local for Jellyfin/Plex; Spotify refreshes when needed.
+  Network failures do not erase credentials.
 
-### 5.7 State transfer / config import
-- Formats byte-compatible (models ported; same `AppJson`; PBKDF2-HMAC-SHA256 150 000 iters,
-  16-byte salt, AES-256-GCM 12-byte nonce, Base64 standard; integrity SHA-256 of canonical
-  re-encoding; encrypted-file detection rules).
-- One `PlaylistImporter(policy, dryRun)` shared by state import, config import and sync pull.
-- Fixes: connection import merges into existing connections and never clears tokens; dry run
-  writes nothing; MERGE_KEEP_LOCAL remaps child ids deterministically; empty union allowed.
-- Streams are read/written on IO inside a read transaction.
+Data HTTP URL/token normalization lives in `data.net.Http.kt`; DJ currently keeps
+equivalent internal `normalizeBase`/`normalizeToken` and `awaitDj` helpers in `DjHttp.kt`.
+DJ uses the committed sync target/token; it does not use an uncommitted Settings draft.
 
-Implementation: `PlaylistImporter` is shared by `LegacyStateTransfer` and `LegacyConfigFiles`;
-each import replaces children only for the imported destination playlists, avoiding primary-key
-and position conflicts with retained local playlists. Config natural-key UUIDs remain unchanged
-for first occurrences; repeated tracks/sources use a deterministic occurrence component so a
-round trip cannot collapse intentional duplicates. State integrity uses the legacy declaration
-order/default omission rules; the independent fixture ports the legacy transfer test's seed.
-Config sync exports use `Json { ignoreUnknownKeys = true }`, including its default
-`explicitNulls = true` and `encodeDefaults = false` behavior.
+### 5.4 Catalog and playlists
 
-### 5.8 Startup
-`AppStartup` (application scope, started from `Application.onCreate` on a background dispatcher):
-1. Migrate legacy playback state (once).
-2. Restore engine queue (paused) — UI can render immediately from Room flows.
-3. Restore provider sessions in parallel (§5.4).
-4. Refresh provider playlist list in background (stale-while-revalidate).
-5. Sync startup pull (if configured), then realtime sync.
-Exposes `StartupState(warnings, inProgress)`; the UI banner shows warnings with Retry.
+`RoomCatalogRepository` observes normalized playlist rows. Provider list refresh is
+parallel with per-provider failures and retained offline cache. Tracks are cache-first,
+with background revalidation after six hours; forced refresh replaces a whole owner
+transactionally. `refreshAll` limits concurrent track fetches to four. Typed search
+queries connected providers in Jellyfin/Plex/Spotify order and cancels with its caller.
+
+`RoomPlaylistRepository` implements `PlaylistRepository`; playback callers receive tracks
+and hand them to `PlaybackEngine`. STANDARD and UNION CRUD, occurrence positions,
+provider/custom distinct flags and union materialization preserve legacy semantics.
+`PlaylistSourceEditor` adds incremental source editing without duplicating the repository
+contract. Bounded parallel source fetches preserve source order; nested CUSTOM union
+sources expand one level, identities dedupe by `(source,id)`, and cache/count/source edits
+commit together. Observing UI data never initiates a provider fetch.
+
+### 5.5 Sync contracts; implementation in `:app`
+
+`SyncEngine` exposes state, start/connect/pull and conflict resolution. `DefaultSyncEngine`,
+`SyncClient` and `SyncImports` compose playback and data using the legacy
+`/v1/snapshot`, `/v1/state/{namespace}` and `/v1/ws` protocol.
+
+- UI commits target/token on IME done/focus loss and tab/navigation departure; bounded
+  writes finish even when that ViewModel is cleared. Only Connect changes the realtime
+  account; automatic pushes retain the last start/Connect account.
+- Pushes require a non-empty post-restore queue, ignore SYNC/RESTORE-origin changes and
+  retain a 3.5 s post-apply echo guard. Discrete changes (including exact seek/pause
+  position) coalesce with a 2 s minimum interval. There are **no periodic position pushes**.
+- Startup pull applies playback only if local playback did not change during fetch.
+  Applied snapshot versions always advance. Playlist overwrite requires confirmation.
+- WebSocket reconnect backs off 1–60 s with jitter and network availability gating.
+  App-state events first fetch `/v1/state/app-state`, with snapshot fallback. Other
+  namespace events never apply snapshot playback and skip unconfirmed playlist overwrites.
+- Imported normalization is persisted and applied; provider URL changes revalidate/refresh
+  only the affected provider. Config summaries/errors reach Settings without rerunning startup.
+
+### 5.6 State transfer and config import
+
+`LegacyStateTransfer` and `LegacyConfigFiles` share `PlaylistImporter`, preserving
+legacy formats, `_import_`/`_cfg_` deterministic remaps, canonical integrity encoding,
+PBKDF2-HMAC-SHA256 (150,000 iterations, 16-byte salt), AES-256-GCM (12-byte nonce)
+and standard Base64. Streams, large JSON and crypto run on IO.
+
+Imports replace children only for imported destination playlists, preserving retained
+local children. Connection imports merge without clearing tokens; dry runs write nothing;
+empty unions are allowed. Occurrence-aware deterministic ids preserve repeated tracks
+and sources. Config export keeps its legacy Json defaults (`explicitNulls=true`,
+`encodeDefaults=false`), distinct from AppJson's explicit-null omission.
+
+### 5.7 Startup
+
+`AnyPlayerApplication.onCreate` starts singleton `AppStartup`. `DefaultAppStartup` runs
+on IO, awaits engine restore (including legacy queue migration), then restores provider
+sessions. `ProcessStartupGate` waits for `ProcessLifecycleOwner` STARTED or actual playback
+before constructing `DjController`, importing legacy caches, refreshing provider lists
+and starting sync's startup pull/realtime. Thus media-only cold browsing restores locally
+without starting DJ/catalog/sync network work. Restore runs every process start; failures
+become `StartupStatus` warnings with Retry instead of a second startup path.
 
 ## 6. Playback (`:playback`)
 
-### 6.1 Engine
-```kotlin
-interface PlaybackEngine {
-  val queue: StateFlow<QueueState>
-  val player: StateFlow<PlayerState>
-  fun positionMs(): Long                          // extrapolated from anchor
-  fun setQueue(tracks: List<Track>, startIndex: Int = 0, autoPlay: Boolean = true)
-  fun playNext(track: Track)
-  fun playEntry(uid: Long)
-  fun play(); fun pause(); fun togglePlayPause()
-  fun next(); fun previous()
-  fun seekTo(ms: Long)
-  fun setVolume(percent: Int)
-  fun setShuffle(on: Boolean); fun setRepeat(mode: RepeatMode)
-  fun setNormalization(enabled: Boolean)
-  // DJ host
-  val events: SharedFlow<EngineEvent>             // TrackStarted(uid, orderPos), BreakStarted(id), BreakEnded(id), QueueReplaced
-  fun setPendingBreak(b: PendingBreak?)
-}
+### 6.1 Engine contract and reconciliation
 
-data class PlayerState(
-  val status: PlaybackStateType, val currentUid: Long?, val durationMs: Long,
-  val anchorPositionMs: Long, val anchorElapsedRealtimeMs: Long, val isAdvancing: Boolean,
-  val volume: Int, val normalization: Boolean, val error: String?, val activeBreakId: String?,
-)
-```
-- Main-confined intent reducer; public commands hop to Main.immediate. A conflated wake channel
-  drives one level-triggered reconcile loop. No in-flight backend command is cancelled.
-- Every load and event carries a generation; item events resolve stable `ItemKey` identities
-  against the current queue, never a captured play-order index. Natural transitions emit USER
-  changes; explicit sync/restore mutations retain their supplied origins.
-- Reconcile compares the desired run, play intent, seek serial, normalized volume and repeat
-  mode with the applied backend state. The old backend stops before a different backend loads.
-  EXO updates only upcoming timeline items and retains at most three history items.
-- Player-originated pauses are adopted into intent. Auth gating lives inside the engine, so
-  UI, session, notification and sync all share the same legacy disabled message and play guard.
-- Persistence uses `QueueDao` transactions: contentVersion changes debounce for 500 ms, cursor
-  updates are version-qualified, and flags/position use PlayerSettingsStore (including a 15 s
-  checkpoint while playing). LegacyPlaybackStateMigrator maps duplicate occurrences and the
-  insertion-space cursor before retiring the encrypted key after Room and flags are durable.
-- Restore awaits migration and reads only local stores. Queue and saved position restore paused;
-  no backend loads until the first play, which receives the saved position.
+`PlaybackEngine` exposes `queue`, `player`, `events`, `changes`, `positionMs` and
+`awaitRestored`, plus queue/transport/volume/shuffle/repeat/normalization/pending-break
+commands. Relevant mutations accept `ChangeOrigin.USER/SYNC/RESTORE`;
+`EngineChange(origin,contentChanged)` carries origin on `changes`, not in `PlayerState`.
+
+`PlayerState` holds status, `playRequested`, current uid, duration, position/time anchor,
+volume, normalization, error, disabled reason and `activeBreak: ActiveBreak?`.
+`DefaultPlaybackEngine` confines intents to Main.immediate and wakes one conflated
+level-triggered reconcile loop. Desired run/play/seek/volume/repeat are compared with
+applied backend state; in-flight backend commands are not cancelled. Backend switches
+stop the old backend before loading the new one. Player-originated pauses become intent.
+
+Every load/event has a generation `loadId`; `ItemKey.Song(uid)`/`Break(breakId)` identify
+items independently of old indices. Stale events are ignored. Each ItemStarted reconciles
+again, sliding EXO runs forward and retaining at most three history items.
+
+Auth gating is inside the engine for UI/session/notification/sync alike; it exposes
+`disabledReason` and still allows Next/Previous. Restore reads local stores and stays
+paused without loading a backend; first Play carries the saved position. Queue content
+writes debounce 500 ms by `contentVersion`, cursor writes are version-qualified Room
+updates, flags/position use player settings (15 s playing checkpoint).
 
 ### 6.2 Backends
-```kotlin
-interface PlaybackBackend {
-  val kind: BackendKind
-  val events: Flow<BackendEvent>    // ItemStarted(indexInRun), PlayingChanged(isPlaying, buffering), RunEnded, Error(msg)
-  suspend fun load(run: Run, startIndex: Int, positionMs: Long, playWhenReady: Boolean)
-  suspend fun updateUpcoming(run: Run, currentIndex: Int)
-  suspend fun play(); suspend fun pause(); suspend fun seekTo(ms: Long)
-  suspend fun setVolume(effectivePercent: Int); suspend fun setRepeatOne(on: Boolean)
-  suspend fun stop()
-  fun positionMs(): Long; fun durationMs(): Long
-}
-```
-- `ExoBackend`: one ExoPlayer (audio attributes + focus + becoming-noisy handled by ExoPlayer),
-  `CacheDataSource` over OkHttp data source; media item ids `"${uid}"` for songs,
-  `dj-filler:<breakId>` for breaks; `customCacheKey = "${SOURCE}:${trackId}"` and prefetch
-  uses the same key (fixes B1); prefetch only the next track's first 2 MB. Jellyfin auth headers
-  injected per request from in-memory connection snapshot (scheme+authority match).
-  `updateUpcoming` edits the timeline after the current item — no rebuffer.
-- `SpotifyBackend`: `PUT me/player/play` with the run's URIs + offset (+`position_ms`), device
-  resolution and Spotify-app launch fallback as legacy (strings unchanged). Poller is active only
-  while the Spotify backend holds a run: 1 s when <5 s remain, 2 s while playing, 5 s while
-  paused; stopped otherwise. Raw polled progress drives stall detection (fixes B2). Track id →
-  run index mapping emits `ItemStarted`; stopped near end of the last run item or track moved
-  outside the run → `RunEnded`; manual-pause grace 5 s; recovery: ≤3 restarts at the last
-  position with 2.5/4 s cooldowns, then ERROR "Couldn't get Spotify playback back (…). Press
-  play to try again.". No server-side shuffle (order owned by the app); repeat ONE → `track`, else `off`.
-- Volume: Exo gets `effective(volume, source)`/100; Spotify gets `effective(volume, SPOTIFY)` via
-  `PUT me/player/volume` (debounced 300 ms).
 
-### 6.3 Session / service
-- `AnyPlayerMediaLibraryService` (FQN unchanged:
-  `com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService`, same intent
-  filters, `foregroundServiceType=mediaPlayback`).
-- `SessionPlayer : SimpleBasePlayer` built from `queue`/`player` flows (invalidated only when
-  they emit): playlist = play-order window (cursor−100 … cursor+400) mapped to
-  `MediaItemData(uid)`, position via extrapolating `PositionSupplier`, DJ override metadata
-  ("AnyPlayer DJ") while a break plays. Commands: play/pause, next/previous, seek, seek to item,
-  shuffle, repeat. Media3 notification provider handles the notification + artwork.
-- Browse tree: root id `"root"` → current play-order queue as playable items (mediaId = uid
-  string; legacy track-id lookups still accepted in `onGetItem`/`onSetMediaItems`).
-- Projection controller connect/disconnect behaviour and 1.5 s auto-pause on last disconnect kept;
-  noisy-audio pause for Spotify playback handled by the service receiver.
+`PlaybackBackend` exposes events, `load(loadId,run,startIndex,positionMs,playWhenReady)`,
+`updateUpcoming(loadId,run,currentKey)`, `seekToItem`, transport, volume, repeat-one,
+stop and position/duration accessors. Events identify their load and item key, including
+position discontinuities, player-originated play changes, run end and errors.
+
+- `ExoBackend` lazily creates one Main-confined ExoPlayer with audio focus/noisy handling.
+  Upcoming timeline edits retain the current item. Song ids use uid, breaks
+  `dj-filler:<id>`. Playback/prefetch share `${SOURCE}:${trackId}` cache keys; next-track
+  prefetch is bounded. `AudioCache` uses `cacheDir/audio_cache`, LRU 500 MiB and
+  StandaloneDatabaseProvider; Jellyfin headers are request-origin-matched.
+- `SpotifyBackend` serializes commands/polls with a mutex on
+  `Default.limitedParallelism(1)`. It loads native URI runs with offset/position,
+  adopts already-correct playing state within 3 s, disables remote shuffle and uses
+  repeat track only for ONE. It never appends through Spotify's queue endpoint.
+  Polling only runs while a started run is held (adaptive playing/near-end/paused rates).
+  Raw progress detects stalls; recovery attempts are bounded. Re-anchors require drift
+  >750 ms or state/track change. Relinked ids, settle windows and repeated unknown-id
+  observations protect run-end detection.
+- Spotify upcoming edits shorten a stop point or debounce a URI-run reload (300 ms).
+  End timers pause before EXO/break boundaries to avoid Autoplay bleed. Foreground-only
+  Spotify-app launch fallback and pre-resolution before Spotify boundaries live in
+  `SpotifyDeviceResolver`/`BackendPreparer`. Normalized source volume is applied to each
+  backend; Spotify volume writes debounce 300 ms.
+
+### 6.3 Session and service
+
+`com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService` keeps
+legacy intent filters and mediaPlayback foreground type. `SessionPlayer` projects queue/
+player flows into SimpleBasePlayer; no decoder or position poll lives in the session.
+The cached uid window spans roughly cursor−100 to cursor+400 and refreshes when content
+changes or the cursor leaves its middle band. Active DJ audio is its own media item
+`dj-filler:<id>` with separate duration. Engine play intent across loading/boundaries
+maps to BUFFERING, errors to IDLE + playerError.
+
+Transport, item seeking, shuffle/repeat and set/change-media-items route to the engine;
+legacy track-id resolution and same-id-set no-reload behavior remain. Playback resumption
+awaits restore up to five seconds. Browse root `root` exposes paged current play-order
+queue entries by uid (not a full provider catalog).
+
+Media3's DefaultMediaNotificationProvider uses channel `any_player_playback`, notification
+1001 and `ic_notification`. Spotify-only playback retains the foreground service.
+Foreground-start denial posts a tap-to-resume notification. Projection clients retain
+the 1.5 s last-disconnect auto-pause; a service receiver handles Spotify noisy-audio pause.
 
 ## 7. App/UI (`:app`)
 
-Navigation (bottom bar: Now Playing · Playlists · Search · Settings; mini-player above the bar
-on every tab except Now Playing):
-`now_playing`, `playlists`, `playlists/provider/{source}/{id}`, `playlists/custom/{id}`,
-`search`, `settings` (tabs General · Providers · AI DJ).
+Navigation Compose provides Now Playing, Playlists, Search, Settings plus provider/custom
+playlist detail routes; Settings contains General, Providers and AI DJ tabs.
 
-| Screen | ViewModel | State sources |
+| Scope | ViewModel | Main inputs |
 |---|---|---|
-| Now Playing | `NowPlayingViewModel` | `engine.queue` → `QueueUi(upcoming, history)` built off-main on version change; `engine.player`; DJ songs-away/status |
-| Playlists | `PlaylistsViewModel` | `catalog.playlists`, `playlistRepo.customPlaylists` |
-| Provider detail | `ProviderPlaylistViewModel` (SavedStateHandle source/id) | tracks flow, distinct pref, duplicate groups computed off-main on change |
-| Custom detail | `CustomPlaylistViewModel` | same + union sources editor |
-| Search | `SearchViewModel` | query/source/type in SavedStateHandle; `collectLatest` cancels stale searches; loading/empty/error states |
-| Settings | `GeneralSettingsViewModel`, `ProvidersViewModel`, `AiDjViewModel` | stores, sync engine, transfer, DJ |
-| Shell | `AppViewModel` | startup warnings, Spotify auth launch/redirect |
+| Shell | `ShellViewModel` | Startup warnings and Spotify redirects |
+| Now Playing | `NowPlayingViewModel` | Engine queue/player, DJ status and songs-away |
+| Playlists | `PlaylistsViewModel` | Catalog and custom playlists |
+| Provider detail | `ProviderPlaylistViewModel` | Saved source/id, tracks, distinct preference |
+| Custom detail | `CustomPlaylistViewModel` | Custom tracks and union source editing |
+| Search | `SearchViewModel` | Saved query/source/type and cancellable catalog searches |
+| Settings tabs | `GeneralSettingsViewModel`, `ProvidersSettingsViewModel`, `AiDjSettingsViewModel` | Stores, sync/transfer, auth and DJ controller |
 
-Compose rules: screens are stateless `(state, actions)`; ViewModels expose one `StateFlow<ScreenUi>`
-collected with `collectAsStateWithLifecycle`; lists are `LazyColumn` with keys `uid` (queue) or
-`"$originalIndex"` (playlist/search rows); slider drags keep local state and commit on
-`onValueChangeFinished`; position text/slider read `engine.positionMs()` through a
-`produceState` ticker that runs only while visible and playing; UI models are `@Immutable`.
-Test tags/labels of the legacy androidTests are kept where the control still exists.
+Route composables obtain ViewModels and collect with `collectAsStateWithLifecycle`.
+Screen components receive state/actions. Queue/track-table models build off-main using
+the compute dispatcher; occurrence keys avoid duplicate-track collisions. Search uses
+collectLatest for cancellation. Slider drags stay local until completion. Only visible
+playing position widgets tick; the rest observes event-driven state. Settings document
+I/O goes through `SettingsDocuments`, not composable-side stream/crypto work.
 
 ## 8. AI DJ (`:dj`)
 
 ### 8.1 Schedule reducer (`:core:model`)
-```kotlin
-data class BreakSchedule(val enabled: Boolean, val songsUntilBreak: Int, val anchorOrderPos: Int,
-                         val orderVersion: Long, val failedOnCurrent: Boolean, val targetUid: Long?)
-sealed interface ScheduleEvent { Enabled(Boolean); QueueReplaced; CursorMoved(orderPos, orderVersion, uidAtPos…);
-  BreakStarted; GenerationFailed; }
-fun reduce(s: BreakSchedule, e: ScheduleEvent, queue: QueueState, random: Random): BreakSchedule
-```
-- Interval random in [3,5]; exactly 3 after a failure/mismatch; forward cursor moves count the
-  delta of real songs; backward moves/order changes re-anchor without counting; target =
-  entry `songsUntilBreak` songs after the anchor (the break plays **before** `targetUid`).
-- `songsAway` for the UI = distance from cursor to target.
 
-### 8.2 Coordinator
-`DjCoordinator` (application scope, single-thread dispatcher for state): observes
-`engine.queue` (distinct on cursor/version) and `engine.events`; runs the reducer; when the target
-changes it cancels the running generation and starts a new one for `targetUid`'s track; on success
-saves to `dj_filler/<breakId>.wav` (unique per break; fixes the single-slot race) and calls
-`engine.setPendingBreak(PendingBreak(targetUid, breakId, uri))`; on `BreakStarted` records the
-passages (async) and schedules the next; on `BreakEnded` deletes the file. Startup sweeps orphan
-`dj_filler/*.wav`, `*.part`.
+`BreakSchedule` tracks enabled, songsUntilBreak, anchorOrderPos, orderVersion,
+failedOnCurrent and targetUid. Events are Enabled, QueueReplaced, CursorMoved,
+BreakStarted and GenerationFailed. Queue content version and cursor are separate inputs.
+Intervals randomize in [3,5], resetting to three after failure/mismatch. Forward moves
+count real songs; order changes/backward jumps re-anchor. A one-song backward bounce
+keeps the furthest anchor and ready target.
 
-### 8.3 Generation
-- `PassageRepository` (`GET /v1/dj-passages`, played receipts `POST /v1/dj-passages/played`,
-  30-day exclusion, token budget 2500, state in SharedPreferences `dj_passage_repository` keyed
-  `state_<sha256(base\0token)>`, written with `apply()` on IO; flush in background, never blocks
-  lookup).
-- `RemoteBreakGenerator` (`POST /v1/dj-breaks`, 200 WAV / 204 rejected) → voice processor.
-- `OnDeviceBreakGenerator`: `ScriptGenerator` (MediaPipe `.task` / LiteRT-LM `.litertlm`,
-  prompts verbatim from legacy, draft+check ×2) on a dedicated low-priority thread; released on
-  disable/trim and after 10 min idle; `VoiceSynthesizer` (sherpa-onnx Kokoro/Piper, espeak data
-  extracted once keyed by versionCode, `numThreads = min(4, cores/2)`), `VoiceProcessor` DSP
-  chain unchanged.
-- `ArtifactStore<Descriptor>` shared by models (`/v1/dj-models`) and voices
-  (`/v1/dj-voice-models`): catalog, validation, download to `.part` with SHA-256 + size, atomic
-  activation marker, delete, listing; progress emitted ≤4 Hz; legacy on-disk layout and markers
-  preserved; voice bundle hash verified once after extraction (marker), never on hot paths.
+**songsAway counts intervening real songs**, not index distance: 0 means the next
+advance; interval 3 at cursor 0 targets cursor 4. Break plays before targetUid.
+
+### 8.2 Coordinator, delivery and lifecycle
+
+`DefaultDjController` is the nonblocking UI facade; `DjCoordinator` is a singleton
+single-thread scheduling actor observing cursor/contentVersion and engine events.
+It prepares unique `dj_filler/<breakId>.wav` deliveries. Finished audio is keyed by track
+id and passage chunk ids (at most three cached entries); target flip-back can reuse it.
+Target changes do not cancel inference; disable/queue replacement do.
+
+The engine plays a pending delivery only on advance into its target, not direct jumps.
+During a break the cursor stays on the preceding song; Previous cancels and restarts
+that song, Next skips the break. BreakStarted makes delivery active, records passages
+asynchronously and schedules ahead. Clearing the pending slot never interrupts active
+audio. Active files live until BreakEnded (also skip/previous/replacement); only
+never-started files may be deleted on BreakDropped. `DjAudioFiles` enforces ownership
+even if a spurious drop follows start. Startup sweeps orphan/legacy ready/staging files.
+
+### 8.3 Generation, artifacts and passages
+
+- `PassageRepository` uses `/v1/dj-passages` and `/v1/dj-passages/played`, a 30-day
+  exclusion and 2500-token budget. Preference state in `dj_passage_repository` uses
+  `state_<sha256(base\0token)>` (NUL-separated). Pending receipts cap at **512**, dropping oldest at
+  overflow; asynchronous `apply()` on IO can lose the latest receipts on process kill
+  (accepted durability tradeoff). Receipt flush never delays lookup.
+- `RemoteBreakGenerator` accepts WAV/204 responses from `/v1/dj-breaks`, then processes
+  voice audio. `OnDeviceBreakGenerator` combines grounded draft/check script generation
+  using MediaPipe `.task` or LiteRT-LM `.litertlm` models with sherpa Kokoro/Piper TTS.
+- Native inference/synthesis/DSP/release share low-priority `NativeDjThread`; file work
+  switches to IO. Espeak data extraction is versionCode-keyed; TTS uses at most four
+  native threads. Models release on disable, background-or-higher trim/low memory or
+  ten minutes without playback, not UI-hidden trims or after each break.
+- `ArtifactStore<Descriptor>` handles model/voice catalogs, bounded progress, validated
+  `.part` downloads, SHA-256/size checks, atomic markers and legacy layout migration.
+  Voice migration moves in place and resumes partial moves. Initialized reads/catalog
+  refresh do not wait on a long download lock.
+- `DjDiagnostics` exposes a 200-entry in-memory ring for AI DJ Logs (enable, clear, copy);
+  native linkage/initialization failures are diagnosed without crashing DJ scopes.
 
 ## 9. Threading summary
 
-| Work | Where |
+| Work | Execution context |
 |---|---|
-| Engine, ExoPlayer, session player | Main (light, event-driven) |
-| Room, prefs, file I/O, JSON of large payloads | `Dispatchers.IO` |
-| Network | OkHttp async + suspend |
-| Dedupe / UI model building for large lists | `Dispatchers.Default` with `flowOn` |
-| LLM, TTS, DSP | dedicated single-thread executors (background priority) |
+| Engine intents, ExoPlayer, SessionPlayer, lightweight UI state | Main.immediate/Main |
+| Room, preferences/Keystore, files, large JSON/crypto, startup orchestration | IO / Room suspend query executors |
+| Network | Asynchronous OkHttp with suspend cancellation; coroutine delay for backoff |
+| Dedupe and large UI list transforms | Default / injected compute dispatcher |
+| Spotify commands/polls | Default.limitedParallelism(1), serialized by command mutex |
+| DJ scheduling | Dedicated single-thread scheduling dispatcher |
+| LLM, TTS, DSP and native release | Dedicated low-priority NativeDjThread; file work switches to IO |
 
 ## 10. Legacy problems addressed (traceability)
 
-| Legacy problem | Addressed by |
+| Legacy problem | Built replacement |
 |---|---|
-| 500 ms Main polling loop; whole UI recomposed twice a second | D6, §6.1, §7 |
-| 907-line MainViewModel; 57-field UiState | D12 |
-| Three playback engines; divergent semantics; shared mutable bag | D3, D4, §4.1 |
-| Duplicate-id LazyColumn crash; wrong occurrence played | D5 |
-| Main-thread EncryptedSharedPreferences/crypto/JSON | D9, §5.2 |
-| Whole queue encrypted every 3 s | D8 |
-| Quadratic Rust paging; 100-playlist cap; Jellyfin user bug; no Spotify token refresh for catalog | D2, §5.3, §5.4 |
-| Blob caches capped at 500 KB | D10 |
-| Prefetch cache-key mismatch | §6.2 |
-| Spotify restore hijacks active device | D13 |
-| Sync: WS restart per keystroke; queue pushed every 5 s; startup run twice | §5.6, §5.8 |
-| Export/import data-loss bugs | §5.7 |
-| DJ: voice bundle SHA on main thread; single-slot race; progress floods; models never released | §8 |
-| Search races; no loading/error states | §7 |
+| Main polling and whole-screen recomposition | Anchored player state, widget-local position ticks (§6–7) |
+| Giant shared ViewModel | Screen/tab ViewModels (§7) |
+| Divergent source engines / duplicate-id queue bugs | Shared queue, uid occurrences and run planning (§4, §6) |
+| Main-thread crypto and encrypted whole-queue rewrites | IO secure stores and Room content/cursor persistence (§5–6) |
+| Rust paging/NDK coupling and missing catalog token refresh | Kotlin providers/shared token provider (§5.3) |
+| Blob size cap and cache-key mismatch | Normalized caches and shared playback/prefetch keys (§5.1, §6.2) |
+| Spotify restore takeover | Local paused restore (§6.1) |
+| Sync restart per keystroke and periodic queue pushes | Commit/Connect separation and origin-tagged discrete pushes (§5.5) |
+| Import child loss and collapsed duplicates | Shared transactional occurrence-aware importer (§5.6) |
+| DJ polling/single-slot file race/model leaks | Reducer, explicit delivery ownership and native lifecycle (§8) |
 
-## 11. Verification plan
-- JVM unit tests (`:core:model`): queue ops, run planning, schedule reducer, dedupe fixture,
-  normalization parity with the Rust formula.
-- `:core:data` tests: provider JSON parsing + paging against MockWebServer, transfer
-  round-trip/integrity with legacy fixture, PKCE/auth error ordering.
-- Instrumented: Room migration 1→2→3 with the legacy schemas, opening a real legacy v2 database.
-- Emulator smoke: in-place upgrade over the legacy build (playlists + sync target survive),
-  play a Jellyfin-compatible mock server stream end to end (queue, next/prev, shuffle,
-  notification, process restore), startup and frame metrics compared with the legacy baseline
-  (cold start 1606 ms, 19% janky frames, PSS 147 MB on `test_pixel_35`).
+## 11. Verification
 
-## 12. Design-review amendments (authoritative — supersede earlier sections where they conflict)
+All module JVM suites: `:core:model:test`, `:core:data:testDebugUnitTest`,
+`:playback:testDebugUnitTest`, `:dj:testDebugUnitTest`, `:app:testDebugUnitTest`.
+They cover queue/planning/schedule/wire parity, provider paging/auth/transfer, backend and
+engine reconciliation, DJ lifecycle/artifacts/passages, sync/startup and ViewModel state.
+Instrumented `:core:data:connectedDebugAndroidTest` covers migration 1→2→3, legacy DB
+opening, normalized caches and repository/transfer transactions. CI assembles the debug
+APK, runs all module unit tests and `:app:lintDebug`, and uploads the APK.
 
-Accepted after an independent review (Media3 1.5.1 behaviour verified against the jars).
+Device validation includes same-signature in-place upgrade, local mock-provider streaming,
+queue/transport/notification/session controls, paused process restore and Auto projection.
+These are verification procedures, not a claim that every device flow ran in every build.
+See README/CONTRIBUTING for exact commands and target selection.
+
+## 12. Design-review amendments (review record)
+
+Accepted design-review decisions are preserved below for traceability (Media3 1.5.1
+behavior was reviewed against the jars). Their outcomes are incorporated in §§1–11;
+historical pseudocode/wording here is not an exact implementation signature. In
+particular, origin travels on EngineChange rather than PlayerState, backend commands
+are serialized without requiring a literal channel per backend, and startup resolves
+DjController lazily through DefaultAppStartup after the visibility/playback gate.
 
 ### 12.1 Queue and planning (§4)
 - `QueueState.version` is split: `contentVersion` bumps only when `entries`/`order` change;
@@ -586,7 +543,7 @@ Accepted after an independent review (Media3 1.5.1 behaviour verified against th
   is mapped to `order` with occurrence-aware matching; the legacy key is removed only after the
   Room commit.
 
-### 12.6 Sync (§5.6)
+### 12.6 Sync (§5.5)
 - Field edits persist on commit (IME done / focus loss, debounced) — DJ features read the persisted
   target/token; the WebSocket restarts only on Connect.
 - Commit drafts also when switching settings tabs or leaving Settings; complete an already-started
