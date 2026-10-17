@@ -8,9 +8,7 @@ Thanks for helping improve Any Player Android. This guide covers the current dev
 2. Review open docs in `docs/` for current constraints and release context.
 3. Make sure Android prerequisites are installed:
    - Android SDK (API 35)
-   - JDK (17+)
-   - Android NDK (required for full Rust FFI build path)
-4. If you plan to build Rust FFI, ensure the shared workspace exists at `../any-player-shared-rust`.
+   - JDK (21+)
 
 ## Development setup
 
@@ -18,7 +16,6 @@ Generate/update local config in `local.properties`:
 
 ```properties
 sdk.dir=/path/to/Android/Sdk
-ndk.dir=/path/to/Android/Sdk/ndk/<version>
 spotifyClientId=<your_spotify_client_id>
 ```
 
@@ -28,16 +25,10 @@ Build the app:
 ./gradlew :app:assembleDebug
 ```
 
-Android-only mode (skip Rust FFI build):
-
-```bash
-./gradlew :app:assembleDebug -PskipRustFfiBuild=true
-```
-
 Install debug build on a connected device/emulator:
 
 ```bash
-./gradlew :app:installDebug -PskipRustFfiBuild=true
+./gradlew :app:installDebug
 ```
 
 ## Recommended contributor workflow
@@ -53,45 +44,39 @@ Install debug build on a connected device/emulator:
 Run these before submitting:
 
 ```bash
-./gradlew :app:assembleDebug -PskipRustFfiBuild=true
-./gradlew :app:testDebugUnitTest -PskipRustFfiBuild=true
-./gradlew :app:lintDebug -PskipRustFfiBuild=true
+./gradlew :app:assembleDebug
+./gradlew :core:model:test
+./gradlew :app:lintDebug
 ```
-
-If you are validating full FFI integration, run the same commands without `-PskipRustFfiBuild=true` and with a configured NDK/shared Rust workspace.
 
 Notes:
 - Instrumented tests require a running emulator/device:
 
 ```bash
-./gradlew :app:connectedDebugAndroidTest -PskipRustFfiBuild=true
+./gradlew :core:data:connectedDebugAndroidTest
 ```
 
 - Android Auto/media browser behavior should be manually validated using DHU or compatible hardware where relevant.
 
 ## Project architecture (current)
 
-- Android app (`app/src/main/java/com/anyplayer/android`): app entry, playback services, and UI integration.
-- Core (`app/src/main/java/com/anyplayer/android/core`): network clients, storage (Room), models, DI, and Rust bridge.
-- Features (`app/src/main/java/com/anyplayer/android/feature`): auth, playback, playlists, providers, startup, and state transfer.
-- Media service: `AnyPlayerMediaLibraryService` provides media browsing/session integration.
-- Docs (`docs/`): known limitations and release blockers.
+The v2 rewrite is a multi-module build; see `docs/ARCHITECTURE.md` for the design.
+
+- `:core:model` — pure Kotlin domain models and logic (queue ops, run planning, dedupe, normalization).
+- `:core:data` — Room database and migrations, secure stores.
+- `:playback` — playback engine, ExoPlayer backend, `AnyPlayerMediaLibraryService` + session player.
+- `:dj` — AI DJ.
+- `:app` — application, activity and UI.
 
 ## Coding guidelines
 
 ### Kotlin / Android
 
 - Use `camelCase` for functions/variables and `PascalCase` for classes/types.
-- Keep feature code under existing `feature/*` boundaries; prefer focused, composable classes.
+- Respect module boundaries (`docs/ARCHITECTURE.md` §3); prefer focused, composable classes.
 - Use coroutines/Flow patterns consistently with nearby code.
 - Keep DI wiring in Hilt modules and avoid ad hoc service locators.
 - Route persistent data changes through Room DAOs/repositories and preserve schema compatibility.
-
-### Rust FFI (when touched)
-
-- Keep JNI/FFI boundary contracts explicit and backward compatible.
-- Preserve ABI output naming/locations expected by Gradle tasks.
-- Validate Android target builds before submitting FFI-related PRs.
 
 ### General
 
@@ -111,15 +96,14 @@ Notes:
 Update relevant docs when behavior changes:
 
 - [README.md](README.md) for developer setup and workflow updates.
-- [docs/android-known-limitations.md](docs/android-known-limitations.md) when constraints change.
-- [docs/android-release-blockers.md](docs/android-release-blockers.md) when blocker status/criteria changes.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when the design changes.
 
 ## Pull request checklist
 
 - [ ] Changes are scoped and follow existing architecture.
-- [ ] `./gradlew :app:assembleDebug -PskipRustFfiBuild=true` passes.
-- [ ] `./gradlew :app:testDebugUnitTest -PskipRustFfiBuild=true` passes.
-- [ ] `./gradlew :app:lintDebug -PskipRustFfiBuild=true` passes.
+- [ ] `./gradlew :app:assembleDebug` passes.
+- [ ] `./gradlew :core:model:test` passes.
+- [ ] `./gradlew :app:lintDebug` passes.
 - [ ] Manual verification completed for affected flows (including Android Auto/playback when applicable).
 - [ ] Docs updated if behavior/workflow changed.
 
