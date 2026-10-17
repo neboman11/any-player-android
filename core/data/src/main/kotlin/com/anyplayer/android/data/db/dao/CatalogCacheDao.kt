@@ -21,6 +21,8 @@ abstract class CatalogCacheDao {
     abstract suspend fun tracks(ownerKey: String): List<CachedTrackEntity>
     @Query("SELECT * FROM cached_track_owners WHERE ownerKey = :ownerKey")
     abstract suspend fun owner(ownerKey: String): CachedTrackOwnerEntity?
+    @Query("UPDATE cached_track_owners SET updatedAtMs = :updatedAtMs WHERE ownerKey = :ownerKey")
+    abstract suspend fun touchOwner(ownerKey: String, updatedAtMs: Long)
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun putTracks(rows: List<CachedTrackEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE)

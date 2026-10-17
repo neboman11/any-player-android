@@ -57,7 +57,10 @@ class DefaultAuthRepository @Inject constructor(
         val connections = store.awaitLoaded()
         return remoteSources.filter { connections.containsKey(it) }.map { connections[it].profile(it) }
     }
+    // Fail open like legacy: before the store has loaded, "no entry" means "unknown", not "disconnected".
+    // Reads the store directly so the answer never lags behind [profiles]' collector.
     override fun isSourceConnected(source: SourceType?): Boolean = try {
-        source == null || source == SourceType.CUSTOM || source == SourceType.ALL || profiles.value[source]?.connected == true
+        source == null || source == SourceType.CUSTOM || source == SourceType.ALL || !store.isLoaded ||
+            store.connections.value[source].profile(source).connected
     } catch (_: Exception) { true }
 }

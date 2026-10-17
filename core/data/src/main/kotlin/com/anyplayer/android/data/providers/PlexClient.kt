@@ -3,6 +3,7 @@ package com.anyplayer.android.data.providers
 import com.anyplayer.android.core.model.*
 import com.anyplayer.android.data.auth.StoredConnection
 import com.anyplayer.android.data.net.HttpFailure
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.json.JsonObject
@@ -23,6 +24,9 @@ class PlexClient @Inject constructor(private val http: OkHttpClient) : ProviderC
     override suspend fun validate(conn: StoredConnection): ValidationResult {
         try { get(conn, "identity") } catch (e: HttpFailure) {
             throw HttpFailure(e.status, "Plex authentication failed: HTTP ${e.status}")
+        } catch (e: IOException) {
+            // DNS, refused, timeout: legacy surfaced these as a failed connection test.
+            throw IOException("Plex connection test failed: ${e.message ?: e.javaClass.simpleName}", e)
         }
         return ValidationResult()
     }

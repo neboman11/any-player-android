@@ -54,12 +54,16 @@ internal fun planPlaylistImport(
         source.copy(id = id, unionPlaylistId = parent,
             sourcePlaylistId = if (source.sourceType == SourceType.CUSTOM) remap[source.sourcePlaylistId] ?: source.sourcePlaylistId else source.sourcePlaylistId)
     }
+    // Desktop/server payloads may carry colliding or gapped positions; legacy (REPLACE) tolerated
+    // them, so keep each playlist's order (stable) and renumber 0..n-1 instead of aborting.
+    val orderedTracks = tracks.groupBy { it.playlistId }.values.flatMap { rows -> rows.sortedBy { it.position }.mapIndexed { index, row -> row.copy(position = index) } }
+    val orderedSources = sources.groupBy { it.unionPlaylistId }.values.flatMap { rows -> rows.sortedBy { it.position }.mapIndexed { index, row -> row.copy(position = index) } }
     val ids = playlists.mapTo(HashSet()) { it.id }
     tracks.forEach { require(it.playlistId in ids) { "Malformed reference: track ${it.id} points to missing playlist ${it.playlistId}" } }
     sources.forEach { require(it.unionPlaylistId in ids && (!validateCustomReferences || it.sourceType != SourceType.CUSTOM || it.sourcePlaylistId in ids)) { "Malformed union source reference: ${it.id}" } }
     val tracksAdded = tracks.count { it.id !in oldTracks }
     val sourcesAdded = sources.count { it.id !in oldSources }
-    return PlaylistImportPlan(incoming.copy(customPlaylists = playlists, playlistTracks = tracks, unionPlaylistSources = sources),
+    return PlaylistImportPlan(incoming.copy(customPlaylists = playlists, playlistTracks = orderedTracks, unionPlaylistSources = orderedSources),
         ImportSummary(playlistsAdded = added, playlistsUpdated = updated, tracksAdded = tracksAdded,
             tracksUpdated = tracks.size - tracksAdded, unionSourcesAdded = sourcesAdded, unionSourcesUpdated = sources.size - sourcesAdded))
 }
@@ -80,14 +84,24 @@ internal class RoomPlaylistTransferStore(private val db: AppDatabase) : Playlist
     }
     override suspend fun apply(data: AnyPlayerStateData, replaceAll: Boolean) {
         val dao = db.customPlaylistDao()
-        if (replaceAll) dao.getAll().forEach { dao.delete(it.id) }
+        val incomingIds = data.customPlaylists.mapTo(HashSet()) { it.id }
+        // Retained playlists are overwritten in place below; only local-only ones are deleted.
+        if (replaceAll) dao.getAll().filter { it.id !in incomingIds }.forEach { dao.delete(it.id) }
+        val incomingSources = data.unionPlaylistSources.groupBy { it.unionPlaylistId }
         data.customPlaylists.forEach { playlist ->
+            // Legacy kept union materializations across imports; drop one only when it no longer
+            // describes the imported union (type or ordered source list changed).
+            val keepCache = playlist.playlistType == PlaylistType.UNION && dao.get(playlist.id)?.playlistType == PlaylistType.UNION &&
+                dao.sources(playlist.id).map { it.sourceType to it.sourcePlaylistId } ==
+                incomingSources[playlist.id].orEmpty().sortedBy { it.position }.map { it.sourceType to it.sourcePlaylistId }
             dao.upsert(playlist.toEntity())
             dao.clearTracks(playlist.id)
             dao.clearSources(playlist.id)
-            dao.clearCachedTracks("u:${playlist.id}")
-            dao.clearCachedOwner("u:${playlist.id}")
-            dao.clearLegacyCache("union_playlist_tracks_${playlist.id}")
+            if (!keepCache) {
+                dao.clearCachedTracks("u:${playlist.id}")
+                dao.clearCachedOwner("u:${playlist.id}")
+                dao.clearLegacyCache("union_playlist_tracks_${playlist.id}")
+            }
         }
         dao.insertTracks(data.playlistTracks.map { it.toEntity() })
         dao.insertSources(data.unionPlaylistSources.map { it.toEntity() })
@@ -99,8 +113,8 @@ internal class RoomPlaylistTransferStore(private val db: AppDatabase) : Playlist
 class PlaylistImporter internal constructor(private val store: PlaylistTransferStore) {
     @Inject constructor(db: AppDatabase) : this(RoomPlaylistTransferStore(db))
 
-    internal suspend fun <T> readSnapshot(block: suspend (AnyPlayerStateData) -> T): T = store.transaction { block(store.snapshot()) }
-    internal suspend fun <T> readTransaction(block: suspend () -> T): T = store.transaction(block)
+    /** Consistent snapshot; callers encode/encrypt/write after the transaction has ended. */
+    internal suspend fun snapshot(): AnyPlayerStateData = store.transaction { store.snapshot() }
 
     internal suspend fun import(data: AnyPlayerStateData, policy: MergePolicy, dryRun: Boolean, suffix: String, validateCustomReferences: Boolean = true): ImportSummary = store.transaction {
         val existing = store.snapshot()

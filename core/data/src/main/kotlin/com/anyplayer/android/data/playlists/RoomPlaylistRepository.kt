@@ -7,6 +7,7 @@ import com.anyplayer.android.data.db.AppDatabase
 import com.anyplayer.android.data.db.entity.*
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.*
@@ -25,9 +26,11 @@ class RoomPlaylistRepository @Inject constructor(
 ) : PlaylistRepository, PlaylistSourceEditor {
     private val dao = db.customPlaylistDao()
     private val cache = db.unionCacheDao()
-    // Serializes source edits with materialization, so an older fetch cannot overwrite a newer edit.
-    private val mutations = Mutex()
+    // Per-playlist serialization of database writes only; provider fetches never run under a lock.
+    private val locks = ConcurrentHashMap<String, Mutex>()
     private val fetches = Semaphore(4)
+    private suspend fun <T> locked(id: String, block: suspend () -> T): T = locks.getOrPut(id) { Mutex() }.withLock { block() }
+
     override val customPlaylists = dao.observeAll().map { rows -> rows.map { it.toModel() } }
     override fun observePlaylist(id: String) = dao.observe(id).map { it?.toModel() }
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -40,35 +43,27 @@ class RoomPlaylistRepository @Inject constructor(
     }.flowOn(Dispatchers.Default)
     override fun observeUnionSources(id: String) = dao.observeSources(id).map { rows -> rows.map { it.toModel() } }
 
-    override suspend fun create(name: String, type: PlaylistType): CustomPlaylist = mutations.withLock {
+    override suspend fun create(name: String, type: PlaylistType): CustomPlaylist {
         val now = Instant.now().toString()
         val playlist = CustomPlaylist(UUID.randomUUID().toString(), name.ifBlank { "Untitled Playlist" }, createdAt = now, updatedAt = now, trackCount = 0, playlistType = type)
         dao.upsert(playlist.toEntity())
-        playlist
+        return playlist
     }
-    override suspend fun rename(id: String, name: String) = mutations.withLock {
+    override suspend fun rename(id: String, name: String) = locked(id) {
         dao.rename(id, name.takeUnless { it.isBlank() }.orEmpty(), Instant.now().toString())
     }
-    override suspend fun delete(id: String) = mutations.withLock { dao.delete(id) }
-    override suspend fun setDistinct(id: String, distinct: Boolean) = mutations.withLock { dao.setDistinct(id, distinct, Instant.now().toString()) }
-    override suspend fun addTrack(playlistId: String, track: Track) = mutations.withLock {
+    override suspend fun delete(id: String) = locked(id) { dao.delete(id) }
+    override suspend fun setDistinct(id: String, distinct: Boolean) = locked(id) { dao.setDistinct(id, distinct, Instant.now().toString()) }
+    override suspend fun addTrack(playlistId: String, track: Track) = locked(playlistId) {
         val now = Instant.now().toString()
         dao.append(PlaylistTrackEntity(UUID.randomUUID().toString(), playlistId, track.source, track.id, 0, now, track.title, track.artist, track.album, track.durationMs, track.imageUrl, track.url), now)
     }
-    override suspend fun removeTrackAt(playlistId: String, index: Int) = mutations.withLock { dao.removeAt(playlistId, index, Instant.now().toString()) }
-    override suspend fun reorderTracks(playlistId: String, orderedTrackIds: List<String>) = mutations.withLock { dao.reorder(playlistId, orderedTrackIds, Instant.now().toString()) }
+    override suspend fun removeTrackAt(playlistId: String, index: Int) = locked(playlistId) { dao.removeAt(playlistId, index, Instant.now().toString()) }
+    override suspend fun reorderTracks(playlistId: String, orderedTrackIds: List<String>) = locked(playlistId) { dao.reorder(playlistId, orderedTrackIds, Instant.now().toString()) }
 
-    override suspend fun replaceUnionSources(unionId: String, sources: List<Pair<SourceType, String>>) = withContext(Dispatchers.IO) {
-        mutations.withLock {
-            if (dao.get(unionId)?.playlistType != PlaylistType.UNION) return@withLock
-            val now = Instant.now().toString()
-            val rows = sources.mapIndexed { position, (source, id) -> UnionPlaylistSourceEntity(UUID.randomUUID().toString(), unionId, source, normalizePlaylistId(source, id), position, now) }
-            val tracks = fetchSources(rows, false, 1) {}
-            db.withTransaction {
-                dao.replaceSources(unionId, rows)
-                saveMaterialization(unionId, tracks)
-            }
-        }
+    override suspend fun replaceUnionSources(unionId: String, sources: List<Pair<SourceType, String>>) = editSources(unionId) {
+        val now = Instant.now().toString()
+        sources.mapIndexed { position, (source, id) -> UnionPlaylistSourceEntity(UUID.randomUUID().toString(), unionId, source, normalizePlaylistId(source, id), position, now) }
     }
 
     override suspend fun addUnionSource(unionId: String, source: SourceType, sourcePlaylistId: String) = editSources(unionId) { rows ->
@@ -87,25 +82,48 @@ class RoomPlaylistRepository @Inject constructor(
         (requested + rows.filter { it.id !in requestedIds }).mapIndexed { index, row -> row.copy(position = index) }
     }
 
-    private suspend fun editSources(id: String, edit: suspend (List<UnionPlaylistSourceEntity>) -> List<UnionPlaylistSourceEntity>) = withContext(Dispatchers.IO) {
-        mutations.withLock {
-            if (dao.get(id)?.playlistType != PlaylistType.UNION) return@withLock
-            val rows = edit(dao.sources(id))
-            val tracks = fetchSources(rows, false, 1) {}
-            db.withTransaction {
-                dao.replaceSources(id, rows)
-                saveMaterialization(id, tracks)
+    /**
+     * Legacy order: the source edit is committed first (dropping the stale `u:` cache and bumping
+     * updatedAt), then the union is re-materialized without holding any lock. Cancelling the caller
+     * mid-fetch therefore never loses the edit; the next Open/Play materializes it.
+     */
+    private suspend fun editSources(id: String, edit: suspend (List<UnionPlaylistSourceEntity>) -> List<UnionPlaylistSourceEntity>) {
+        withContext(Dispatchers.IO) {
+            val saved = locked(id) {
+                db.withTransaction {
+                    if (dao.get(id)?.playlistType != PlaylistType.UNION) return@withTransaction false
+                    dao.replaceSources(id, edit(dao.sources(id)))
+                    dao.touch(id, Instant.now().toString())
+                    true
+                }
             }
+            if (saved) materializeUnion(id)
         }
     }
 
-    override suspend fun materializeUnion(unionId: String, forceRefresh: Boolean, onProgress: (String) -> Unit): List<Track> = withContext(Dispatchers.IO) {
-        mutations.withLock {
-            if (dao.get(unionId)?.playlistType != PlaylistType.UNION) return@withLock emptyList()
-            val tracks = fetchSources(dao.sources(unionId), forceRefresh, 1, onProgress)
+    override suspend fun materializeUnion(unionId: String, forceRefresh: Boolean, onProgress: (String) -> Unit): List<Track> =
+        withContext(Dispatchers.IO) { materializeCurrentSources(unionId, forceRefresh, onProgress) }
+
+    private suspend fun materializeCurrentSources(unionId: String, forceRefresh: Boolean, onProgress: (String) -> Unit): List<Track> {
+        var force = forceRefresh
+        while (true) {
+            if (dao.get(unionId)?.playlistType != PlaylistType.UNION) return emptyList()
+            val sources = dao.sources(unionId)
+            val tracks = fetchSources(sources, force, 1, onProgress)
             onProgress("Finalizing...")
-            db.withTransaction { saveMaterialization(unionId, tracks) }
-            tracks
+            // Save only if no source edit landed while providers were being fetched; otherwise the
+            // result belongs to an older source list and is fetched again for the current one.
+            val saved = locked(unionId) {
+                db.withTransaction {
+                    if (dao.get(unionId)?.playlistType != PlaylistType.UNION || dao.sources(unionId) != sources) return@withTransaction false
+                    cache.replace(CachedTrackOwnerEntity("u:$unionId", System.currentTimeMillis(), tracks.size),
+                        tracks.mapIndexed { index, track -> CachedTrackEntity("u:$unionId", index, AppJson.encodeToString(track)) })
+                    dao.materialized(unionId, tracks.size)
+                    true
+                }
+            }
+            if (saved) return tracks
+            force = false
         }
     }
 
@@ -132,13 +150,6 @@ class RoomPlaylistRepository @Inject constructor(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { emptyList() }
         } }.awaitAll().flatten().distinctBy { it.source to it.id }.map { it.copy(enriched = it.enriched ?: true) }
-    }
-
-    private suspend fun saveMaterialization(id: String, tracks: List<Track>) {
-        // A concurrent import may have removed the playlist while provider requests were pending.
-        if (dao.get(id)?.playlistType != PlaylistType.UNION) return
-        cache.replace(CachedTrackOwnerEntity("u:$id", System.currentTimeMillis(), tracks.size), tracks.mapIndexed { index, track -> CachedTrackEntity("u:$id", index, AppJson.encodeToString(track)) })
-        dao.materialized(id, tracks.size, Instant.now().toString())
     }
 
     override suspend fun playbackSelection(id: String, fromIndex: Int?): PlaybackSelection = withContext(Dispatchers.Default) {

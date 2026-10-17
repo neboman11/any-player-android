@@ -1,6 +1,7 @@
 package com.anyplayer.android.data.settings
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.anyplayer.android.core.model.AppJson
 import com.anyplayer.android.core.model.RepeatMode
 import com.anyplayer.android.data.store.SecurePrefs
@@ -49,30 +50,39 @@ class SecureSyncSettingsStore @Inject constructor(private val secure: SecurePref
     }
 }
 
+/** Legacy `SyncPreferencesStore`: stored DJ voice/model ids are trimmed and blank means "use the catalog default". */
+internal fun normalizeDjId(id: String?): String? = id?.trim()?.takeIf(String::isNotBlank)
+
 @Singleton
-class SecureDjSettingsStore @Inject constructor(private val secure: SecurePrefs) : DjSettingsStore {
+class SecureDjSettingsStore internal constructor(private val open: suspend () -> SharedPreferences) : DjSettingsStore {
+    @Inject constructor(secure: SecurePrefs) : this({ secure.open(SecurePrefs.SYNC_PREFERENCES) })
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private val state = MutableStateFlow(DjSettings())
     override val settings = state.asStateFlow()
     private val loaded = scope.async {
-        val prefs = secure.open(SecurePrefs.SYNC_PREFERENCES)
-        state.value = DjSettings(prefs.getString("selected_dj_voice_id", null),
-            prefs.getString("selected_dj_model_id", null), prefs.getBoolean("dj_remote_generation", true),
+        val prefs = open()
+        state.value = DjSettings(normalizeDjId(prefs.getString(VOICE_KEY, null)),
+            normalizeDjId(prefs.getString(MODEL_KEY, null)), prefs.getBoolean("dj_remote_generation", true),
             prefs.getFloat("dj_voice_level", 1f))
     }
     override suspend fun awaitLoaded(): DjSettings { loaded.await(); return state.value }
     override suspend fun update(transform: (DjSettings) -> DjSettings) {
         loaded.await()
         withContext(Dispatchers.IO) { mutex.withLock {
-            val next = transform(state.value)
-            check(secure.open(SecurePrefs.SYNC_PREFERENCES).edit()
-                .putString("selected_dj_voice_id", next.selectedVoiceId)
-                .putString("selected_dj_model_id", next.selectedModelId)
-                .putBoolean("dj_remote_generation", next.remoteGeneration)
+            val next = transform(state.value).let { it.copy(selectedVoiceId = normalizeDjId(it.selectedVoiceId), selectedModelId = normalizeDjId(it.selectedModelId)) }
+            val editor = open().edit()
+            // Legacy removed the key rather than storing null/blank.
+            next.selectedVoiceId?.let { editor.putString(VOICE_KEY, it) } ?: editor.remove(VOICE_KEY)
+            next.selectedModelId?.let { editor.putString(MODEL_KEY, it) } ?: editor.remove(MODEL_KEY)
+            check(editor.putBoolean("dj_remote_generation", next.remoteGeneration)
                 .putFloat("dj_voice_level", next.voiceLevel).commit())
             state.value = next
         } }
+    }
+    private companion object {
+        const val VOICE_KEY = "selected_dj_voice_id"
+        const val MODEL_KEY = "selected_dj_model_id"
     }
 }
 

@@ -25,6 +25,12 @@ class JellyfinClient @Inject constructor(private val http: OkHttpClient, private
         (conn.serverUrl.orEmpty().trimEnd('/') + "/" + path).toHttpUrl().newBuilder().apply {
             query.forEach { (k, v) -> addQueryParameter(k, v) }
         }.build()
+    /**
+     * Stream/artwork URLs are persisted (queue, custom playlists, caches) and key the Media3 audio
+     * cache, so they are built exactly like legacy: plain concatenation onto the stored base, with
+     * literal commas — no HttpUrl normalization or percent-encoding.
+     */
+    private fun legacyUrl(conn: StoredConnection, pathAndQuery: String) = conn.serverUrl.orEmpty().trimEnd('/') + "/" + pathAndQuery
     private fun request(conn: StoredConnection, path: String, query: Map<String, String> = emptyMap()) =
         Request.Builder().url(url(conn, path, query)).header("X-Emby-Token", conn.token.orEmpty())
             .header("X-Emby-Authorization", "MediaBrowser Token=\"${conn.token.orEmpty()}\", Client=\"AnyPlayer\", Device=\"AnyPlayer\", DeviceId=\"AnyPlayer\", Version=\"1.0.0\"").build()
@@ -78,7 +84,8 @@ class JellyfinClient @Inject constructor(private val http: OkHttpClient, private
         val parameters = mapOf("searchTerm" to query, "Recursive" to "true", "IncludeItemTypes" to
             if (type == SearchType.TRACKS) "Audio" else "Playlist") +
             if (type == SearchType.TRACKS) mapOf("Fields" to "AudioInfo,MediaSources") else emptyMap()
-        val rows = items(conn, uid, parameters).take(limit)
+        // One page only: search shows the first [limit] matches, so never walk the whole library.
+        val rows = http.json(request(conn, "Users/$uid/Items", parameters + mapOf("Limit" to "$limit", "StartIndex" to "0"))).array("Items").take(limit)
         return if (type == SearchType.TRACKS) SearchResult(tracks = rows.mapNotNull { track(conn, uid, it) })
             else SearchResult(playlists = rows.mapNotNull { playlist(conn, it) })
     }
@@ -87,7 +94,7 @@ class JellyfinClient @Inject constructor(private val http: OkHttpClient, private
         val albumTag = row.text("AlbumPrimaryImageTag")
         val id = if (!album.isNullOrBlank() && !albumTag.isNullOrBlank()) album else row.text("Id")
         val tag = if (id == album) albumTag else row.obj("ImageTags").text("Primary")
-        return if (id != null && tag != null) url(conn, "Items/$id/Images/Primary", mapOf("tag" to tag)).toString() else null
+        return if (id != null && tag != null) legacyUrl(conn, "Items/$id/Images/Primary?tag=$tag") else null
     }
     private fun playlist(conn: StoredConnection, row: JsonObject): Playlist? = row.text("Id")?.let {
         Playlist(it, row.text("Name").orEmpty(), "Jellyfin", (row.number("ChildCount") ?: row.number("RecursiveItemCount") ?: 0).toInt(), source, image(conn, row))
@@ -98,9 +105,12 @@ class JellyfinClient @Inject constructor(private val http: OkHttpClient, private
         val artists = (row["Artists"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
         Track(id, row.text("Name").orEmpty(), artists.joinToString(", ").ifBlank { "Unknown Artist" },
             row.text("Album") ?: "Unknown Album", row.number("RunTimeTicks")?.div(10_000)?.takeIf { it > 0 }, source,
-            url(conn, "Audio/$id/universal", mapOf("UserId" to uid,
-                "Container" to "opus,mp3,aac,m4a,flac,webma,webm,wav,ogg", "AudioCodec" to "aac,mp3,vorbis,opus")).toString(),
+            legacyUrl(conn, "Audio/$id/universal?UserId=$uid&Container=$STREAM_CONTAINERS&AudioCodec=$STREAM_CODECS"),
             image(conn, row), (stream?.number("BitRate") ?: media?.number("Bitrate"))?.div(1000)?.toInt(),
             stream?.number("SampleRate")?.toInt(), enriched = true)
+    }
+    private companion object {
+        const val STREAM_CONTAINERS = "opus,mp3,aac,m4a,flac,webma,webm,wav,ogg"
+        const val STREAM_CODECS = "aac,mp3,vorbis,opus"
     }
 }

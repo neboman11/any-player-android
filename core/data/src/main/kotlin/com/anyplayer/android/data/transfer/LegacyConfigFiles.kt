@@ -22,7 +22,7 @@ class LegacyConfigFiles @Inject constructor(
     // Sync deliberately uses explicit nulls, unlike the state-file canonical encoder.
     private val syncJson = Json { ignoreUnknownKeys = true }
     override suspend fun import(input: InputStream, policy: MergePolicy, dryRun: Boolean): ImportSummary = withContext(Dispatchers.IO) {
-        val raw = importer.readTransaction { input.reader(Charsets.UTF_8).use { it.readText() } }
+        val raw = input.reader(Charsets.UTF_8).use { it.readText() }
         importConfig(syncJson.decodeFromString<ConfigFile>(raw), policy, dryRun)
     }
     override suspend fun importJson(config: JsonElement, policy: MergePolicy, dryRun: Boolean): ImportSummary = withContext(Dispatchers.IO) {
@@ -78,18 +78,17 @@ class LegacyConfigFiles @Inject constructor(
     }
 
     override suspend fun exportPlaylistsJson(): JsonElement = withContext(Dispatchers.IO) {
-        importer.readSnapshot { data ->
-            val tracks = data.playlistTracks.groupBy { it.playlistId }
-            val sources = data.unionPlaylistSources.groupBy { it.unionPlaylistId }
-            var trackId = 0
-            var sourceId = 0
-            val entries = data.customPlaylists.map { p ->
-                ConfigCustomPlaylist(ConfigPlaylistEntry(p.id, p.name, p.description, p.imageUrl, epoch(p.createdAt), epoch(p.updatedAt), p.trackCount, p.playlistType.name.lowercase(), p.isDistinct),
-                    tracks[p.id].orEmpty().sortedBy { it.position }.map { t -> ConfigTrack(++trackId, t.playlistId, t.trackSource.name.lowercase(), t.trackId, t.position, epoch(t.addedAt), t.title, t.artist, t.album, t.durationMs, t.imageUrl) },
-                    sources[p.id].orEmpty().sortedBy { it.position }.map { s -> ConfigUnionSource(++sourceId, s.unionPlaylistId, s.sourceType.name.lowercase(), s.sourcePlaylistId, s.position, epoch(s.addedAt)) })
-            }
-            syncJson.encodeToJsonElement(entries)
+        val data = importer.snapshot()
+        val tracks = data.playlistTracks.groupBy { it.playlistId }
+        val sources = data.unionPlaylistSources.groupBy { it.unionPlaylistId }
+        var trackId = 0
+        var sourceId = 0
+        val entries = data.customPlaylists.map { p ->
+            ConfigCustomPlaylist(ConfigPlaylistEntry(p.id, p.name, p.description, p.imageUrl, epoch(p.createdAt), epoch(p.updatedAt), p.trackCount, p.playlistType.name.lowercase(), p.isDistinct),
+                tracks[p.id].orEmpty().sortedBy { it.position }.map { t -> ConfigTrack(++trackId, t.playlistId, t.trackSource.name.lowercase(), t.trackId, t.position, epoch(t.addedAt), t.title, t.artist, t.album, t.durationMs, t.imageUrl) },
+                sources[p.id].orEmpty().sortedBy { it.position }.map { s -> ConfigUnionSource(++sourceId, s.unionPlaylistId, s.sourceType.name.lowercase(), s.sourcePlaylistId, s.position, epoch(s.addedAt)) })
         }
+        syncJson.encodeToJsonElement(entries)
     }
     override suspend fun exportProviderConfigJson(): JsonElement = withContext(Dispatchers.IO) {
         val stored = connections.awaitLoaded()

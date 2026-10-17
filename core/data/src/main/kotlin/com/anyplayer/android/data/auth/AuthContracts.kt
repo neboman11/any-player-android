@@ -31,6 +31,11 @@ data class StoredConnection(
 /** In-memory view of `provider_connections`; single writer (mutex) for read-modify-write. */
 interface ConnectionStore {
     val connections: StateFlow<Map<SourceType, StoredConnection>>
+    /**
+     * False while the backing file is still being opened (or failed to open); [connections] is then
+     * an empty placeholder, not "nothing connected". Stores that load synchronously keep the default.
+     */
+    val isLoaded: Boolean get() = true
     suspend fun awaitLoaded(): Map<SourceType, StoredConnection>
     /** Atomic read-modify-write; returning null removes the entry. */
     suspend fun update(source: SourceType, transform: (StoredConnection?) -> StoredConnection?)

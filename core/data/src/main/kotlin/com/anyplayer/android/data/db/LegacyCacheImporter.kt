@@ -15,49 +15,60 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
+/**
+ * One-shot conversion of legacy `app_cache_entries` blobs into the v3 cache tables. Each row is
+ * converted and deleted in its own short transaction, so startup never holds the writer for the
+ * whole import; an interrupted run resumes with the rows that are left.
+ */
 @Singleton
 class LegacyCacheImporter @Inject constructor(private val db: AppDatabase) {
     private val mutex = Mutex()
     private var completed = false
-    suspend fun runOnce() = withContext(Dispatchers.IO) { mutex.withLock {
-        if (completed) return@withLock
-        val dao = db.catalogCacheDao()
-        db.withTransaction {
+
+    suspend fun runOnce(): Unit = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            if (completed) return@withLock
+            val dao = db.catalogCacheDao()
             for (row in dao.legacyEntries().sortedBy { if (it.key == "provider_playlists") 0 else 1 }) {
-                val timestamp = runCatching { Instant.parse(row.updatedAt).toEpochMilli() }.getOrDefault(0)
-                val json = runCatching { AppJson.parseToJsonElement(row.valueJson).jsonObject }.getOrNull()
-                if (json != null) {
-                    suspend fun saveTracks(key: String, tracks: List<Track>) {
-                        val existing = dao.owner(key)
-                        if (existing == null || existing.updatedAtMs < timestamp) dao.replaceTracks(
-                            CachedTrackOwnerEntity(key, timestamp, tracks.size),
-                            tracks.mapIndexed { index, track -> CachedTrackEntity(key, index, AppJson.encodeToString(track)) })
-                    }
-                    when {
-                        row.key == "provider_playlists" && row.version == 1 -> {
-                            val playlists = runCatching { AppJson.decodeFromJsonElement<List<Playlist>>(json["playlists"] ?: JsonArray(emptyList())) }.getOrNull()
-                            playlists?.groupBy { it.source }?.forEach { (source, rows) ->
-                                if (dao.playlists(source).isEmpty()) dao.putPlaylists(rows.mapIndexed { index, playlist -> playlist.entity(index, timestamp) })
-                                rows.forEach { playlist -> playlist.tracks?.let { saveTracks(providerOwnerKey(source, playlist.id), it) } }
-                            }
-                        }
-                        row.key.startsWith("provider_playlist_tracks_") && row.version == 2 -> {
-                            val source = runCatching { AppJson.decodeFromJsonElement<SourceType>(json.getValue("source")) }.getOrNull()
-                            val id = (json["playlistId"] as? JsonPrimitive)?.contentOrNull
-                            val tracks = runCatching { AppJson.decodeFromJsonElement<List<Track>>(json.getValue("tracks")) }.getOrNull()
-                            if (source != null && id != null && tracks != null) saveTracks(providerOwnerKey(source, id), tracks)
-                        }
-                        row.key.startsWith("union_playlist_tracks_") -> {
-                            val id = (json["unionPlaylistId"] as? JsonPrimitive)?.contentOrNull ?: row.key.removePrefix("union_playlist_tracks_")
-                            val tracks = runCatching { AppJson.decodeFromJsonElement<List<Track>>(json.getValue("tracks")) }.getOrNull()
-                            if (tracks != null) saveTracks("u:$id", tracks)
-                        }
-                    }
+                db.withTransaction {
+                    importRow(row)
+                    // Invalid or obsolete cache versions are disposable; user-owned rows are untouched.
+                    dao.deleteLegacy(row.key)
                 }
-                // Invalid or obsolete cache versions are disposable; user-owned rows are untouched.
-                dao.deleteLegacy(row.key)
+            }
+            completed = true
+        }
+    }
+
+    private suspend fun importRow(row: AppCacheEntryEntity) {
+        val dao = db.catalogCacheDao()
+        val timestamp = runCatching { Instant.parse(row.updatedAt).toEpochMilli() }.getOrDefault(0)
+        val json = runCatching { AppJson.parseToJsonElement(row.valueJson).jsonObject }.getOrNull() ?: return
+        suspend fun saveTracks(key: String, tracks: List<Track>) {
+            val existing = dao.owner(key)
+            if (existing == null || existing.updatedAtMs < timestamp) dao.replaceTracks(
+                CachedTrackOwnerEntity(key, timestamp, tracks.size),
+                tracks.mapIndexed { index, track -> CachedTrackEntity(key, index, AppJson.encodeToString(track)) })
+        }
+        when {
+            row.key == "provider_playlists" && row.version == 1 -> {
+                val playlists = runCatching { AppJson.decodeFromJsonElement<List<Playlist>>(json["playlists"] ?: JsonArray(emptyList())) }.getOrNull()
+                playlists?.groupBy { it.source }?.forEach { (source, rows) ->
+                    if (dao.playlists(source).isEmpty()) dao.putPlaylists(rows.mapIndexed { index, playlist -> playlist.entity(index, timestamp) })
+                    rows.forEach { playlist -> playlist.tracks?.let { saveTracks(providerOwnerKey(source, playlist.id), it) } }
+                }
+            }
+            row.key.startsWith("provider_playlist_tracks_") && row.version == 2 -> {
+                val source = runCatching { AppJson.decodeFromJsonElement<SourceType>(json.getValue("source")) }.getOrNull()
+                val id = (json["playlistId"] as? JsonPrimitive)?.contentOrNull
+                val tracks = runCatching { AppJson.decodeFromJsonElement<List<Track>>(json.getValue("tracks")) }.getOrNull()
+                if (source != null && id != null && tracks != null) saveTracks(providerOwnerKey(source, id), tracks)
+            }
+            row.key.startsWith("union_playlist_tracks_") -> {
+                val id = (json["unionPlaylistId"] as? JsonPrimitive)?.contentOrNull ?: row.key.removePrefix("union_playlist_tracks_")
+                val tracks = runCatching { AppJson.decodeFromJsonElement<List<Track>>(json.getValue("tracks")) }.getOrNull()
+                if (tracks != null) saveTracks("u:$id", tracks)
             }
         }
-        completed = true
-    } }
+    }
 }

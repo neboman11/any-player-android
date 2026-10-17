@@ -49,8 +49,11 @@ abstract class CustomPlaylistDao {
     abstract suspend fun nextSourcePosition(id: String): Int
     @Query("UPDATE custom_playlists SET trackCount = (SELECT COUNT(*) FROM playlist_tracks WHERE playlistId = :id), updatedAt = :now WHERE id = :id")
     abstract suspend fun updateTrackCount(id: String, now: String)
-    @Query("UPDATE custom_playlists SET trackCount = :count, updatedAt = :now WHERE id = :id")
-    abstract suspend fun materialized(id: String, count: Int, now: String)
+    /** Plain (re)materialization: count only. Legacy never moved a union up the list for Play/Open. */
+    @Query("UPDATE custom_playlists SET trackCount = :count WHERE id = :id")
+    abstract suspend fun materialized(id: String, count: Int)
+    @Query("UPDATE custom_playlists SET updatedAt = :now WHERE id = :id")
+    abstract suspend fun touch(id: String, now: String)
     @Query("UPDATE custom_playlists SET name = CASE WHEN TRIM(:name) = '' THEN name ELSE :name END, updatedAt = :now WHERE id = :id")
     abstract suspend fun renameRow(id: String, name: String, now: String)
     @Query("UPDATE custom_playlists SET isDistinct = :distinct, updatedAt = :now WHERE id = :id")

@@ -39,6 +39,21 @@ class AuthRepositoryTest {
             assertFalse(store.connections.value.containsKey(SourceType.PLEX))
         }
     }
+    @Test fun isSourceConnectedFailsOpenUntilStoreLoadsThenReadsStoreDirectly() = runTest {
+        MockWebServer().use { server ->
+            val store = FakeConnections().apply { isLoaded = false }
+            val auth = repository(store, server)
+            // Cold start: the store has not been read yet, so the empty map must not gate playback.
+            assertTrue(auth.isSourceConnected(SourceType.JELLYFIN))
+            assertTrue(auth.isSourceConnected(SourceType.SPOTIFY))
+            store.isLoaded = true
+            assertFalse(auth.isSourceConnected(SourceType.JELLYFIN))
+            store.connections.value = mapOf(SourceType.PLEX to StoredConnection(SourceType.PLEX, token = "key"))
+            // No dependency on the profiles collector having run.
+            assertTrue(auth.isSourceConnected(SourceType.PLEX))
+            assertFalse(auth.isSourceConnected(SourceType.SPOTIFY))
+        }
+    }
     @Test fun premiumAndFallbackStatusStringsRemainExact() = runTest {
         MockWebServer().use { server ->
             val store = FakeConnections(StoredConnection(SourceType.SPOTIFY, token = "token", spotifyPremium = false, playbackReady = true))

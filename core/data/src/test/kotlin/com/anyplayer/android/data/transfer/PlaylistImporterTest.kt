@@ -33,4 +33,14 @@ class PlaylistImporterTest {
         assertEquals(PlaylistType.UNION, plan.data.customPlaylists.single().playlistType)
         assertTrue(plan.data.unionPlaylistSources.isEmpty())
     }
+
+    @Test fun collidingAndGappedPositionsAreRenumberedInStableOrderInsteadOfAborting() {
+        val tracks = listOf(track().copy(id = "a", position = 5), track().copy(id = "b", position = 2), track().copy(id = "c", position = 5))
+        val sources = listOf(UnionPlaylistSource("s1", "p", SourceType.PLEX, "x", 3, "now"), UnionPlaylistSource("s2", "p", SourceType.PLEX, "y", 3, "now"),
+            UnionPlaylistSource("s3", "p", SourceType.PLEX, "z", 0, "now"))
+        val plan = planPlaylistImport(AnyPlayerStateData(listOf(playlist()), tracks, sources), emptyList(), emptyList(), emptyList(), MergePolicy.REPLACE_ALL, "import")
+        assertEquals(listOf("b" to 0, "a" to 1, "c" to 2), plan.data.playlistTracks.map { it.id to it.position })
+        assertEquals(listOf("s3" to 0, "s1" to 1, "s2" to 2), plan.data.unionPlaylistSources.map { it.id to it.position })
+        assertEquals(3, plan.summary.tracksAdded)
+    }
 }
