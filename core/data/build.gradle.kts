@@ -2,11 +2,13 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
     namespace = "com.anyplayer.android.data"
     compileSdk = 35
+    buildFeatures { buildConfig = true }
 
     defaultConfig {
         minSdk = 26
@@ -41,6 +43,12 @@ dependencies {
 
     implementation(libs.security.crypto)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+    api(libs.okhttp)
+    implementation(libs.okhttp.logging)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.androidx.test.ext.junit)

@@ -8,6 +8,7 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.anyplayer.android.data.db.dao.CustomPlaylistDao
+import com.anyplayer.android.data.db.dao.CatalogCacheDao
 import com.anyplayer.android.data.db.entity.AppCacheEntryEntity
 import com.anyplayer.android.data.db.entity.CachedPlaylistEntity
 import com.anyplayer.android.data.db.entity.CachedTrackEntity
@@ -40,6 +41,7 @@ import com.anyplayer.android.data.db.entity.UnionPlaylistSourceEntity
 @TypeConverters(RoomTypeConverters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun customPlaylistDao(): CustomPlaylistDao
+    abstract fun catalogCacheDao(): CatalogCacheDao
 
     companion object {
         /** File name shared with the legacy app; existing installs upgrade in place. */
