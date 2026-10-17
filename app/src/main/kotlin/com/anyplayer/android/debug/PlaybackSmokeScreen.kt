@@ -26,7 +26,7 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.playback.PlaybackEngine
 import kotlinx.coroutines.delay
 
-/** Temporary scaffolding for the walking-skeleton emulator smoke test; replaced by the real UI. */
+/** Debug-only local streaming harness; production launch uses the real app shell. */
 @Composable
 fun PlaybackSmokeScreen(engine: PlaybackEngine) {
     var baseUrl by rememberSaveable { mutableStateOf("http://10.0.2.2:8765") }
@@ -56,15 +56,15 @@ fun PlaybackSmokeScreen(engine: PlaybackEngine) {
         }
         Text("Title: ${queue.current?.track?.title ?: "-"}", modifier = Modifier.testTag("title"))
         Text("Status: ${player.status}${player.error?.let { " ($it)" } ?: ""}", modifier = Modifier.testTag("status"))
-        PositionText(engine, playing = player.status == PlaybackStateType.PLAYING, durationMs = player.durationMs)
+        PositionText(engine, playing = player.status == PlaybackStateType.PLAYING, durationMs = player.durationMs, anchorPositionMs = player.anchorPositionMs)
         Text("Queue: ${queue.order.size} entries, cursor ${queue.cursor}")
     }
 }
 
 /** Only this widget recomposes on the ticker; it runs only while playing. */
 @Composable
-private fun PositionText(engine: PlaybackEngine, playing: Boolean, durationMs: Long) {
-    val position by produceState(engine.positionMs(), playing, durationMs) {
+private fun PositionText(engine: PlaybackEngine, playing: Boolean, durationMs: Long, anchorPositionMs: Long) {
+    val position by produceState(engine.positionMs(), playing, durationMs, anchorPositionMs) {
         value = engine.positionMs()
         while (playing) {
             delay(250)
@@ -84,7 +84,7 @@ private fun smokeTracks(base: String): List<Track> = listOf("a", "b", "c").map {
         id = "smoke-$name",
         title = "Smoke ${name.uppercase()}",
         artist = "Walking Skeleton",
-        source = SourceType.JELLYFIN,
+        source = SourceType.CUSTOM,
         url = "$base/$name.wav",
     )
 }
