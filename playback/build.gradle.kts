@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -28,6 +29,13 @@ dependencies {
     api(libs.media3.exoplayer)
     api(libs.media3.session)
     implementation(libs.media3.datasource)
+    implementation(libs.media3.datasource.okhttp)
+    implementation(libs.media3.database)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.lifecycle.process)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)

@@ -320,19 +320,22 @@ data class PlayerState(
   val volume: Int, val normalization: Boolean, val error: String?, val activeBreakId: String?,
 )
 ```
-- Confined to the main thread (ExoPlayer requirement). Each command applies the new
-  `QueueState` synchronously (UI responds instantly) and then reconciles the backend in a
-  single `reconcileJob` that is cancelled by the next command (latest wins).
-- Reconcile: `planRun(queue, cursor, pendingBreak)`; if the active backend already plays a run
-  whose current item matches, it only updates upcoming items (`updateUpcoming`), otherwise
-  `load(run, start, position, playWhenReady)` on the right backend and stops the other.
-- Backend events: `ItemStarted(i)` → set cursor to that item's orderPos (or break active),
-  `RunEnded` → advance past the run (`QueueOps.advance` with repeat ALL wrap) and reconcile,
-  `Error` → retry policy (prepare ≤3 per item at ≥1.5 s spacing, then skip).
-- Persistence: queue → Room on `queue.version` change (debounced 500 ms, IO); cursor/position
-  → `player_settings` on pause, track change, seek, and every 15 s while playing.
-- Restore: load queue + cursor paused; position applied lazily on the first `play` (Exo:
-  `seekTo`; Spotify: `position_ms` in the start request). No network at restore.
+- Main-confined intent reducer; public commands hop to Main.immediate. A conflated wake channel
+  drives one level-triggered reconcile loop. No in-flight backend command is cancelled.
+- Every load and event carries a generation; item events resolve stable `ItemKey` identities
+  against the current queue, never a captured play-order index. Natural transitions emit USER
+  changes; explicit sync/restore mutations retain their supplied origins.
+- Reconcile compares the desired run, play intent, seek serial, normalized volume and repeat
+  mode with the applied backend state. The old backend stops before a different backend loads.
+  EXO updates only upcoming timeline items and retains at most three history items.
+- Player-originated pauses are adopted into intent. Auth gating lives inside the engine, so
+  UI, session, notification and sync all share the same legacy disabled message and play guard.
+- Persistence uses `QueueDao` transactions: contentVersion changes debounce for 500 ms, cursor
+  updates are version-qualified, and flags/position use PlayerSettingsStore (including a 15 s
+  checkpoint while playing). LegacyPlaybackStateMigrator maps duplicate occurrences and the
+  insertion-space cursor before retiring the encrypted key after Room and flags are durable.
+- Restore awaits migration and reads only local stores. Queue and saved position restore paused;
+  no backend loads until the first play, which receives the saved position.
 
 ### 6.2 Backends
 ```kotlin
@@ -602,6 +605,10 @@ Accepted after an independent review (Media3 1.5.1 behaviour verified against th
 - The engine validates `PendingBreak.beforeUid` against `upcoming()`; dropped breaks (target passed,
   queue replaced, disabled) are reported via `EngineEvent.BreakDropped(id)` so the coordinator
   deletes the file.
+- After `BreakStarted(id)`, the break is active rather than pending. Clearing/replacing the
+  pending slot must not interrupt that audio (the coordinator prepares its next target while
+  it plays). An active break releases its delivery with `BreakEnded(id)`, including skip,
+  previous and queue replacement; only never-started deliveries use `BreakDropped(id)`.
 - Finished audio is kept keyed by track id (+passage chunk ids) so a target flip-back reuses it;
   in-flight generation is cancelled only on disable or queue replace.
 - LLM released on disable, `onTrimMemory`, or after N minutes without playback (not per break).

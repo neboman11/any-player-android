@@ -43,6 +43,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun customPlaylistDao(): CustomPlaylistDao
     abstract fun unionCacheDao(): com.anyplayer.android.data.db.dao.UnionCacheDao
     abstract fun catalogCacheDao(): CatalogCacheDao
+    abstract fun queueDao(): com.anyplayer.android.data.db.dao.QueueDao
 
     companion object {
         /** File name shared with the legacy app; existing installs upgrade in place. */
