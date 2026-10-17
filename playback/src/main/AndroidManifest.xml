@@ -9,19 +9,4 @@
     <!-- ExoPlayer WAKE_MODE_NETWORK keeps CPU + Wi-Fi awake while streaming in the background. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <application>
-        <!-- FQN kept from the legacy app: Android Auto / controllers bind to it by name. -->
-        <service
-            android:name="com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaLibraryService" />
-                <action android:name="android.media.browse.MediaBrowserService" />
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
-            </intent-filter>
-        </service>
-    </application>
-
 </manifest>
