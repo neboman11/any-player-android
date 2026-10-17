@@ -12,7 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.anyplayer.android.debug.PlaybackSmokeScreen
 import com.anyplayer.android.playback.PlaybackEngine
 import com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService
 import com.anyplayer.android.ui.shell.AnyPlayerShell
@@ -39,11 +38,7 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
         requestNotificationsOnFirstPlayback()
         setContent {
-            AnyPlayerTheme {
-                // Retained only for the engine slice's explicit emulator smoke intent.
-                if (BuildConfig.DEBUG && intent.getBooleanExtra("playback_smoke", false)) PlaybackSmokeScreen(engine)
-                else AnyPlayerShell()
-            }
+            AnyPlayerTheme { AnyPlayerShell() }
         }
     }
 

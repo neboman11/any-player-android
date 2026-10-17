@@ -34,6 +34,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Phones (arm64) and emulators (x86_64) only: halves the debug APK, which bundles the
+            // native LLM/TTS runtimes. Release builds keep every ABI.
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        }
         release {
             isMinifyEnabled = false
         }
