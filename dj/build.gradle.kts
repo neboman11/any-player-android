@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 val sherpaOnnxVersion = "1.13.7"
@@ -46,6 +47,11 @@ dependencies {
     implementation(mapOf("name" to "sherpa-onnx", "version" to sherpaOnnxVersion, "ext" to "aar"))
 
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 }
 
 // Fetched once and cached in libs/ (gitignored) rather than committed.
