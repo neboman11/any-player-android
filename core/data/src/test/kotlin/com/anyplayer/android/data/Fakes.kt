@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.withLock
 
 class FakeConnections(vararg connections: StoredConnection) : ConnectionStore {
     override val connections = MutableStateFlow(connections.associateBy { it.source })
+    override var isLoaded = true
     private val mutex = Mutex()
     override suspend fun awaitLoaded() = connections.value
     override suspend fun update(source: SourceType, transform: (StoredConnection?) -> StoredConnection?) = mutex.withLock {

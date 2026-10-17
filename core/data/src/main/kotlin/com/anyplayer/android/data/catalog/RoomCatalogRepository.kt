@@ -70,6 +70,15 @@ class RoomCatalogRepository @Inject constructor(
             val conn = connections.awaitLoaded()[source] ?: return@withLock cachedTracks(source, id)
             val provider = providers[source] ?: return@withLock emptyList()
             val tracks = provider.playlistTracks(conn, id)
+            if (tracks.isEmpty()) {
+                // Legacy returned the cache when the remote came back empty (library scan, transient
+                // empty page): keep the rows and only mark them as checked.
+                val cached = cachedTracks(source, id)
+                if (cached.isNotEmpty()) {
+                    dao.touchOwner(key, System.currentTimeMillis())
+                    return@withLock cached
+                }
+            }
             dao.replaceProviderTracks(source, id, CachedTrackOwnerEntity(key, System.currentTimeMillis(), tracks.size),
                 tracks.mapIndexed { position, track -> CachedTrackEntity(key, position, AppJson.encodeToString(track)) })
             tracks

@@ -154,14 +154,71 @@ class RoomPlaylistRepositoryTest {
         assertEquals(1, db.customPlaylistDao().get(p.id)?.trackCount)
     }
 
+    @Test fun slowProviderFetchBlocksNoOtherMutationAndCancelledSourceEditIsKept() = runBlocking {
+        val union = repo.create("Union", PlaylistType.UNION)
+        val other = repo.create("Other", PlaylistType.STANDARD)
+        catalog.gate("slow")
+        val edit = launch(Dispatchers.IO) { repo.addUnionSource(union.id, SourceType.PLEX, "slow") }
+        catalog.entered.getValue("slow").await()
+        // The provider fetch is still pending: edits to this and other playlists must not queue behind it.
+        withTimeout(5_000) {
+            repo.addTrack(other.id, song("x"))
+            repo.rename(union.id, "Renamed")
+            assertEquals(listOf("x"), repo.playbackSelection(other.id).tracks.map { it.id })
+        }
+        assertEquals(listOf("slow"), db.customPlaylistDao().sources(union.id).map { it.sourcePlaylistId })
+        edit.cancelAndJoin()
+        assertEquals(listOf("slow"), db.customPlaylistDao().sources(union.id).map { it.sourcePlaylistId })
+        assertEquals("Renamed", db.customPlaylistDao().get(union.id)?.name)
+    }
+
+    @Test fun materializationStartedBeforeASourceEditNeverOverwritesTheNewerResult() = runBlocking {
+        val union = repo.create("Union", PlaylistType.UNION)
+        catalog.values[SourceType.PLEX to "old"] = listOf(song("old"))
+        catalog.values[SourceType.PLEX to "new"] = listOf(song("new"))
+        repo.replaceUnionSources(union.id, listOf(SourceType.PLEX to "old"))
+        catalog.gate("old")
+        val stale = async(Dispatchers.IO) { repo.materializeUnion(union.id, true) }
+        catalog.entered.getValue("old").await()
+        repo.replaceUnionSources(union.id, listOf(SourceType.PLEX to "new"))
+        assertEquals(listOf("new"), repo.observeTracks(union.id).first().map { it.id })
+        catalog.gates.getValue("old").complete(Unit)
+        assertEquals(listOf("new"), stale.await().map { it.id })
+        assertEquals(listOf("new"), repo.observeTracks(union.id).first().map { it.id })
+    }
+
+    @Test fun playingAUnionDoesNotBumpUpdatedAtButSourceEditsDo() = runBlocking {
+        val local = repo.create("Local", PlaylistType.STANDARD)
+        repo.addTrack(local.id, song("a"))
+        val union = repo.create("Union", PlaylistType.UNION)
+        repo.replaceUnionSources(union.id, listOf(SourceType.CUSTOM to local.id))
+        val old = "2020-01-01T00:00:00Z"
+        db.customPlaylistDao().upsert(db.customPlaylistDao().get(union.id)!!.copy(updatedAt = old, trackCount = 0))
+        repo.playbackSelection(union.id)
+        repo.materializeUnion(union.id, true)
+        assertEquals(old, db.customPlaylistDao().get(union.id)?.updatedAt)
+        assertEquals(1, db.customPlaylistDao().get(union.id)?.trackCount)
+        repo.addUnionSource(union.id, SourceType.PLEX, "remote")
+        assertNotEquals(old, db.customPlaylistDao().get(union.id)?.updatedAt)
+    }
+
     private class FakeCatalog : CatalogRepository {
-        val values = mutableMapOf<Pair<SourceType, String>, List<Track>>()
+        val values = java.util.concurrent.ConcurrentHashMap<Pair<SourceType, String>, List<Track>>()
         val requests = java.util.Collections.synchronizedList(mutableListOf<Triple<SourceType, String, Boolean>>())
+        val gates = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+        val entered = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+        /** Fetches of [playlistId] signal [entered] and then suspend until the gate is completed. */
+        fun gate(playlistId: String) {
+            gates[playlistId] = CompletableDeferred()
+            entered[playlistId] = CompletableDeferred()
+        }
         override val playlists = flowOf(emptyList<Playlist>())
         override suspend fun refreshPlaylists() = emptyList<ProviderRefreshFailure>()
         override suspend fun tracks(source: SourceType, playlistId: String, forceRefresh: Boolean): List<Track> {
             requests.add(Triple(source, playlistId, forceRefresh))
             if (playlistId == "fail") error("source unavailable")
+            entered[playlistId]?.complete(Unit)
+            gates[playlistId]?.await()
             if (source == SourceType.SPOTIFY) delay(20)
             return values[source to playlistId].orEmpty()
         }

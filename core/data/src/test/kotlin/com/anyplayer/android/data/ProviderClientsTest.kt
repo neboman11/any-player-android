@@ -40,6 +40,38 @@ class ProviderClientsTest {
             assertTrue(server.takeRequest().path!!.contains("IncludeItemTypes=Playlist"))
         }
     }
+    @Test fun jellyfinStreamAndArtworkUrlsMatchLegacyBytesAndSearchFetchesOnePage() = runTest {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""[{"Id":"uid","Name":"Listener"}]"""))
+            server.enqueue(MockResponse().setBody("""{"TotalRecordCount":5000,"Items":[{"Id":"a","Type":"Audio","Name":"Song","AlbumId":"al","AlbumPrimaryImageTag":"tag"},{"Id":"b","Type":"Audio","Name":"Two"}]}"""))
+            val base = server.url("/jf/").toString()
+            // Page size 1 would need thousands of requests if search walked every page.
+            val conn = StoredConnection(SourceType.JELLYFIN, base, token = "secret", playlistPageSize = 1, jellyfinUserId = "uid")
+            val result = JellyfinClient(http, FakeConnections(conn)).search(conn, "song", SearchType.TRACKS, 1)
+            assertEquals(listOf("a"), result.tracks.map { it.id })
+            val root = base.trimEnd('/')
+            assertEquals("$root/Audio/a/universal?UserId=uid&Container=opus,mp3,aac,m4a,flac,webma,webm,wav,ogg&AudioCodec=aac,mp3,vorbis,opus", result.tracks[0].url)
+            assertEquals("$root/Items/al/Images/Primary?tag=tag", result.tracks[0].imageUrl)
+            assertEquals("/jf/Users", server.takeRequest().path)
+            val search = server.takeRequest().requestUrl!!
+            assertEquals("1", search.queryParameter("Limit"))
+            assertEquals("0", search.queryParameter("StartIndex"))
+            assertEquals("song", search.queryParameter("searchTerm"))
+            assertEquals(2, server.requestCount)
+        }
+    }
+    @Test fun plexValidateUsesLegacyErrorTexts() = runTest {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            try { PlexClient(http).validate(StoredConnection(SourceType.PLEX, server.url("/").toString(), token = "t")); fail("Expected auth failure") }
+            catch (e: com.anyplayer.android.data.net.HttpFailure) { assertEquals("Plex authentication failed: HTTP 401", e.message) }
+        }
+        val closed = MockWebServer().apply { start() }
+        val url = closed.url("/").toString()
+        closed.shutdown()
+        try { PlexClient(http).validate(StoredConnection(SourceType.PLEX, url, token = "t")); fail("Expected connection failure") }
+        catch (e: java.io.IOException) { assertTrue(e.message, e.message!!.startsWith("Plex connection test failed: ")) }
+    }
     @Test fun plexPagesAndSignsStreamAndArtworkWithoutProbe() = runTest {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("""{"MediaContainer":{"totalSize":2,"Metadata":[{"ratingKey":"1","title":"Song","grandparentTitle":"Artist","parentTitle":"Album","duration":1234,"thumb":"/art/1","Media":[{"bitrate":192,"Part":[{"key":"/library/parts/1/file.mp3"}]}]}]}}"""))

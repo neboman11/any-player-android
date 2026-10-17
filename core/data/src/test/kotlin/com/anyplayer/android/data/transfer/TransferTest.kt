@@ -13,7 +13,13 @@ import org.junit.Test
 
 internal class MemoryTransferStore(var data: AnyPlayerStateData = AnyPlayerStateData()) : PlaylistTransferStore {
     var writes = 0
-    override suspend fun <T> transaction(block: suspend () -> T): T = block()
+    /** True while a transaction block runs: stream I/O and crypto must never happen inside one. */
+    var inTransaction = false
+    override suspend fun <T> transaction(block: suspend () -> T): T {
+        check(!inTransaction)
+        inTransaction = true
+        try { return block() } finally { inTransaction = false }
+    }
     override suspend fun snapshot() = data
     override suspend fun apply(data: AnyPlayerStateData, replaceAll: Boolean) {
         writes++
@@ -49,13 +55,21 @@ class TransferTest {
     private fun fixture() = requireNotNull(javaClass.getResource("/legacy-state.json")).readText()
     private fun config(vararg entries: ConfigCustomPlaylist, providers: ConfigProviderConfigs = ConfigProviderConfigs()) = Json.encodeToJsonElement(ConfigFile(1, providers, entries.toList()))
     private fun entry(type: String = "standard", tracks: List<ConfigTrack> = emptyList(), sources: List<ConfigUnionSource> = emptyList()) = ConfigCustomPlaylist(ConfigPlaylistEntry("p", "Incoming", createdAt = 1700000000, updatedAt = 1700000000, trackCount = tracks.size, playlistType = type), tracks, sources)
+    private fun transferOf(store: MemoryTransferStore, connections: MemoryConnections = MemoryConnections()) =
+        LegacyStateTransfer(PlaylistImporter(store), connections, "9.9.9-test")
+    /** Fails any read made while [store] is inside a transaction. */
+    private fun guardedInput(bytes: ByteArray, store: MemoryTransferStore) = object : java.io.InputStream() {
+        private val delegate = bytes.inputStream()
+        override fun read(): Int { check(!store.inTransaction) { "stream read inside a transaction" }; return delegate.read() }
+        override fun read(b: ByteArray, off: Int, len: Int): Int { check(!store.inTransaction) { "stream read inside a transaction" }; return delegate.read(b, off, len) }
+    }
 
     @Test fun statePortableRoundTripPreservesTracksColumnsAndEmptyUnion() = runTest {
         val source = MemoryTransferStore(data())
         val target = MemoryTransferStore()
         val output = ByteArrayOutputStream()
-        LegacyStateTransfer(PlaylistImporter(source), MemoryConnections()).export(output, ExportMode.PORTABLE, null, null)
-        val summary = LegacyStateTransfer(PlaylistImporter(target), MemoryConnections()).import(output.toByteArray().inputStream(), MergePolicy.REPLACE_ALL, null, false)
+        transferOf(source).export(output, ExportMode.PORTABLE, null, null)
+        val summary = transferOf(target).import(output.toByteArray().inputStream(), MergePolicy.REPLACE_ALL, null, false)
         assertEquals(2, summary.playlistsAdded)
         assertEquals(source.data, target.data)
     }
@@ -63,10 +77,10 @@ class TransferTest {
     @Test fun privateRoundTripPreservesSecretsWithoutClearingRefreshData() = runTest {
         val original = StoredConnection(SourceType.JELLYFIN, "https://server", token = "exported")
         val output = ByteArrayOutputStream()
-        LegacyStateTransfer(PlaylistImporter(MemoryTransferStore(data())), MemoryConnections(mapOf(original.source to original))).export(output, ExportMode.PRIVATE, "secret", null)
+        transferOf(MemoryTransferStore(data()), MemoryConnections(mapOf(original.source to original))).export(output, ExportMode.PRIVATE, "secret", null)
         val existing = original.copy(token = "old", refreshToken = "refresh", tokenExpiresAt = 123, playlistPageSize = 700, jellyfinUserId = "user")
         val target = MemoryConnections(mapOf(existing.source to existing))
-        LegacyStateTransfer(PlaylistImporter(MemoryTransferStore()), target).import(output.toByteArray().inputStream(), MergePolicy.REPLACE_ALL, "secret", false)
+        transferOf(MemoryTransferStore(), target).import(output.toByteArray().inputStream(), MergePolicy.REPLACE_ALL, "secret", false)
         assertEquals(existing.copy(token = "exported", playbackReady = true), target.connections.value[existing.source])
         val root = AppJson.parseToJsonElement(output.toString("UTF-8")).jsonObject
         assertFalse(root.containsKey("encrypted"))
@@ -76,7 +90,7 @@ class TransferTest {
 
     @Test fun legacyFixtureIntegrityAndOmittedCryptoDefaultsImport() = runTest {
         // Ported seed from legacy StateTransferManagerTest.buildEnvelope (2026-05-18).
-        val transfer = LegacyStateTransfer(PlaylistImporter(MemoryTransferStore()), MemoryConnections())
+        val transfer = transferOf(MemoryTransferStore())
         assertEquals(ImportSummary(), transfer.import(fixture().byteInputStream(), MergePolicy.MERGE_PREFER_IMPORT, null, true))
         val encrypted = StateTransferCrypto().encrypt(fixture(), "secret")
         val json = Json { prettyPrint = true; explicitNulls = false }
@@ -86,7 +100,7 @@ class TransferTest {
     }
 
     @Test fun explicitEncryptedFlagImportsAndWrongPassphraseFails() = runTest {
-        val transfer = LegacyStateTransfer(PlaylistImporter(MemoryTransferStore()), MemoryConnections())
+        val transfer = transferOf(MemoryTransferStore())
         val json = Json { encodeDefaults = true }
         val raw = json.encodeToString(StateTransferCrypto().encrypt(fixture(), "secret"))
         assertEquals(ImportSummary(), transfer.import(raw.byteInputStream(), MergePolicy.REPLACE_ALL, "secret", true))
@@ -97,7 +111,7 @@ class TransferTest {
     @Test fun integrityTamperingFailsBeforeAnyWrite() = runTest {
         val store = MemoryTransferStore(data())
         val connections = MemoryConnections()
-        val transfer = LegacyStateTransfer(PlaylistImporter(store), connections)
+        val transfer = transferOf(store, connections)
         try { transfer.import(fixture().replace("2026-05-18", "2026-05-19").byteInputStream(), MergePolicy.REPLACE_ALL, null, false); fail("Expected integrity failure") }
         catch (error: IllegalArgumentException) { assertEquals("Integrity check failed", error.message) }
         assertEquals(0, store.writes)
@@ -110,7 +124,7 @@ class TransferTest {
         val before = store.data
         val beforeConnections = connections.connections.value
         val raw = signed(data().copy(connections = mapOf(SourceType.PLEX to ExportedConnection(SourceType.PLEX, "incoming", token = "incoming"))))
-        val summary = LegacyStateTransfer(PlaylistImporter(store), connections).import(raw.byteInputStream(), MergePolicy.REPLACE_ALL, "pass", true)
+        val summary = transferOf(store, connections).import(raw.byteInputStream(), MergePolicy.REPLACE_ALL, "pass", true)
         assertEquals(1, summary.connectionsImported)
         assertEquals(before, store.data)
         assertEquals(beforeConnections, connections.connections.value)
@@ -122,7 +136,7 @@ class TransferTest {
         val local = StoredConnection(SourceType.SPOTIFY, token = "access", refreshToken = "refresh", tokenExpiresAt = 123, spotifyPremium = true, playbackReady = true)
         val connections = MemoryConnections(mapOf(local.source to local))
         val raw = signed(AnyPlayerStateData(connections = mapOf(local.source to ExportedConnection(local.source, spotifyConnected = true))))
-        LegacyStateTransfer(PlaylistImporter(MemoryTransferStore()), connections).import(raw.byteInputStream(), MergePolicy.MERGE_KEEP_LOCAL, null, false)
+        transferOf(MemoryTransferStore(), connections).import(raw.byteInputStream(), MergePolicy.MERGE_KEEP_LOCAL, null, false)
         assertEquals(local, connections.connections.value[local.source])
     }
 
@@ -130,7 +144,7 @@ class TransferTest {
         val local = StoredConnection(SourceType.SPOTIFY, token = "local", refreshToken = "refresh")
         val connections = MemoryConnections(mapOf(local.source to local))
         val raw = signed(AnyPlayerStateData(connections = mapOf(local.source to ExportedConnection(local.source, token = "raw", spotifyConnected = true))))
-        val summary = LegacyStateTransfer(PlaylistImporter(MemoryTransferStore()), connections).import(raw.byteInputStream(), MergePolicy.MERGE_PREFER_IMPORT, "pass", false)
+        val summary = transferOf(MemoryTransferStore(), connections).import(raw.byteInputStream(), MergePolicy.MERGE_PREFER_IMPORT, "pass", false)
         assertEquals(listOf("Spotify raw access token ignored by policy"), summary.warnings)
         assertEquals("local", connections.connections.value[local.source]?.token)
         assertEquals("refresh", connections.connections.value[local.source]?.refreshToken)
@@ -194,5 +208,24 @@ class TransferTest {
         files.importJson(config(entry(tracks = listOf(ConfigTrack(1, "p", "plex", "song", 0, 1700000000, "Imported", "Artist")))), MergePolicy.MERGE_KEEP_LOCAL, false)
         assertEquals(track(), store.data.playlistTracks.first { it.playlistId == "p" })
         assertTrue(store.data.customPlaylists.any { it.id.startsWith("p_cfg_") })
+    }
+
+    @Test fun streamIoAndCryptoRunOutsideTransactionsAndExportCarriesInjectedAppVersion() = runTest {
+        val source = MemoryTransferStore(data())
+        val output = object : ByteArrayOutputStream() {
+            override fun write(b: ByteArray, off: Int, len: Int) { check(!source.inTransaction) { "stream write inside a transaction" }; super.write(b, off, len) }
+            override fun write(b: Int) { check(!source.inTransaction) { "stream write inside a transaction" }; super.write(b) }
+        }
+        transferOf(source).export(output, ExportMode.PRIVATE, "secret", null)
+        val bytes = output.toByteArray()
+        assertTrue(bytes.isNotEmpty())
+        val target = MemoryTransferStore()
+        transferOf(target).import(guardedInput(bytes, target), MergePolicy.REPLACE_ALL, "secret", false)
+        assertEquals(source.data, target.data)
+        assertEquals("9.9.9-test", transferOf(target).decodeAndVerify(bytes.toString(Charsets.UTF_8), "secret").sourceApp.appVersion)
+        val configStore = MemoryTransferStore()
+        val config = Json.encodeToString(ConfigFile(1, ConfigProviderConfigs(), listOf(entry())))
+        LegacyConfigFiles(PlaylistImporter(configStore), MemoryConnections()).import(guardedInput(config.toByteArray(), configStore), MergePolicy.REPLACE_ALL, false)
+        assertEquals("Incoming", configStore.data.customPlaylists.single().name)
     }
 }

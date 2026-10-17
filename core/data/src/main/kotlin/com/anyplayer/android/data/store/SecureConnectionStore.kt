@@ -23,6 +23,8 @@ class SecureConnectionStore @Inject constructor(private val prefs: SecurePrefs) 
     private val mutex = Mutex()
     private val state = MutableStateFlow<Map<SourceType, StoredConnection>>(emptyMap())
     override val connections = state.asStateFlow()
+    @Volatile override var isLoaded = false
+        private set
     private val loaded = scope.async {
         val file = prefs.open(SecurePrefs.PROVIDER_CONNECTIONS)
         state.value = listOf(SourceType.SPOTIFY, SourceType.JELLYFIN, SourceType.PLEX).mapNotNull { source ->
@@ -31,6 +33,7 @@ class SecureConnectionStore @Inject constructor(private val prefs: SecurePrefs) 
                     ?.copy(source = source)?.let { source to it }
             }
         }.toMap()
+        isLoaded = true
     }
     override suspend fun awaitLoaded(): Map<SourceType, StoredConnection> {
         loaded.await()

@@ -7,6 +7,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.time.Instant
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,24 +19,27 @@ import kotlinx.serialization.json.*
 class LegacyStateTransfer @Inject constructor(
     private val importer: PlaylistImporter,
     private val connections: ConnectionStore,
+    /** Legacy wrote `BuildConfig.VERSION_NAME` into `sourceApp.appVersion`; the app module binds it. */
+    @Named("appVersionName") private val appVersionName: String,
 ) : StateTransfer {
     private val crypto = StateTransferCrypto()
 
     override suspend fun export(output: OutputStream, mode: ExportMode, passphrase: String?, playback: PlaybackStatus?) = withContext(Dispatchers.IO) {
         if (mode == ExportMode.PRIVATE) requireNotNull(passphrase) { "Passphrase is required for private exports" }
         val stored = connections.awaitLoaded()
-        importer.readSnapshot { snapshot ->
-            val data = snapshot.copy(connections = stored.mapValues { (_, connection) -> connection.toExport(mode) }, playbackState = playback)
-            val seed = AnyPlayerStateEnvelope(createdAt = Instant.now().toString(), sourceApp = SourceAppInfo("android", "2.0.0"), data = data, integrity = Integrity(""))
-            val envelope = seed.copy(integrity = Integrity(crypto.sha256(AppJson.encodeToString(seed))))
-            val plain = AppJson.encodeToString(envelope)
-            val encoded = if (mode == ExportMode.PRIVATE) AppJson.encodeToString(crypto.encrypt(plain, requireNotNull(passphrase))) else plain
-            output.writer(Charsets.UTF_8).use { it.write(encoded) }
-        }
+        // Only the snapshot reads run in a transaction; PBKDF2 and the (possibly slow SAF) write follow it.
+        val snapshot = importer.snapshot()
+        val data = snapshot.copy(connections = stored.mapValues { (_, connection) -> connection.toExport(mode) }, playbackState = playback)
+        val seed = AnyPlayerStateEnvelope(createdAt = Instant.now().toString(), sourceApp = SourceAppInfo("android", appVersionName), data = data, integrity = Integrity(""))
+        val envelope = seed.copy(integrity = Integrity(crypto.sha256(AppJson.encodeToString(seed))))
+        val plain = AppJson.encodeToString(envelope)
+        val encoded = if (mode == ExportMode.PRIVATE) AppJson.encodeToString(crypto.encrypt(plain, requireNotNull(passphrase))) else plain
+        output.writer(Charsets.UTF_8).use { it.write(encoded) }
     }
 
     override suspend fun import(input: InputStream, policy: MergePolicy, passphrase: String?, dryRun: Boolean): ImportSummary = withContext(Dispatchers.IO) {
-        val raw = importer.readTransaction { input.reader(Charsets.UTF_8).use { it.readText() } }
+        // Read, decrypt and verify before touching the database; only the apply step is transactional.
+        val raw = input.reader(Charsets.UTF_8).use { it.readText() }
         val envelope = decodeAndVerify(raw, passphrase)
         val summary = importer.import(envelope.data, policy, dryRun, "import")
         val warnings = mutableListOf<String>()
