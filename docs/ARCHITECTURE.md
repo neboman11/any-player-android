@@ -247,6 +247,12 @@ playback dependency: it returns track lists; callers hand them to the engine.
   `(source,id)` identity dedupe, cached under `u:<id>`, `trackCount` updated),
   `tracksForPlayback(id)` (applies title|artist dedupe when distinct), `providerDistinct` prefs.
 
+Implementation: `RoomPlaylistRepository` uses transactional `CustomPlaylistDao` operations and a
+separate `UnionCacheDao`. `PlaylistSourceEditor` exposes incremental add/remove/reorder edits
+without changing the shared repository contract. Source edits commit sources, normalized cache,
+and count/timestamp together after bounded parallel fetches; a CUSTOM union source expands one
+level only. UI observation never starts provider requests.
+
 ### 5.6 Sync
 `SyncEngine` (`@Singleton`, application scope) — wire protocol unchanged
 (`GET /v1/snapshot[?since_version]`, `PUT /v1/state/{app-state|playlists|settings|provider-configuration}`
@@ -267,6 +273,15 @@ with `{client_id,data}`, WS `/v1/ws` events), status strings unchanged.
 - Fixes: connection import merges into existing connections and never clears tokens; dry run
   writes nothing; MERGE_KEEP_LOCAL remaps child ids deterministically; empty union allowed.
 - Streams are read/written on IO inside a read transaction.
+
+Implementation: `PlaylistImporter` is shared by `LegacyStateTransfer` and `LegacyConfigFiles`;
+each import replaces children only for the imported destination playlists, avoiding primary-key
+and position conflicts with retained local playlists. Config natural-key UUIDs remain unchanged
+for first occurrences; repeated tracks/sources use a deterministic occurrence component so a
+round trip cannot collapse intentional duplicates. State integrity uses the legacy declaration
+order/default omission rules; the independent fixture ports the legacy transfer test's seed.
+Config sync exports use `Json { ignoreUnknownKeys = true }`, including its default
+`explicitNulls = true` and `encodeDefaults = false` behavior.
 
 ### 5.8 Startup
 `AppStartup` (application scope, started from `Application.onCreate` on a background dispatcher):

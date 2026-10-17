@@ -40,6 +40,7 @@ import com.anyplayer.android.data.db.entity.UnionPlaylistSourceEntity
 @TypeConverters(RoomTypeConverters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun customPlaylistDao(): CustomPlaylistDao
+    abstract fun unionCacheDao(): com.anyplayer.android.data.db.dao.UnionCacheDao
 
     companion object {
         /** File name shared with the legacy app; existing installs upgrade in place. */
