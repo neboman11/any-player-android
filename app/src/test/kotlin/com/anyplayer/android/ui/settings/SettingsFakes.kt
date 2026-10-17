@@ -76,16 +76,25 @@ internal class FakeDocuments : SettingsDocuments {
 internal class FakeConnections : ConnectionStore {
     override val connections = MutableStateFlow<Map<SourceType, StoredConnection>>(emptyMap())
     override suspend fun awaitLoaded() = connections.value
-    override suspend fun update(source: SourceType, transform: (StoredConnection?) -> StoredConnection?) { connections.value = connections.value.toMutableMap().apply { transform(get(source))?.let { put(source, it) } ?: remove(source) } }
+    override suspend fun update(source: SourceType, transform: (StoredConnection?) -> StoredConnection?) {
+        val updated = transform(connections.value[source])
+        connections.value = connections.value.toMutableMap().apply {
+            if (updated == null) remove(source) else put(source, updated)
+        }
+    }
 }
 internal class FakeAuth : AuthRepository {
     override val profiles = MutableStateFlow<Map<SourceType, ProviderConnectionProfile>>(emptyMap())
     var failure: String? = null
+    var onCompleteSpotify: suspend () -> Unit = {}
     var pageSize = 0
     override suspend fun connectJellyfin(serverUrl: String, apiKey: String, pageSize: Int): ProviderConnectionProfile { failure?.let { error(it) }; return ProviderConnectionProfile(SourceType.JELLYFIN, true) }
     override suspend fun connectPlex(serverUrl: String, token: String, pageSize: Int): ProviderConnectionProfile { failure?.let { error(it) }; return ProviderConnectionProfile(SourceType.PLEX, true) }
     override suspend fun beginSpotifyAuth(): String { failure?.let { error(it) }; return "https://spotify.test" }
-    override suspend fun completeSpotifyAuth(redirectUri: String) = ProviderConnectionProfile(SourceType.SPOTIFY, true)
+    override suspend fun completeSpotifyAuth(redirectUri: String): ProviderConnectionProfile {
+        onCompleteSpotify()
+        return ProviderConnectionProfile(SourceType.SPOTIFY, true)
+    }
     override suspend fun disconnect(source: SourceType) = Unit
     override suspend fun updatePageSize(source: SourceType, pageSize: Int): Boolean { this.pageSize = pageSize; return true }
     override suspend fun restore() = emptyList<ProviderConnectionProfile>()

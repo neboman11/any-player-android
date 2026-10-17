@@ -61,7 +61,7 @@ class ScriptGenerator internal constructor(
             }
             val model = loaded ?: return@withContext null
             generateCheckedDjScript(track, passages, diagnostics) { model.infer(it) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (e is CancellationException) throw e
             diagnostics.log("DjScriptGenerator", "On-device script generation failed", e); null
         }
@@ -129,7 +129,7 @@ class VoiceSynthesizer internal constructor(
             val level = settings.awaitLoaded().voiceLevel.coerceIn(0.5f, 2f)
             val processed = VoiceProcessor.process(generated.samples, generated.sampleRate, level)
             withContext(Dispatchers.IO) { processed.isNotEmpty() && GeneratedAudio(processed, generated.sampleRate).save(file.absolutePath) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (e is CancellationException) throw e
             diagnostics.log("DjVoiceSynthesizer", "Voice synthesis failed", e); false
         }
@@ -140,7 +140,7 @@ class VoiceSynthesizer internal constructor(
             val level = settings.awaitLoaded().voiceLevel.coerceIn(0.5f, 2f)
             val processed = VoiceProcessor.process(wave.samples, wave.sampleRate, level)
             withContext(Dispatchers.IO) { processed.isNotEmpty() && GeneratedAudio(processed, wave.sampleRate).save(file.absolutePath) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             if (e is CancellationException) throw e
             diagnostics.log("DjVoiceSynthesizer", "Server audio could not be decoded", e); false
         }

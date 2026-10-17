@@ -42,19 +42,19 @@ fun reduce(s: BreakSchedule, event: ScheduleEvent, queue: QueueState, random: Ra
         next = next.copy(songsUntilBreak = 3, anchorOrderPos = queue.cursor,
             orderVersion = queue.contentVersion, failedOnCurrent = true)
     } else if (!reset) {
-        val reanchor = next.orderVersion != queue.contentVersion || next.anchorOrderPos < 0 || queue.cursor < next.anchorOrderPos
+        val reanchor = next.orderVersion != queue.contentVersion || next.anchorOrderPos < 0 || queue.cursor < next.anchorOrderPos - 1
         val delta = if (reanchor || queue.cursor < 0) 0 else
             (next.anchorOrderPos + 1..queue.cursor).count { !queue.entryAt(it).track.isDjFiller }
         val remaining = next.songsUntilBreak - delta
         next = next.copy(
             songsUntilBreak = if (remaining < 0) 3 else remaining,
-            anchorOrderPos = queue.cursor, orderVersion = queue.contentVersion,
+            anchorOrderPos = if (reanchor) queue.cursor else maxOf(next.anchorOrderPos, queue.cursor), orderVersion = queue.contentVersion,
             failedOnCurrent = if (remaining < 0) true else if (delta > 0) false else next.failedOnCurrent,
         )
     }
     var realSongs = 0
     var target: Long? = null
-    if (queue.cursor >= 0) for (pos in queue.cursor + 1..queue.order.lastIndex) {
+    if (queue.cursor >= 0) for (pos in maxOf(next.anchorOrderPos, queue.cursor) + 1..queue.order.lastIndex) {
         val entry = queue.entryAt(pos)
         if (entry.track.isDjFiller) continue
         if (realSongs >= next.songsUntilBreak && backendFor(entry.track) != BackendKind.UNPLAYABLE) {

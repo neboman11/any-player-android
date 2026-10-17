@@ -20,7 +20,7 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DefaultAppStartupTest {
-    @Test fun `restore and DJ activate before foreground then import refresh and sync in order`() = runTest {
+    @Test fun `restore precedes gate and DJ activates only after foreground`() = runTest {
         val calls = mutableListOf<String>()
         val restore = CompletableDeferred<Unit>()
         val foreground = CompletableDeferred<Unit>()
@@ -44,10 +44,10 @@ class DefaultAppStartupTest {
         startup.start(); startup.start(); runCurrent()
         assertEquals(listOf("engine"), calls)
         restore.complete(Unit); runCurrent()
-        assertEquals(listOf("engine", "dj", "auth", "gate"), calls)
+        assertEquals(listOf("engine", "auth", "gate"), calls)
         assertTrue(startup.status.value.inProgress)
         foreground.complete(Unit); runCurrent()
-        assertEquals(listOf("engine", "dj", "auth", "gate", "import", "refresh", "sync"), calls)
+        assertEquals(listOf("engine", "auth", "gate", "dj", "import", "refresh", "sync"), calls)
         assertFalse(startup.status.value.inProgress)
         assertTrue(startup.status.value.warnings.isEmpty())
         assertEquals("Startup complete. 1 provider session(s) restored.", startup.status.value.message)

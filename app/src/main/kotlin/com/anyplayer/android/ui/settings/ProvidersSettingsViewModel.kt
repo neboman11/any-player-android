@@ -83,21 +83,29 @@ class ProvidersSettingsViewModel @Inject constructor(
     fun connect(source: SourceType) {
         val fields = if (source == SourceType.JELLYFIN) state.value.jellyfin else state.value.plex
         val label = if (source == SourceType.JELLYFIN) "Jellyfin" else "Plex"
-        action("Connecting…", "$label connection failed") {
+        action("Connecting to $label...", "$label connection failed") {
             if (source == SourceType.JELLYFIN) auth.connectJellyfin(fields.url, fields.token, fields.pageSize.toIntOrNull()?.coerceIn(1, 1000) ?: 300)
             else auth.connectPlex(fields.url, fields.token, fields.pageSize.toIntOrNull()?.coerceIn(1, 1000) ?: 300)
-            catalog.clearCache()
-            val failures = catalog.refreshPlaylists()
-            failures.firstOrNull { it.source == source }?.let { error(it.message) }
-            val count = catalog.playlists.first().count { it.source == source }
-            "$label connected. Loaded $count provider playlist(s)."
+            val refreshFailure = try {
+                catalog.clearCache()
+                catalog.refreshPlaylists().firstOrNull { it.source == source }?.message
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                e.message ?: "Unknown error"
+            }
+            if (refreshFailure != null) "$label connected, but playlist refresh failed: $refreshFailure"
+            else {
+                val count = catalog.playlists.first().count { it.source == source }
+                if (count == 0) "$label connected, but no provider playlists were returned."
+                else "$label connected. Loaded $count provider playlist(s)."
+            }
         }
     }
     fun disconnect(source: SourceType) = action("Disconnecting…", "Disconnect failed") {
         auth.disconnect(source)
         catalog.clearCache()
         catalog.refreshPlaylists()
-        "${source.name.lowercase().replaceFirstChar(Char::uppercaseChar)} disconnected."
+        "Disconnected ${source.name.lowercase()}."
     }
     fun clearCache() = action("Clearing provider cache…", "Clear provider cache failed") {
         catalog.clearCache(); "Provider cache cleared."
@@ -115,6 +123,7 @@ class ProvidersSettingsViewModel @Inject constructor(
     fun authLaunchFailed(message: String) { mutableState.update { it.copy(authUrl = null, feedback = "Spotify connection failed: $message") } }
     private suspend fun completeSpotify(uri: String) {
         // The callback is handled even while a browser-launch action is finishing.
+        mutableState.update { it.copy(busy = true, feedback = "Finishing Spotify login...") }
         try {
             withContext(Dispatchers.IO) {
                 auth.completeSpotifyAuth(uri)
@@ -125,6 +134,8 @@ class ProvidersSettingsViewModel @Inject constructor(
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             mutableState.update { it.copy(feedback = "Spotify login failed: ${e.message ?: "Unknown error"}") }
+        } finally {
+            mutableState.update { it.copy(busy = false) }
         }
     }
     private fun action(start: String, failure: String, block: suspend () -> String) {
@@ -136,7 +147,13 @@ class ProvidersSettingsViewModel @Inject constructor(
                 mutableState.update { it.copy(feedback = feedback) }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                mutableState.update { it.copy(feedback = if (e is MissingSpotifyClientId) MISSING_CLIENT_ID else "$failure: ${e.message ?: "Unknown error"}") }
+                val message = e.message?.trim().orEmpty()
+                mutableState.update { it.copy(feedback = when {
+                    e is MissingSpotifyClientId -> MISSING_CLIENT_ID
+                    message.isEmpty() -> "$failure."
+                    message.startsWith(failure, ignoreCase = true) -> message
+                    else -> "$failure: $message"
+                }) }
             } finally { mutableState.update { it.copy(busy = false) } }
         }
     }

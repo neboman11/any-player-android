@@ -24,7 +24,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
-/** Process-owned, event-driven sync. Only persisted preferences can restart realtime work. */
+/** Process-owned, event-driven sync. Only start/Connect confirms a realtime target. */
 @Singleton
 class DefaultSyncEngine internal constructor(
     private val engine: PlaybackEngine,
@@ -38,6 +38,7 @@ class DefaultSyncEngine internal constructor(
     private val applyDispatcher: CoroutineDispatcher,
     private val now: () -> Long,
     private val jitter: (Long) -> Long,
+    private val imports: SyncImports,
 ) : SyncEngine {
     @Inject constructor(
         engine: PlaybackEngine,
@@ -47,9 +48,10 @@ class DefaultSyncEngine internal constructor(
         config: ConfigFiles,
         client: SyncClient,
         network: SyncNetwork,
+        imports: SyncImports,
     ) : this(engine, settings, playerSettings, playlists, config, client, network,
         CoroutineScope(SupervisorJob() + Dispatchers.IO), Dispatchers.Main.immediate,
-        { System.nanoTime() / 1_000_000 }, { base -> Random.nextLong((base * 3 / 4).coerceAtLeast(1), base + 1) })
+        { System.nanoTime() / 1_000_000 }, { base -> Random.nextLong((base * 3 / 4).coerceAtLeast(1), base + 1) }, imports)
 
     private val mutableState = MutableStateFlow(SyncUiState())
     override val state: StateFlow<SyncUiState> = mutableState.asStateFlow()
@@ -66,6 +68,7 @@ class DefaultSyncEngine internal constructor(
         private set
     private var versionTarget: Pair<String, String>? = null
     private var conflictPreferences: SyncPreferences? = null
+    @Volatile private var confirmedPreferences: SyncPreferences? = null
 
     override fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -73,7 +76,10 @@ class DefaultSyncEngine internal constructor(
         scope.launch {
             engine.awaitRestored()
             settings.awaitLoaded()
-            action(startup = true) { pullNow(it, confirm = false, startup = true) }
+            action(startup = true) {
+                confirmedPreferences = it
+                pullNow(it, confirm = false, startup = true)
+            }
             beginRealtime()
         }
     }
@@ -81,6 +87,7 @@ class DefaultSyncEngine internal constructor(
     override fun connect() {
         // Explicit connection owns initial conflict resolution; a later startup must not pull over it.
         started.set(true)
+        confirmedPreferences = null
         observeEngine()
         scope.launch {
             engine.awaitRestored()
@@ -88,6 +95,7 @@ class DefaultSyncEngine internal constructor(
             // Do not race conflict detection with an existing socket or queued automatic pushes.
             realtimeJob?.cancelAndJoin()
             action { preferences ->
+                confirmedPreferences = preferences
                 val snapshot = client.snapshot(preferences)
                 if (snapshot == null) status("Sync server unavailable.")
                 else if (hasServerData(snapshot, preferences)) {
@@ -153,20 +161,22 @@ class DefaultSyncEngine internal constructor(
 
     private suspend fun pullNow(preferences: SyncPreferences, confirm: Boolean, startup: Boolean) {
         val beforeQueue = engine.queue.value
-        val beforePlayer = engine.player.value
         val beforeRevision = revisions.get()
         val snapshot = client.snapshot(preferences)
         if (snapshot == null) {
             status(if (startup) "Sync server unavailable. Continued with local state." else "Sync server unavailable.")
             return
         }
-        val unchanged = beforeRevision == revisions.get() && beforeQueue == engine.queue.value && beforePlayer == engine.player.value
+        val afterQueue = engine.queue.value
+        val unchanged = beforeRevision == revisions.get() &&
+            beforeQueue.contentVersion == afterQueue.contentVersion &&
+            beforeQueue.current?.uid == afterQueue.current?.uid && beforeQueue.shuffle == afterQueue.shuffle
         val applied = applySnapshot(snapshot, preferences, confirm, preserveEmpty = startup, applyPlayback = !startup || unchanged)
         if (applied) status(if (!preferences.anyDomain()) "Sync completed with no selected domains." else "Sync pull complete.")
     }
 
     /** All playback commands execute together on Main, preserving the legacy ordering. */
-    internal suspend fun applyAppState(data: JsonObject, preserveEmpty: Boolean = false) = withContext(applyDispatcher) {
+    internal suspend fun applyAppState(data: JsonObject, preserveEmpty: Boolean = false) = withContext(Dispatchers.IO) {
         fun decodeTrack(element: JsonElement?): Track? = try {
             element?.let { AppJson.decodeFromJsonElement(Track.serializer(), it) }
         } catch (_: Exception) { null }
@@ -175,23 +185,25 @@ class DefaultSyncEngine internal constructor(
         if (preserveEmpty && current == null && remoteQueue.isEmpty()) return@withContext
         suppressUntil = now() + ECHO_WINDOW_MS
         val tracks = if (current != null && remoteQueue.none { sameTrack(it, current) }) listOf(current) + remoteQueue else remoteQueue
-        data.number("volume")?.let { engine.setVolume(it.toInt(), ChangeOrigin.SYNC) }
-        data.boolean("shuffle")?.takeIf { it != engine.queue.value.shuffle }?.let { engine.setShuffle(it, ChangeOrigin.SYNC) }
-        engine.setRepeat(when (data.string("repeat_mode")) { "one" -> RepeatMode.ONE; "all" -> RepeatMode.ALL; else -> RepeatMode.OFF }, ChangeOrigin.SYNC)
-        val local = engine.queue.value
-        if (current != null) {
-            if (tracks != local.entries.map { it.track } || local.current?.track != current) {
-                engine.setQueue(tracks, tracks.indexOfFirst { sameTrack(it, current) }.coerceAtLeast(0), autoPlay = false, origin = ChangeOrigin.SYNC)
+        withContext(applyDispatcher) {
+            data.number("volume")?.let { engine.setVolume(it.toInt(), ChangeOrigin.SYNC) }
+            data.boolean("shuffle")?.takeIf { it != engine.queue.value.shuffle }?.let { engine.setShuffle(it, ChangeOrigin.SYNC) }
+            engine.setRepeat(when (data.string("repeat_mode")) { "one" -> RepeatMode.ONE; "all" -> RepeatMode.ALL; else -> RepeatMode.OFF }, ChangeOrigin.SYNC)
+            val local = engine.queue.value
+            if (current != null) {
+                if (tracks != local.entries.map { it.track } || local.current?.track != current) {
+                    engine.setQueue(tracks, tracks.indexOfFirst { sameTrack(it, current) }.coerceAtLeast(0), autoPlay = false, origin = ChangeOrigin.SYNC)
+                }
+            } else if (remoteQueue.isEmpty() && local.entries.isNotEmpty()) {
+                engine.setQueue(emptyList(), autoPlay = false, origin = ChangeOrigin.SYNC)
             }
-        } else if (remoteQueue.isEmpty() && local.entries.isNotEmpty()) {
-            engine.setQueue(emptyList(), autoPlay = false, origin = ChangeOrigin.SYNC)
+            data.number("position")?.let { if (abs(engine.positionMs() - it) > 2_500) engine.seekTo(it, ChangeOrigin.SYNC) }
+            when (data.string("state")) {
+                "playing" -> engine.play(ChangeOrigin.SYNC)
+                "paused", "stopped" -> engine.pause(ChangeOrigin.SYNC)
+            }
+            suppressUntil = now() + ECHO_WINDOW_MS
         }
-        data.number("position")?.let { if (abs(engine.positionMs() - it) > 2_500) engine.seekTo(it, ChangeOrigin.SYNC) }
-        when (data.string("state")) {
-            "playing" -> engine.play(ChangeOrigin.SYNC)
-            "paused", "stopped" -> engine.pause(ChangeOrigin.SYNC)
-        }
-        suppressUntil = now() + ECHO_WINDOW_MS
     }
 
     private suspend fun applySnapshot(
@@ -201,12 +213,14 @@ class DefaultSyncEngine internal constructor(
         preserveEmpty: Boolean = false,
         applyPlayback: Boolean = true,
         appStateOnly: Boolean = false,
+        realtime: Boolean = false,
     ): Boolean {
         if (!appStateOnly && preferences.syncSettings) {
             val data = snapshot["settings"] as? JsonObject ?: JsonObject(emptyMap())
             val local = playerSettings.awaitLoaded()
             val enabled = data.boolean("audio_normalization_enabled") ?: data.boolean("audioNormalizationEnabled") ?: local.normalizationEnabled
             val strict = data.boolean("audio_normalization_strict_mode") ?: data.boolean("audioNormalizationStrictMode") ?: local.normalizationStrict
+            playerSettings.update { it.copy(normalizationEnabled = enabled, normalizationStrict = strict) }
             withContext(applyDispatcher) {
                 suppressUntil = now() + ECHO_WINDOW_MS
                 engine.setNormalization(enabled, strict)
@@ -217,16 +231,17 @@ class DefaultSyncEngine internal constructor(
         }
         var applied = true
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
-            if (preferences.syncPlaylists && !confirm && withTimeout(5_000) { playlists.customPlaylists.first().isNotEmpty() }) {
-                status("Sync cancelled: playlist overwrite requires confirmation.")
-                applied = false
+            if (preferences.syncPlaylists && !confirm &&
+                (withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true)) {
+                if (!realtime) status("Sync cancelled: playlist overwrite requires confirmation.")
+                applied = realtime
             } else {
                 val file = buildJsonObject {
                     put("export_version", 1)
                     put("provider_configs", if (preferences.syncProviderConfiguration) snapshot["provider_configuration"] ?: JsonObject(emptyMap()) else JsonObject(emptyMap()))
                     put("custom_playlists", if (preferences.syncPlaylists) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
                 }
-                config.importJson(file, if (preferences.syncPlaylists) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL, dryRun = false)
+                applied = imports.apply(file, if (preferences.syncPlaylists) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
             }
         }
         // Versions belong to the entire snapshot, not just the app-state domain.
@@ -255,7 +270,7 @@ class DefaultSyncEngine internal constructor(
                 // Consume changes coalesced during the throttle delay; serialize the latest state once.
                 while (pushRequests.tryReceive().isSuccess) Unit
                 operation.withLock {
-                    val preferences = settings.awaitLoaded()
+                    val preferences = realtimePreferences() ?: return@withLock
                     if (canPush() && preferences.syncAppState && normalizeSyncBaseUrl(preferences.serverTarget).isNotEmpty()) {
                         pushAppState(preferences)
                     }
@@ -264,7 +279,11 @@ class DefaultSyncEngine internal constructor(
         }
     }
 
-    private fun canPush() = observedQueue && now() >= suppressUntil && !state.value.conflictPending
+    private fun canPush() = confirmedPreferences != null && observedQueue && now() >= suppressUntil && !state.value.conflictPending
+
+    private fun realtimePreferences(): SyncPreferences? = confirmedPreferences?.let { confirmed ->
+        settings.preferences.value.copy(serverTarget = confirmed.serverTarget, authToken = confirmed.authToken)
+    }
 
     private suspend fun pushAppState(preferences: SyncPreferences): Boolean {
         if (!canPush()) return true
@@ -301,17 +320,11 @@ class DefaultSyncEngine internal constructor(
 
     private fun beginRealtime() {
         realtimeJob?.cancel()
+        val confirmed = confirmedPreferences ?: return
         realtimeJob = scope.launch {
-            settings.awaitLoaded()
-            settings.preferences.map { Triple(it.serverTarget, it.authToken, it.syncAppState) }.distinctUntilChanged().collectLatest {
-                mutableState.update { it.copy(realtimeConnected = false) }
-                val preferences = settings.preferences.value
-                operation.withLock { resetVersionIfNeeded(preferences) }
-                if (normalizeSyncBaseUrl(preferences.serverTarget).isEmpty()) return@collectLatest
-                network.available.collectLatest online@ { online ->
-                    if (!online) { mutableState.update { it.copy(realtimeConnected = false) }; return@online }
-                    reconnect(preferences)
-                }
+            network.available.collectLatest { online ->
+                if (!online) { mutableState.update { it.copy(realtimeConnected = false) }; return@collectLatest }
+                reconnect(confirmed)
             }
         }
     }
@@ -322,7 +335,10 @@ class DefaultSyncEngine internal constructor(
             try {
                 client.updates(preferences).collect { message ->
                     when (message) {
-                        SocketMessage.Open -> mutableState.update { it.copy(realtimeConnected = true) }
+                        SocketMessage.Open -> {
+                            backoff = 1_000L
+                            mutableState.update { it.copy(realtimeConnected = true) }
+                        }
                         is SocketMessage.Update -> operation.withLock { receiveUpdate(preferences, message.event) }
                     }
                 }
@@ -335,9 +351,11 @@ class DefaultSyncEngine internal constructor(
     }
 
     internal suspend fun receiveUpdate(preferences: SyncPreferences, event: SyncUpdate) {
-        if (state.value.conflictPending || event.sourceClientId == settings.clientId() || (event.version != null && event.version <= lastSyncVersion)) return
-        val current = settings.preferences.value
+        if (state.value.conflictPending || event.sourceClientId == settings.clientId()) return
+        val current = realtimePreferences() ?: preferences
         if (target(preferences) != target(current)) return
+        resetVersionIfNeeded(preferences)
+        if (event.version != null && event.version <= lastSyncVersion) return
         when (event.namespace) {
             "app_state" -> if (current.syncAppState) {
                 val snapshot = client.appState(preferences) ?: client.snapshot(preferences, lastSyncVersion) ?: return
@@ -345,7 +363,14 @@ class DefaultSyncEngine internal constructor(
             }
             "playlists", "provider_configuration", "settings" -> {
                 val selected = when (event.namespace) { "playlists" -> current.syncPlaylists; "settings" -> current.syncSettings; else -> current.syncProviderConfiguration }
-                if (selected) client.snapshot(preferences, lastSyncVersion)?.let { applySnapshot(it, current, confirm = false) }
+                if (selected) client.snapshot(preferences, lastSyncVersion)?.let {
+                    val domain = current.copy(
+                        syncAppState = false, syncPlaylists = event.namespace == "playlists",
+                        syncSettings = event.namespace == "settings",
+                        syncProviderConfiguration = event.namespace == "provider_configuration",
+                    )
+                    applySnapshot(it, domain, confirm = false, applyPlayback = false, realtime = true)
+                }
             }
         }
     }

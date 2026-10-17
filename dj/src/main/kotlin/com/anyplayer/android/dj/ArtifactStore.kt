@@ -40,14 +40,17 @@ class ArtifactStore<D : ArtifactDescriptor> internal constructor(
     private val mutex = Mutex()
     private val catalogMutex = Mutex()
     @Volatile private var activeFile: File? = null
-    private var initialized = false
+    @Volatile private var initialized = false
     private val endpoint get() = if (voice) "v1/dj-voice-models" else "v1/dj-models"
     private val marker get() = File(root, if (voice) "active-voice.json" else "active-model")
     private val notConfigured get() = if (voice)
         "This sync server doesn't have an AI DJ voice catalog configured yet. Ask the server admin."
         else "This sync server doesn't have an AI DJ model catalog configured yet. Ask the server admin."
 
-    suspend fun initialize() = withContext(Dispatchers.IO) { mutex.withLock { initializeLocked() } }
+    suspend fun initialize() {
+        if (initialized) return
+        withContext(Dispatchers.IO) { mutex.withLock { initializeLocked() } }
+    }
     private fun initializeLocked() {
         if (initialized) return
         root.mkdirs()
@@ -88,6 +91,7 @@ class ArtifactStore<D : ArtifactDescriptor> internal constructor(
 
     /** Explicit UI action only: enabling DJ never invokes this method. */
     suspend fun downloadSelected(): Unit = withContext(Dispatchers.IO) {
+        initialize()
         if (!mutex.tryLock()) return@withContext
         var temporary: File? = null
         var staging: File? = null
@@ -213,16 +217,18 @@ class ArtifactStore<D : ArtifactDescriptor> internal constructor(
     private fun migrateLegacyVoice() {
         val oldMarker = File(root, "active-version")
         val old = File(root, "default")
-        if (marker.exists() || !oldMarker.isFile || oldMarker.readText().trim() != "default" || !completeVoice(old)) return
-        val stage = File(root, ".default.default.tmp")
-        stage.mkdirs()
-        old.listFiles().orEmpty().filter { it.name != "default" }.forEach { it.copyRecursively(File(stage, it.name), overwrite = true) }
-        check(completeVoice(stage)) { "Legacy voice migration is incomplete." }
+        if (marker.exists() || !oldMarker.isFile || oldMarker.readText().trim() != "default") return
         val nested = File(old, "default")
-        if (!nested.exists()) Files.move(stage.toPath(), nested.toPath(), ATOMIC_MOVE) else stage.deleteRecursively()
+        // Move directly into the final layout. A partially completed move is resumed next launch;
+        // unlike download staging, these are the user's only copy and must never be swept.
+        if (!completeVoice(old) && !nested.isDirectory) return
+        check(nested.isDirectory || nested.mkdirs()) { "Could not create legacy voice destination." }
+        old.listFiles().orEmpty().filter { it != nested }.forEach {
+            Files.move(it.toPath(), File(nested, it.name).toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        }
+        check(completeVoice(nested)) { "Legacy voice migration is incomplete." }
         atomicMarker(marker, "{\"id\":\"default\",\"version\":\"default\"}")
         oldMarker.delete()
-        old.listFiles().orEmpty().filter { it != nested }.forEach { if (it.isDirectory) it.deleteRecursively() else it.delete() }
     }
 }
 internal fun regularFile(file: File) = Files.isRegularFile(file.toPath(), NOFOLLOW_LINKS)

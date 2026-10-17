@@ -33,10 +33,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val dj: AiDjSettingsViewModel = hiltViewModel()
     var selectedTab by rememberSaveable { mutableStateOf("GENERAL") }
     SpotifyAuthLauncher(providers)
+    DisposableEffect(general) { onDispose { general.commitFields() } }
     Column(modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = listOf("GENERAL", "PROVIDERS", "AI_DJ").indexOf(selectedTab)) {
             listOf("GENERAL" to "General", "PROVIDERS" to "Providers", "AI_DJ" to "AI DJ").forEach { (id, label) ->
-                Tab(selected = selectedTab == id, onClick = { selectedTab = id }, text = { Text(label) }, modifier = Modifier.testTag("settings_tab_$id"))
+                Tab(selected = selectedTab == id, onClick = { general.commitFields(); selectedTab = id }, text = { Text(label) }, modifier = Modifier.testTag("settings_tab_$id"))
             }
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -68,6 +69,8 @@ internal fun SettingsField(value: String, onValueChange: (String) -> Unit, label
     placeholder: String? = null, saved: Boolean = false, onCommit: () -> Unit = {}) {
     var visible by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
+    val commit by rememberUpdatedState(onCommit)
+    DisposableEffect(Unit) { onDispose { commit() } }
     OutlinedTextField(value = value, onValueChange = onValueChange, label = { Text(label) }, singleLine = true,
         modifier = modifier.fillMaxWidth().onFocusChanged {
             if (focused && !it.isFocused) onCommit()

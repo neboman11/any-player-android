@@ -36,6 +36,18 @@ class BreakScheduleTest {
         assertEquals(s.songsUntilBreak, back.songsUntilBreak)
         assertEquals(0, back.anchorOrderPos)
     }
+    @Test fun `one song backward bounce preserves ready target and counts only new advances`() {
+        val q = queue()
+        val s = move(enabled(q), q, 2)
+        val back = move(s, q, 1)
+        assertEquals(s.targetUid, back.targetUid)
+        assertEquals(s.anchorOrderPos, back.anchorOrderPos)
+        assertEquals(s.songsUntilBreak, back.songsUntilBreak)
+        assertEquals(s, move(back, q, 2))
+        val forward = move(back, q, 3)
+        assertEquals(s.targetUid, forward.targetUid)
+        assertEquals(s.songsUntilBreak - 1, forward.songsUntilBreak)
+    }
     @Test fun `content edits reanchor without counting`() {
         val q = queue(); val s = enabled(q)
         val edited = q.copy(cursor = 2, contentVersion = q.contentVersion + 1)

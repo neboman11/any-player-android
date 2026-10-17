@@ -21,8 +21,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 /** One actor owns scheduling, generation jobs and file ownership. Native and disk work are
  * dispatched away from the actor; queue observations never depend on a playback polling loop. */
 @Singleton
-class DjCoordinator @Inject internal constructor(
-    @ApplicationContext private val context: Context,
+class DjCoordinator internal constructor(
+    private val context: Context,
     private val engine: PlaybackEngine,
     private val playerSettings: PlayerSettingsStore,
     private val djSettings: DjSettingsStore,
@@ -30,9 +30,16 @@ class DjCoordinator @Inject internal constructor(
     private val remote: RemoteBreakGenerator,
     private val local: OnDeviceBreakGenerator,
     private val diagnostics: DjDiagnostics,
+    private val scope: CoroutineScope,
 ) : ComponentCallbacks2 {
-    private val dispatcher = Executors.newSingleThreadExecutor { Thread(it, "AnyPlayer-DJ-schedule") }.asCoroutineDispatcher()
-    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+    @Inject constructor(
+        @ApplicationContext context: Context, engine: PlaybackEngine, playerSettings: PlayerSettingsStore,
+        djSettings: DjSettingsStore, passages: PassageRepository, remote: RemoteBreakGenerator,
+        local: OnDeviceBreakGenerator, diagnostics: DjDiagnostics,
+    ) : this(context, engine, playerSettings, djSettings, passages, remote, local, diagnostics,
+        CoroutineScope(SupervisorJob() +
+            Executors.newSingleThreadExecutor { Thread(it, "AnyPlayer-DJ-schedule") }.asCoroutineDispatcher() +
+            CoroutineExceptionHandler { _, error -> diagnostics.log("DjCoordinator", "DJ operation failed", error) }))
     private val mutableAway = MutableStateFlow<Int?>(null)
     val songsAway = mutableAway.asStateFlow()
     private val mutablePreparation = MutableStateFlow(PreparationStatus.NOT_STARTED)
@@ -42,10 +49,8 @@ class DjCoordinator @Inject internal constructor(
     private var epoch = 0L
     private var pending: Delivery? = null
     private val deliveries = mutableMapOf<String, Delivery>()
-    private data class AudioKey(val trackId: String, val chunkIds: List<Long>)
-    private data class Cached(val file: File, val passages: Passages)
-    private data class Delivery(val breakId: String, val targetUid: Long, val file: File, val passages: Passages)
-    private val finished = mutableMapOf<AudioKey, Cached>()
+    private data class Delivery(val breakId: String, val targetUid: Long, val passages: Passages)
+    private val audio = DjAudioFiles()
     private val root get() = File(context.filesDir, "dj_filler")
     init {
         context.registerComponentCallbacks(this)
@@ -92,6 +97,7 @@ class DjCoordinator @Inject internal constructor(
             }
             is EngineEvent.BreakStarted -> {
                 val delivered = deliveries[event.breakId]
+                withContext(Dispatchers.IO) { audio.started(event.breakId) }
                 if (pending?.breakId == event.breakId) pending = null
                 if (delivered != null) scope.launch(Dispatchers.IO) { passages.recordPlayed(delivered.passages) }
                 transition(ScheduleEvent.BreakStarted); prepare()
@@ -99,7 +105,9 @@ class DjCoordinator @Inject internal constructor(
             is EngineEvent.BreakEnded -> deleteDelivery(event.breakId)
             is EngineEvent.BreakDropped -> {
                 val wasPending = pending?.breakId == event.breakId
-                deleteDelivery(event.breakId)
+                if (!withContext(Dispatchers.IO) { audio.dropped(event.breakId) }) return
+                deliveries.remove(event.breakId)
+                if (wasPending) pending = null
                 if (wasPending && schedule.songsUntilBreak == 0) transition(ScheduleEvent.GenerationFailed)
                 prepare()
             }
@@ -119,43 +127,47 @@ class DjCoordinator @Inject internal constructor(
         mutablePreparation.value = PreparationStatus.PROCESSING
         generation = scope.launch {
             var output: File? = null
+            var undelivered: File? = null
             try {
                 val sourced = passages.findPassages(target.track)
                 if (sourced == null) {
-                    val obsolete = finished.filterKeys { it.trackId == target.track.id }
-                    obsolete.keys.forEach(finished::remove)
-                    withContext(Dispatchers.IO) { obsolete.values.forEach { it.file.delete() } }
+                    withContext(Dispatchers.IO) { audio.forgetTrack(target.track.id) }
                     failIfCurrent(target.uid); return@launch
                 }
                 val key = AudioKey(target.track.id, sourced.chunkIds)
-                var cached = finished[key]
+                var cached = audio.cached(key)
                 if (cached == null) {
                     output = withContext(Dispatchers.IO) { File(root, "cache/${UUID.randomUUID()}.wav").also { it.parentFile?.mkdirs() } }
                     val success = if (djSettings.awaitLoaded().remoteGeneration) remote.generate(target.track, sourced, output!!)
                         else local.generate(target.track, sourced, output!!)
                     if (!success) { failIfCurrent(target.uid); return@launch }
-                    cached = Cached(output!!, sourced)
+                    cached = CachedAudio(output!!)
                     if (startedEpoch != epoch) return@launch
-                    finished[key] = cached
+                    withContext(Dispatchers.IO) { audio.remember(key, cached) }
                     output = null
                 }
                 if (startedEpoch == epoch && schedule.enabled && schedule.targetUid == target.uid) {
                     val breakId = UUID.randomUUID().toString()
-                    val deliveryFile = withContext(Dispatchers.IO) { cached.file.copyTo(File(root, "$breakId.wav")) }
+                    val deliveryFile = File(root, "$breakId.wav")
+                    undelivered = deliveryFile
+                    withContext(Dispatchers.IO) { cached.file.copyTo(deliveryFile) }
                     if (startedEpoch != epoch || !schedule.enabled || schedule.targetUid != target.uid) {
                         withContext(Dispatchers.IO) { deliveryFile.delete() }
+                        undelivered = null
                         return@launch
                     }
-                    val delivery = Delivery(breakId, target.uid, deliveryFile, sourced)
+                    val delivery = Delivery(breakId, target.uid, sourced)
                     deliveries[breakId] = delivery; pending = delivery
+                    audio.deliver(breakId, key, deliveryFile)
+                    undelivered = null
                     engine.setPendingBreak(PendingBreak(target.uid, breakId, deliveryFile.toURI().toString()))
                     mutablePreparation.value = PreparationStatus.READY
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 diagnostics.log("DjCoordinator", "Break generation failed", e); failIfCurrent(target.uid)
             } finally {
-                withContext(NonCancellable + Dispatchers.IO) { output?.delete() }
+                withContext(NonCancellable + Dispatchers.IO) { output?.delete(); undelivered?.delete() }
                 if (startedEpoch == epoch) {
                     generation = null
                     // Let a changed target use the completed work without cancelling native/server inference.
@@ -172,16 +184,17 @@ class DjCoordinator @Inject internal constructor(
     }
     private fun cancelGeneration() { epoch++; generation?.cancel(); generation = null; mutablePreparation.value = PreparationStatus.NOT_STARTED }
     private suspend fun deleteDelivery(id: String) {
-        val item = deliveries.remove(id) ?: return
+        if (deliveries.remove(id) == null) return
         if (pending?.breakId == id) pending = null
-        withContext(Dispatchers.IO) { item.file.delete() }
+        withContext(Dispatchers.IO) { audio.ended(id) }
     }
     private suspend fun clearFinished() {
-        val files = finished.values.map { it.file }; finished.clear()
-        withContext(Dispatchers.IO) { files.forEach(File::delete) }
-        // Active delivery files belong to the engine until BreakEnded/BreakDropped.
+        withContext(Dispatchers.IO) { audio.clearFinished() }
+        // Started delivery files belong to the engine until BreakEnded.
     }
-    override fun onTrimMemory(level: Int) { scope.launch { local.release() } }
+    override fun onTrimMemory(level: Int) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) scope.launch { local.release() }
+    }
     override fun onLowMemory() { scope.launch { local.release() } }
     override fun onConfigurationChanged(newConfig: Configuration) = Unit
 }

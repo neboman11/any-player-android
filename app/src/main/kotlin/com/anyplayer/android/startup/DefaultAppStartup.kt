@@ -71,14 +71,14 @@ class DefaultAppStartup internal constructor(
             try {
                 publish("Restoring playback...")
                 attempt("Playback restore failed") { engine.get().awaitRestored() }
-                // Construction activates the coordinator without starting downloads or network work.
-                attempt("DJ startup failed") { dj.get() }
                 publish("Restoring provider sessions...")
                 var restoredCount = 0
                 // AuthRepository owns the per-provider parallelism (Jellyfin/Plex are local-only).
                 attempt("Session restore failed") { restoredCount = auth.get().restore().size }
                 publish("Waiting for playback or app...")
                 gate.awaitReady()
+                // Coordinator construction can immediately generate enabled DJ breaks.
+                attempt("DJ startup failed") { dj.get() }
                 publish("Loading cached playlists...")
                 attempt("Legacy cache import failed") { if (cache.isPresent) cache.get().runOnce() }
                 publish("Loading provider playlists...")
