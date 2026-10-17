@@ -11,6 +11,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
+import kotlin.math.abs
 
 /** A paged play-order projection; no decoder and no position polling. */
 @OptIn(UnstableApi::class)
@@ -27,6 +28,10 @@ class SessionPlayer(private val engine: PlaybackEngine) : SimpleBasePlayer(Loope
     private var breakDuration = -1L
     private var cachedCurrentDuration = -1L
     private var cachedCurrentUid: Long? = null
+    private var lastAnchorUid: Long? = null
+    private var lastAnchorPositionMs = 0L
+    private var lastAnchorElapsedMs = 0L
+    private var lastAnchorPlaying = false
     init { scope.launch { combine(engine.queue, engine.player) { _, _ -> }.collect { invalidateState() } } }
     override fun getState(): State {
         val q = engine.queue.value; val p = engine.player.value
@@ -71,6 +76,16 @@ class SessionPlayer(private val engine: PlaybackEngine) : SimpleBasePlayer(Loope
             }
         }
         val currentIndex = if (activeBreak != null) windowKeys.indexOf("dj-filler:${activeBreak.breakId}") else windowKeys.indexOf(q.current!!.uid)
+        // Engine-originated seeks (UI, sync, restart-on-previous) only move the anchor, which SimpleBasePlayer cannot see
+        // through the position supplier; report a seek discontinuity when the anchor jumps within the same item.
+        if (p.anchorPositionMs != lastAnchorPositionMs || p.anchorElapsedRealtimeMs != lastAnchorElapsedMs || p.currentUid != lastAnchorUid) {
+            val predicted = lastAnchorPositionMs + if (lastAnchorPlaying) p.anchorElapsedRealtimeMs - lastAnchorElapsedMs else 0
+            if (p.currentUid == lastAnchorUid && activeBreak == null && abs(p.anchorPositionMs - predicted) > SEEK_TOLERANCE_MS) {
+                builder.setPositionDiscontinuity(Player.DISCONTINUITY_REASON_SEEK, p.anchorPositionMs)
+            }
+            lastAnchorUid = p.currentUid; lastAnchorPositionMs = p.anchorPositionMs; lastAnchorElapsedMs = p.anchorElapsedRealtimeMs
+        }
+        lastAnchorPlaying = p.status == PlaybackStateType.PLAYING
         return builder.setPlaylist(window).setCurrentMediaItemIndex(currentIndex.coerceAtLeast(0))
             .setPlayWhenReady(p.playRequested, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(when {
@@ -122,6 +137,7 @@ class SessionPlayer(private val engine: PlaybackEngine) : SimpleBasePlayer(Loope
     }
     override fun handleRelease(): ListenableFuture<*> { scope.cancel(); return Futures.immediateVoidFuture() }
     companion object {
+        private const val SEEK_TOLERANCE_MS = 1000L
         private val COMMANDS = Player.Commands.Builder().addAll(Player.COMMAND_PLAY_PAUSE, Player.COMMAND_STOP,
             Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS,
             Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, Player.COMMAND_SEEK_TO_MEDIA_ITEM, Player.COMMAND_SEEK_TO_DEFAULT_POSITION,
