@@ -1,6 +1,7 @@
 package com.anyplayer.android.dj
 
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.data.net.await
 import com.anyplayer.android.data.settings.DjSettingsStore
 import com.anyplayer.android.data.settings.SyncSettingsStore
 import java.io.File
@@ -30,7 +31,7 @@ class RemoteBreakGenerator internal constructor(
             val body = Json.encodeToString(Body(track.title, track.artist,
                 passages.passages.map { BodyPassage(it.chunkId, it.text, it.source) }, settings.awaitLoaded().selectedVoiceId))
             client.newCall(account.request("v1/dj-breaks").post(body.toRequestBody("application/json".toMediaType())).build())
-                .awaitDj().use { response ->
+                .await().use { response ->
                     if (response.code == 204) { diagnostics.log("DjRemote", "Server fact-check rejected script"); return@withContext false }
                     if (response.code != 200) {
                         diagnostics.log("DjRemote", describeFailure(response.code, null,

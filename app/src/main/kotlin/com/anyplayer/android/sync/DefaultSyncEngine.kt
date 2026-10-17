@@ -1,6 +1,8 @@
 package com.anyplayer.android.sync
 
 import com.anyplayer.android.core.model.*
+import com.anyplayer.android.data.net.normalizeSyncServerAuthToken
+import com.anyplayer.android.data.net.normalizeSyncServerBaseUrl
 import com.anyplayer.android.data.playlists.PlaylistRepository
 import com.anyplayer.android.data.settings.PlayerSettingsStore
 import com.anyplayer.android.data.settings.SyncPreferences
@@ -142,7 +144,7 @@ class DefaultSyncEngine internal constructor(
         try {
             val preferences = settings.awaitLoaded()
             resetVersionIfNeeded(preferences)
-            if (normalizeSyncBaseUrl(preferences.serverTarget).isEmpty()) status("Sync server target is not set.")
+            if (normalizeSyncServerBaseUrl(preferences.serverTarget).isEmpty()) status("Sync server target is not set.")
             else block(preferences)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -150,7 +152,7 @@ class DefaultSyncEngine internal constructor(
         } finally { mutableState.update { it.copy(inProgress = false) } }
     }
 
-    private fun target(preferences: SyncPreferences) = normalizeSyncBaseUrl(preferences.serverTarget) to normalizeSyncToken(preferences.authToken)
+    private fun target(preferences: SyncPreferences) = normalizeSyncServerBaseUrl(preferences.serverTarget) to normalizeSyncServerAuthToken(preferences.authToken)
     private fun resetVersionIfNeeded(preferences: SyncPreferences) {
         if (versionTarget != target(preferences)) {
             versionTarget = target(preferences)
@@ -271,7 +273,7 @@ class DefaultSyncEngine internal constructor(
                 while (pushRequests.tryReceive().isSuccess) Unit
                 operation.withLock {
                     val preferences = realtimePreferences() ?: return@withLock
-                    if (canPush() && preferences.syncAppState && normalizeSyncBaseUrl(preferences.serverTarget).isNotEmpty()) {
+                    if (canPush() && preferences.syncAppState && normalizeSyncServerBaseUrl(preferences.serverTarget).isNotEmpty()) {
                         pushAppState(preferences)
                     }
                 }

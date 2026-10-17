@@ -2,6 +2,7 @@ package com.anyplayer.android.dj
 
 import android.content.Context
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.data.net.await
 import com.anyplayer.android.data.settings.SyncSettingsStore
 import java.time.Instant
 import java.util.UUID
@@ -94,7 +95,7 @@ class PassageRepository internal constructor(
             var lookup: Lookup? = null
             for (attempt in 0..2) {
                 var retry = false
-                client.newCall(request).awaitDj().use { response ->
+                client.newCall(request).await().use { response ->
                     retry = response.code == 503 && attempt < 2
                     if (response.code == 200) lookup = response.body?.string()?.let { json.decodeFromString<Lookup>(it) }
                 }
@@ -130,7 +131,7 @@ class PassageRepository internal constructor(
                 val body = json.encodeToString(Receipt(event.eventId, event.playedAt, event.chunkIds))
                 val code = try {
                     client.newCall(account.request("v1/dj-passages/played")
-                        .post(body.toRequestBody("application/json".toMediaType())).build()).awaitDj().use { it.code }
+                        .post(body.toRequestBody("application/json".toMediaType())).build()).await().use { it.code }
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
                     return@withContext

@@ -1,5 +1,6 @@
 package com.anyplayer.android.dj
 
+import com.anyplayer.android.data.net.await
 import com.anyplayer.android.data.settings.SyncSettingsStore
 import java.io.File
 import java.io.InputStream
@@ -74,7 +75,7 @@ class ArtifactStore<D : ArtifactDescriptor> internal constructor(
         try {
             val account = settings.djAccount()
             check(account.base.isNotBlank()) { "Sync server target is not set." }
-            client.newCall(account.request(endpoint).build()).awaitDj().use { response ->
+            client.newCall(account.request(endpoint).build()).await().use { response ->
                 check(response.isSuccessful) { describeFailure(response.code, null, notConfigured) }
                 val parsed = Json.parseToJsonElement(checkNotNull(response.body).string()).jsonObject
                 val (items, defaultId) = decode(parsed)
@@ -111,7 +112,7 @@ class ArtifactStore<D : ArtifactDescriptor> internal constructor(
             mutableDownload.value = ArtifactDownloadState.Downloading(0f)
             val digest = MessageDigest.getInstance("SHA-256")
             var count = 0L; var lastProgress = System.nanoTime()
-            client.newCall(account.request("$endpoint/${descriptor.id}/download").build()).awaitDj().use { response ->
+            client.newCall(account.request("$endpoint/${descriptor.id}/download").build()).await().use { response ->
                 check(response.isSuccessful) { describeFailure(response.code, null, notConfigured) }
                 checkNotNull(response.body).byteStream().use { input -> part.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)

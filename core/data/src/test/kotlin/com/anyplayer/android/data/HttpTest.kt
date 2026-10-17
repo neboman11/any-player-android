@@ -15,6 +15,9 @@ class HttpTest {
         assertEquals("", normalizeSyncServerBaseUrl(" "))
         assertEquals("secret", normalizeSyncServerAuthToken(" bEaReR secret "))
         assertEquals("secret", normalizeSyncServerAuthToken("secret"))
+        assertEquals("", normalizeSyncServerBaseUrl(" / "))
+        assertEquals("token", normalizeSyncServerAuthToken(" bEaReR  token "))
+        assertEquals("", normalizeSyncServerAuthToken(" "))
     }
     @Test fun retries429AnyMethodButNotPost500AndClampsRetryAfter() = runTest {
         val request = Request.Builder().url("http://localhost/").post(FormBody.Builder().build()).build()

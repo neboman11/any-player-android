@@ -1,6 +1,9 @@
 package com.anyplayer.android.sync
 
 import com.anyplayer.android.core.model.AppJson
+import com.anyplayer.android.data.net.await
+import com.anyplayer.android.data.net.normalizeSyncServerAuthToken
+import com.anyplayer.android.data.net.normalizeSyncServerBaseUrl
 import com.anyplayer.android.data.settings.SyncPreferences
 import java.io.IOException
 import javax.inject.Inject
@@ -9,22 +12,10 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-
-internal fun normalizeSyncBaseUrl(value: String): String {
-    val target = value.trim().trimEnd('/')
-    if (target.isEmpty()) return ""
-    return if (target.startsWith("http://", true) || target.startsWith("https://", true)) target else "https://$target"
-}
-
-internal fun normalizeSyncToken(value: String): String =
-    value.trim().replaceFirst(Regex("^Bearer\\s+", RegexOption.IGNORE_CASE), "").trim()
 
 internal data class SyncUpdate(val namespace: String, val version: Long?, val sourceClientId: String?)
 internal sealed interface SocketMessage {
@@ -35,10 +26,10 @@ internal sealed interface SocketMessage {
 /** HTTP bodies are consumed on the caller's IO dispatcher; cancellation also cancels the call. */
 class SyncClient @Inject constructor(private val http: OkHttpClient) {
     private fun request(preferences: SyncPreferences, path: String): Request.Builder {
-        val base = normalizeSyncBaseUrl(preferences.serverTarget)
+        val base = normalizeSyncServerBaseUrl(preferences.serverTarget)
         require(base.isNotEmpty()) { "Sync server target is not set." }
         return Request.Builder().url("$base$path").apply {
-            normalizeSyncToken(preferences.authToken).takeIf(String::isNotEmpty)?.let { header("Authorization", "Bearer $it") }
+            normalizeSyncServerAuthToken(preferences.authToken).takeIf(String::isNotEmpty)?.let { header("Authorization", "Bearer $it") }
         }
     }
 
@@ -94,18 +85,6 @@ class SyncClient @Inject constructor(private val http: OkHttpClient) {
         if (e is CancellationException) throw e
         null
     }
-}
-
-private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
-    continuation.invokeOnCancellation { cancel() }
-    enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            if (continuation.isActive) continuation.resumeWithException(e)
-        }
-        override fun onResponse(call: Call, response: Response) {
-            continuation.resume(response) { _, value, _ -> value.close() }
-        }
-    })
 }
 
 internal fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull

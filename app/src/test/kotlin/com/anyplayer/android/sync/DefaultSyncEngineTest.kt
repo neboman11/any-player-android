@@ -418,12 +418,4 @@ class DefaultSyncEngineTest {
         advanceTimeBy(120_000); runCurrent()
         assertEquals(3, server.requestCount)
     }
-
-    @Test fun `base and bearer normalization match legacy`() {
-        assertEquals("", normalizeSyncBaseUrl(" / "))
-        assertEquals("https://example.test/base", normalizeSyncBaseUrl(" example.test/base/// "))
-        assertEquals("http://example.test", normalizeSyncBaseUrl("http://example.test/"))
-        assertEquals("token", normalizeSyncToken(" bEaReR  token "))
-        assertEquals("", normalizeSyncToken(" "))
-    }
 }
