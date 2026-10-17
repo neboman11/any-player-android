@@ -66,3 +66,6 @@ Instrumented Room migration tests (device/emulator required):
 
 - Media browsing is exposed via `com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService` (browse root id `root`).
 - OAuth deep-link callback for Spotify uses: `anyplayer://spotify-callback`.
+- The current Exo playback slice follows the v2 contracts: load-tagged item events, queue edits
+  that preserve the playing item, and volume/shuffle/repeat controls. Restore is immediate;
+  normalization and pending DJ breaks are stored only until the full engine lands.

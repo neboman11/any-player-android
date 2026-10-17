@@ -64,13 +64,18 @@ class SessionPlayer(
                 .setIsSeekable(true)
                 .build()
         }
-        val playWhenReady = p.status == PlaybackStateType.PLAYING || p.status == PlaybackStateType.BUFFERING
+        val playWhenReady = p.playRequested
         return builder
             .setPlaylist(playlist)
             .setCurrentMediaItemIndex(q.cursor - start)
             .setPlayWhenReady(playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(
-                if (p.status == PlaybackStateType.BUFFERING) Player.STATE_BUFFERING else Player.STATE_READY,
+                when {
+                    p.status == PlaybackStateType.ERROR || p.status == PlaybackStateType.IDLE -> Player.STATE_IDLE
+                    p.status == PlaybackStateType.BUFFERING ||
+                        (p.playRequested && p.status != PlaybackStateType.PLAYING) -> Player.STATE_BUFFERING
+                    else -> Player.STATE_READY
+                },
             )
             .setContentPositionMs { engine.positionMs() }
             .build()

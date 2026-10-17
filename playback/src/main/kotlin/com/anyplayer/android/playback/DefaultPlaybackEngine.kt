@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
 import com.anyplayer.android.core.model.BackendKind
+import com.anyplayer.android.core.model.PendingBreak
 import com.anyplayer.android.core.model.PlanItem
 import com.anyplayer.android.core.model.PlaybackStateType
 import com.anyplayer.android.core.model.QueueOps
@@ -16,6 +17,7 @@ import com.anyplayer.android.core.model.planRun
 import com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService
 import com.anyplayer.android.playback.backend.BackendEvent
 import com.anyplayer.android.playback.backend.ExoBackend
+import com.anyplayer.android.playback.backend.ItemKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,8 +26,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -50,11 +56,19 @@ class DefaultPlaybackEngine @Inject constructor(
     private val _player = MutableStateFlow(PlayerState())
     override val player: StateFlow<PlayerState> = _player.asStateFlow()
 
+    private val _events = MutableSharedFlow<EngineEvent>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val events: SharedFlow<EngineEvent> = _events.asSharedFlow()
+    private val _changes = MutableSharedFlow<EngineChange>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val changes: SharedFlow<EngineChange> = _changes.asSharedFlow()
+
+    private var pendingBreak: PendingBreak? = null
+    private var currentLoadId = 0L
+
     /** Run currently loaded in [exo] and the queue lists it was planned from. */
     private var loaded: LoadedRun? = null
     private var reconcileJob: Job? = null
 
-    private data class LoadedRun(val run: Run, val planned: QueueState, var ended: Boolean = false)
+    private data class LoadedRun(val loadId: Long, val run: Run, val planned: QueueState, var ended: Boolean = false)
 
     init {
         scope.launch { exo.events.collect(::onBackendEvent) }
@@ -67,10 +81,24 @@ class DefaultPlaybackEngine @Inject constructor(
         return if (p.durationMs > 0) extrapolated.coerceAtMost(p.durationMs) else extrapolated
     }
 
-    override fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
-        // User-initiated play from the top with shuffle on starts at a random track.
-        _queue.value = QueueOps.replace(_queue.value, tracks, startIndex, random, randomStart = autoPlay)
+    override suspend fun awaitRestored() = Unit
+
+    override fun setQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean, origin: ChangeOrigin) {
+        // Only user-initiated play may choose a random starting track.
+        _queue.value = QueueOps.replace(
+            _queue.value, tracks, startIndex, random,
+            randomStart = autoPlay && origin == ChangeOrigin.USER,
+        )
+        pendingBreak = null
+        _events.tryEmit(EngineEvent.QueueReplaced)
         reconcile(playWhenReady = autoPlay, positionMs = 0)
+        changed(origin, contentChanged = true)
+    }
+
+    override fun playNext(track: Track) {
+        _queue.value = QueueOps.playNext(_queue.value, track)
+        reconcileUpcoming()
+        changed(ChangeOrigin.USER, contentChanged = true)
     }
 
     override fun playEntry(uid: Long) {
@@ -78,9 +106,11 @@ class DefaultPlaybackEngine @Inject constructor(
         if (q === _queue.value) return
         _queue.value = q
         reconcile(playWhenReady = true, positionMs = 0)
+        changed(ChangeOrigin.USER)
     }
 
-    override fun play() {
+    override fun play(origin: ChangeOrigin) {
+        _player.update { it.copy(playRequested = true) }
         val l = loaded
         if (l != null && !l.ended && isLoadedFor(_queue.value, l)) {
             ensureServiceStarted()
@@ -88,10 +118,13 @@ class DefaultPlaybackEngine @Inject constructor(
         } else {
             reconcile(playWhenReady = true, positionMs = _player.value.anchorPositionMs)
         }
+        changed(origin)
     }
 
-    override fun pause() {
+    override fun pause(origin: ChangeOrigin) {
+        _player.update { it.copy(playRequested = false) }
         launchReconcile { exo.pause() }
+        changed(origin)
     }
 
     override fun togglePlayPause() {
@@ -105,6 +138,7 @@ class DefaultPlaybackEngine @Inject constructor(
         val q = QueueOps.advance(_queue.value, wrap = true) ?: return
         _queue.value = q
         reconcile(playWhenReady = true, positionMs = 0)
+        changed(ChangeOrigin.USER)
     }
 
     override fun previous() {
@@ -112,12 +146,59 @@ class DefaultPlaybackEngine @Inject constructor(
         val q = QueueOps.back(_queue.value) ?: return seekTo(0)
         _queue.value = q
         reconcile(playWhenReady = true, positionMs = 0)
+        changed(ChangeOrigin.USER)
     }
 
-    override fun seekTo(ms: Long) {
+    override fun seekTo(ms: Long, origin: ChangeOrigin) {
         val target = ms.coerceAtLeast(0)
         _player.update { it.copy(anchorPositionMs = target, anchorElapsedRealtimeMs = SystemClock.elapsedRealtime()) }
         launchReconcile { exo.seekTo(target) }
+        changed(origin)
+    }
+
+    override fun setVolume(percent: Int, origin: ChangeOrigin) {
+        val volume = percent.coerceIn(0, 100)
+        _player.update { it.copy(volume = volume) }
+        scope.launch { exo.setVolume(volume) }
+        changed(origin)
+    }
+
+    override fun setShuffle(on: Boolean, origin: ChangeOrigin) {
+        _queue.value = QueueOps.setShuffle(_queue.value, on, random)
+        reconcileUpcoming()
+        changed(origin, contentChanged = true)
+    }
+
+    override fun setRepeat(mode: RepeatMode, origin: ChangeOrigin) {
+        _queue.value = QueueOps.setRepeat(_queue.value, mode)
+        scope.launch { exo.setRepeatOne(mode == RepeatMode.ONE) }
+        changed(origin)
+    }
+
+    override fun setNormalization(enabled: Boolean, strict: Boolean) {
+        _player.update { it.copy(normalization = enabled) }
+        changed(ChangeOrigin.USER)
+    }
+
+    override fun setPendingBreak(pendingBreak: PendingBreak?) {
+        this.pendingBreak = pendingBreak
+    }
+
+    private fun changed(origin: ChangeOrigin, contentChanged: Boolean = false) {
+        _changes.tryEmit(EngineChange(origin, contentChanged))
+    }
+
+    private fun reconcileUpcoming() {
+        val q = _queue.value
+        val l = loaded
+        val current = q.current ?: return
+        val run = planRun(q, q.cursor, null)
+        if (l == null || l.ended || _player.value.currentUid != current.uid || run?.kind != BackendKind.EXO) {
+            reconcile(_player.value.playRequested, positionMs())
+            return
+        }
+        loaded = LoadedRun(l.loadId, run, q)
+        launchReconcile { exo.updateUpcoming(l.loadId, run, ItemKey.Song(current.uid)) }
     }
 
     private fun isLoadedFor(q: QueueState, l: LoadedRun): Boolean =
@@ -140,6 +221,7 @@ class DefaultPlaybackEngine @Inject constructor(
         if (run == null || first == null || run.kind != BackendKind.EXO) {
             // No playable entry, or a SPOTIFY run: the Spotify backend is not in this slice.
             loaded = null
+            currentLoadId++
             _player.value = PlayerState(
                 status = if (requested == null) PlaybackStateType.IDLE else PlaybackStateType.ERROR,
                 currentUid = q.current?.uid,
@@ -158,6 +240,7 @@ class DefaultPlaybackEngine @Inject constructor(
         _player.update {
             it.copy(
                 currentUid = current.uid,
+                playRequested = playWhenReady,
                 durationMs = current.track.durationMs ?: 0,
                 anchorPositionMs = positionMs,
                 anchorElapsedRealtimeMs = SystemClock.elapsedRealtime(),
@@ -173,12 +256,17 @@ class DefaultPlaybackEngine @Inject constructor(
         } ?: -1
         if (indexInLoaded >= 0) {
             launchReconcile {
-                exo.seekToItem(indexInLoaded, positionMs)
+                exo.seekToItem(ItemKey.Song(current.uid), positionMs)
                 if (playWhenReady) exo.play() else exo.pause()
             }
         } else {
-            loaded = LoadedRun(run, q)
-            launchReconcile { exo.load(run, 0, positionMs, playWhenReady) }
+            val loadId = ++currentLoadId
+            loaded = LoadedRun(loadId, run, q)
+            launchReconcile {
+                exo.setVolume(_player.value.volume)
+                exo.setRepeatOne(q.repeat == RepeatMode.ONE)
+                exo.load(loadId, run, 0, positionMs, playWhenReady)
+            }
         }
     }
 
@@ -189,24 +277,28 @@ class DefaultPlaybackEngine @Inject constructor(
 
     private fun onBackendEvent(event: BackendEvent) {
         val l = loaded ?: return
+        if (event.loadId != currentLoadId) return
         when (event) {
             is BackendEvent.ItemStarted -> {
-                val song = l.run.items.getOrNull(event.indexInRun) as? PlanItem.Song ?: return
+                val uid = (event.key as? ItemKey.Song)?.uid ?: return
                 val q = _queue.value
-                if (q.cursor != song.orderPos && isLoadedFor(q, l)) {
-                    _queue.value = QueueOps.jumpToUid(q, song.entry.uid)
-                }
+                val orderPos = q.orderPosOfUid(uid)
+                if (orderPos < 0) return
+                val entry = q.entryAt(orderPos)
+                if (q.cursor != orderPos) _queue.value = QueueOps.jumpToUid(q, uid)
                 _player.update {
                     it.copy(
-                        currentUid = song.entry.uid,
-                        durationMs = exo.durationMs().takeIf { d -> d > 0 } ?: (song.entry.track.durationMs ?: 0),
+                        currentUid = uid,
+                        durationMs = exo.durationMs().takeIf { d -> d > 0 } ?: (entry.track.durationMs ?: 0),
                         anchorPositionMs = exo.positionMs(),
                         anchorElapsedRealtimeMs = SystemClock.elapsedRealtime(),
                     )
                 }
+                _events.tryEmit(EngineEvent.TrackStarted(uid, orderPos))
             }
             is BackendEvent.PlayingChanged -> _player.update {
                 it.copy(
+                    playRequested = if (event.byPlayer && !event.isPlaying && !event.buffering) false else it.playRequested,
                     status = when {
                         event.isPlaying -> PlaybackStateType.PLAYING
                         event.buffering -> PlaybackStateType.BUFFERING
@@ -219,13 +311,17 @@ class DefaultPlaybackEngine @Inject constructor(
                     error = if (event.isPlaying) null else it.error,
                 )
             }
-            BackendEvent.PositionDiscontinuity -> _player.update {
-                it.copy(anchorPositionMs = exo.positionMs(), anchorElapsedRealtimeMs = SystemClock.elapsedRealtime())
+            is BackendEvent.PositionDiscontinuity -> _player.update {
+                it.copy(
+                    anchorPositionMs = event.positionMs,
+                    durationMs = event.durationMs.takeIf { d -> d > 0 } ?: it.durationMs,
+                    anchorElapsedRealtimeMs = SystemClock.elapsedRealtime(),
+                )
             }
-            BackendEvent.RunEnded -> onRunEnded(l)
+            is BackendEvent.RunEnded -> onRunEnded(l)
             is BackendEvent.Error -> {
                 Log.w(TAG, "Exo error: ${event.message}")
-                _player.update { it.copy(status = PlaybackStateType.ERROR, error = event.message) }
+                _player.update { it.copy(status = PlaybackStateType.ERROR, playRequested = false, error = event.message) }
             }
         }
     }
@@ -234,13 +330,14 @@ class DefaultPlaybackEngine @Inject constructor(
         l.ended = true
         val lastSong = l.run.items.lastOrNull { it is PlanItem.Song } as? PlanItem.Song ?: return
         val q = _queue.value
-        val atLast = if (q.cursor == lastSong.orderPos) q else QueueOps.jumpToUid(q, lastSong.entry.uid)
+        val atLast = QueueOps.jumpToUid(q, lastSong.entry.uid)
         val next = QueueOps.advance(atLast, wrap = true)
         if (next == null) {
             _queue.value = atLast
             _player.update {
                 it.copy(
                     status = PlaybackStateType.PAUSED,
+                    playRequested = false,
                     anchorPositionMs = 0,
                     anchorElapsedRealtimeMs = SystemClock.elapsedRealtime(),
                 )

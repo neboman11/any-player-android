@@ -50,8 +50,8 @@ fun PlaybackSmokeScreen(engine: PlaybackEngine) {
         ) { Text("Load queue") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = engine::previous) { Text("Prev") }
-            Button(onClick = engine::play) { Text("Play") }
-            Button(onClick = engine::pause) { Text("Pause") }
+            Button(onClick = { engine.play() }) { Text("Play") }
+            Button(onClick = { engine.pause() }) { Text("Pause") }
             Button(onClick = engine::next) { Text("Next") }
         }
         Text("Title: ${queue.current?.track?.title ?: "-"}", modifier = Modifier.testTag("title"))

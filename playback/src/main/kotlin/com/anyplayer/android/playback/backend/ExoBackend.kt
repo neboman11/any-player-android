@@ -35,18 +35,25 @@ class ExoBackend @Inject constructor(
     )
     override val events: Flow<BackendEvent> = _events.asSharedFlow()
 
+    private var loadId = 0L
+    private var pauseByPlayer = false
+
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (mediaItem != null && reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
-                _events.tryEmit(BackendEvent.ItemStarted(exo.currentMediaItemIndex))
-            }
+            val key = mediaItem?.let { itemKey(it.mediaId) } ?: return
+            _events.tryEmit(BackendEvent.ItemStarted(loadId, key))
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) = emitPlaying()
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            pauseByPlayer = !playWhenReady && reason != Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
+            emitPlaying()
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             emitPlaying()
-            if (playbackState == Player.STATE_ENDED) _events.tryEmit(BackendEvent.RunEnded)
+            if (playbackState == Player.STATE_ENDED) _events.tryEmit(BackendEvent.RunEnded(loadId))
         }
 
         override fun onPositionDiscontinuity(
@@ -54,11 +61,13 @@ class ExoBackend @Inject constructor(
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
-            _events.tryEmit(BackendEvent.PositionDiscontinuity)
+            _events.tryEmit(BackendEvent.PositionDiscontinuity(loadId, newPosition.positionMs, durationMs()))
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            _events.tryEmit(BackendEvent.Error(error.message ?: error.errorCodeName))
+            _events.tryEmit(
+                BackendEvent.Error(loadId, exo.currentMediaItem?.let { itemKey(it.mediaId) }, error.message ?: error.errorCodeName),
+            )
         }
     }
 
@@ -80,20 +89,38 @@ class ExoBackend @Inject constructor(
     private fun emitPlaying() {
         _events.tryEmit(
             BackendEvent.PlayingChanged(
+                loadId = loadId,
                 isPlaying = exo.isPlaying,
                 buffering = exo.playbackState == Player.STATE_BUFFERING && exo.playWhenReady,
+                byPlayer = pauseByPlayer,
             ),
         )
     }
 
-    override suspend fun load(run: Run, startIndex: Int, positionMs: Long, playWhenReady: Boolean) {
+    override suspend fun load(loadId: Long, run: Run, startIndex: Int, positionMs: Long, playWhenReady: Boolean) {
+        this.loadId = loadId
         exo.setMediaItems(run.items.map(::toMediaItem), startIndex, positionMs)
         exo.playWhenReady = playWhenReady
         exo.prepare()
     }
 
-    override suspend fun seekToItem(indexInRun: Int, positionMs: Long) {
-        exo.seekTo(indexInRun, positionMs)
+    override suspend fun updateUpcoming(loadId: Long, run: Run, currentKey: ItemKey) {
+        if (loadId != this.loadId || exo.currentMediaItem?.let { itemKey(it.mediaId) } != currentKey) return
+        val currentInRun = run.items.indexOfFirst { item ->
+            when (item) {
+                is PlanItem.Song -> ItemKey.Song(item.entry.uid)
+                is PlanItem.Break -> ItemKey.Break(item.breakId)
+            } == currentKey
+        }
+        if (currentInRun < 0) return
+        val upcomingStart = exo.currentMediaItemIndex + 1
+        exo.removeMediaItems(upcomingStart, exo.mediaItemCount)
+        exo.addMediaItems(run.items.drop(currentInRun + 1).map(::toMediaItem))
+    }
+
+    override suspend fun seekToItem(key: ItemKey, positionMs: Long) {
+        val index = (0 until exo.mediaItemCount).firstOrNull { itemKey(exo.getMediaItemAt(it).mediaId) == key } ?: return
+        exo.seekTo(index, positionMs)
         if (exo.playbackState == Player.STATE_IDLE || exo.playbackState == Player.STATE_ENDED) exo.prepare()
     }
 
@@ -106,6 +133,14 @@ class ExoBackend @Inject constructor(
 
     override suspend fun seekTo(ms: Long) = exo.seekTo(ms)
 
+    override suspend fun setVolume(effectivePercent: Int) {
+        exo.volume = effectivePercent / 100f
+    }
+
+    override suspend fun setRepeatOne(on: Boolean) {
+        exo.repeatMode = if (on) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+
     override suspend fun stop() {
         exo.stop()
         exo.clearMediaItems()
@@ -114,6 +149,10 @@ class ExoBackend @Inject constructor(
     override fun positionMs(): Long = exo.currentPosition
 
     override fun durationMs(): Long = exo.duration.takeIf { it != C.TIME_UNSET } ?: 0L
+
+    private fun itemKey(mediaId: String): ItemKey? =
+        if (mediaId.startsWith("dj-filler:")) ItemKey.Break(mediaId.removePrefix("dj-filler:"))
+        else mediaId.toLongOrNull()?.let(ItemKey::Song)
 
     private fun toMediaItem(item: PlanItem): MediaItem = when (item) {
         is PlanItem.Song -> {
