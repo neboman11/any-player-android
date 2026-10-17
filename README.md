@@ -1,71 +1,102 @@
 # Any Player Android
 
-Android companion app for **Any Player**, built with Kotlin + Jetpack Compose + Media3.
+Any Player combines Spotify, Jellyfin and Plex in one Android music player. Spotify
+playback controls a Spotify Connect device; Jellyfin and Plex audio streams locally
+through Media3 ExoPlayer. Mixed queues, shuffle/repeat, custom STANDARD/UNION playlists,
+distinct playback, search, sync, state/config import/export, and remote or on-device
+AI DJ breaks share the same playback engine. Background playback exposes notification
+controls and Android Auto media browsing.
 
-This app targets phone/tablet and Android Auto-style media browsing, and includes provider integrations (Spotify/Jellyfin/Plex), local playlist persistence, and background media playback.
+The integrated v2 app uses Kotlin, Jetpack Compose, Media3, Hilt, Room and Coroutines/Flow.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation and compatibility contracts.
 
-The v2 rewrite is in progress; the design it is built from is `docs/ARCHITECTURE.md`.
+## Module layout
 
-## Tech Stack
+| Module | Responsibility |
+|---|---|
+| `:core:model` | Pure Kotlin/JVM models, queue operations, run planning, DJ schedule, dedupe and normalization |
+| `:core:data` | Repository/store contracts and implementations, Room, provider clients, auth, transfer; sync/startup contracts |
+| `:playback` | Playback contract/engine, ExoPlayer and Spotify Connect backends, persistence, media service/session |
+| `:dj` | DJ controller/coordinator, passages, artifact downloads, remote generation and on-device LLM/TTS |
+| `:app` | Application/Activity, Compose screens and ViewModels, sync/startup implementations and cross-module Hilt wiring |
 
-- Kotlin + Jetpack Compose
-- Media3 (`ExoPlayer`, `MediaSession`, `MediaLibraryService`)
-- Hilt (DI)
-- Room (local storage)
-- Coroutines + Flow
-
-## Project Layout
-
-- `core/model/` — pure Kotlin/JVM domain models, queue ops, run planning, dedupe, normalization
-- `core/data/` — Room database (`any_player.db`, schemas in `core/data/schemas`), secure stores
-- `playback/` — playback engine, ExoPlayer backend, MediaLibraryService + session player
-- `dj/` — AI DJ (on-device LLM/TTS dependencies, espeak-ng data)
-- `app/` — Android application module
-- `docs/ARCHITECTURE.md` — architecture of the v2 rewrite
-
-Dependency versions live in `gradle/libs.versions.toml`.
+Dependency versions live in `gradle/libs.versions.toml`; Room schemas in `core/data/schemas`.
 
 ## Prerequisites
 
-- Android SDK (API 35)
-- JDK 21+
+- JDK 21 (the Gradle daemon toolchain is pinned to 21).
+- Android SDK: API 35 platform, build tools 35.0.0 and platform-tools.
+- Android 8.0/API 26 or newer to run the app.
+- Internet access for initial dependency downloads.
 
-The sherpa-onnx TTS AAR has no Maven artifact; `:dj:downloadSherpaOnnxAar` fetches it into `dj/libs/` (gitignored) on the first build and verifies its SHA-256.
+**No Rust toolchain, Cargo, Android NDK or sibling Rust checkout is required.** Native
+LLM/TTS runtimes arrive as prebuilt dependencies. `:dj:downloadSherpaOnnxAar` downloads
+the pinned sherpa-onnx AAR into gitignored `dj/libs/` on the first build and verifies its
+SHA-256. DJ models/voices are downloaded separately through the app.
 
-## Local Configuration
+## Local configuration
 
-Create/update `local.properties` in the repo root:
+Create `local.properties` at the repository root (do not commit it):
 
-- `sdk.dir=/path/to/Android/Sdk` (required)
-- `spotifyClientId=<your_spotify_client_id>` (optional at build time; needed for Spotify auth flow)
+```properties
+sdk.dir=/path/to/Android/Sdk
+spotifyClientId=your_spotify_client_id
+```
 
-You can also pass `spotifyClientId` as a Gradle property: `-PspotifyClientId=...`
+`spotifyClientId` is optional for compilation but required for Spotify sign-in. A Gradle
+property overrides it: `-PspotifyClientId=...`. Register the Spotify redirect URI
+`anyplayer://spotify-callback` for your client. Spotify playback requires a suitable
+Spotify Connect device/account; the app does not decode Spotify audio locally.
 
-## Build / Install
+## Build and run
 
 ```bash
 ./gradlew :app:assembleDebug
 ./gradlew :app:installDebug
+adb shell am start -n com.anyplayer.android/.MainActivity
 ```
 
-## Testing
+Select the intended target with `ANDROID_SERIAL` when multiple devices are attached
+(and use `adb -s <serial>` for direct adb commands).
 
-JVM unit tests (queue ops, run planning, dedupe fixture, normalization):
+APK: `app/build/outputs/apk/debug/app-debug.apk`. Debug builds bundle **arm64-v8a +
+x86_64** only (64-bit phones and emulators); release builds retain the dependency ABIs.
+
+## Tests and lint
+
+All module unit tests (no device needed):
 
 ```bash
-./gradlew :core:model:test
+./gradlew :core:model:test :core:data:testDebugUnitTest :playback:testDebugUnitTest :dj:testDebugUnitTest :app:testDebugUnitTest
+./gradlew --console=plain -q :app:lintDebug
 ```
 
-Instrumented Room migration tests (device/emulator required):
+Instrumented Room migration/repository tests (selected device/emulator required):
 
 ```bash
 ./gradlew :core:data:connectedDebugAndroidTest
 ```
 
-## Notes
+CI runs all five unit-test tasks, assembles debug, uploads the APK, and runs app lint.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for layering, threading and review conventions.
 
-- Media browsing is exposed via `com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService` (browse root id `root`).
-- OAuth deep-link callback for Spotify uses: `anyplayer://spotify-callback`.
-- The current Exo playback slice follows the v2 contracts: load-tagged item events, queue edits
-  that preserve the playing item, and volume/shuffle/repeat controls. Restore is immediate;
-  normalization and pending DJ breaks are stored only until the full engine lands.
+## Android Auto
+
+The Media3 library service retains its legacy fully qualified name:
+`com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService`.
+Browse root id is `root`; its playable children are the current queue in play order,
+identified by queue-entry uid. It is not a provider/library catalog tree. Validate
+projection behavior with Android Auto Desktop Head Unit (DHU) or compatible hardware;
+Spotify-only playback also keeps the media playback foreground service alive.
+
+## Existing installs
+
+V2 upgrades in place (`com.anyplayer.android`, versionCode 2), preserving playlists,
+provider credentials, sync settings, DJ files and export formats. Room migrates
+`any_player.db` from v1/v2 to v3 without destructive fallback; the encrypted legacy
+queue is migrated once into Room plus plain non-secret playback settings. Restored
+playback is paused and does not take over a Spotify device until Play.
+
+Install with the same signing key as the existing app. Do not uninstall or clear app
+data to upgrade: those actions remove local data. A signature mismatch requires the
+original signing key, not a database reset.

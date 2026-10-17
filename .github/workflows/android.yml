@@ -63,6 +63,15 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
+      - name: All module unit tests
+        run: >-
+          ./gradlew --no-daemon --warning-mode=summary
+          :core:model:test
+          :core:data:testDebugUnitTest
+          :playback:testDebugUnitTest
+          :dj:testDebugUnitTest
+          :app:testDebugUnitTest
+
       - name: Assemble debug
         run: ./gradlew --no-daemon --warning-mode=summary :app:assembleDebug
 
@@ -73,9 +82,6 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
-
-      - name: Unit tests
-        run: ./gradlew --no-daemon --warning-mode=summary :core:model:test
 
       - name: Lint
         run: ./gradlew --no-daemon --warning-mode=summary :app:lintDebug
