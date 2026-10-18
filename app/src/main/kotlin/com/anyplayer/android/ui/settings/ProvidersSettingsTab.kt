@@ -23,6 +23,7 @@ internal fun ProvidersSettingsTab(viewModel: ProvidersSettingsViewModel) {
         Text(if (spotify?.connected == true) "Disconnect Spotify" else "Link Spotify Account")
     }
     spotify?.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    if (spotify?.hasToken == true) SpotifyDevicePicker()
     listOf(SourceType.JELLYFIN, SourceType.PLEX).forEach { source ->
         HorizontalDivider()
         val jellyfin = source == SourceType.JELLYFIN

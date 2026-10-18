@@ -159,7 +159,7 @@ class FakeSpotifyPlayerApi(private val clock: () -> Long) : SpotifyPlayerApi {
         val remaining = failures[action] ?: return
         if (remaining <= 0) return
         failures[action] = remaining - 1
-        throw SpotifyCommandException(SpotifyMessages.commandFailed(action))
+        throw SpotifyCommandException(SpotifyMessages.commandFailed(action), httpStatus = 403)
     }
 
     private fun duration(id: String): Long = durations[id] ?: defaultDurationMs
@@ -217,16 +217,34 @@ class FakeSpotifyPlayerApi(private val clock: () -> Long) : SpotifyPlayerApi {
 class FakeSpotifyAppLauncher(
     var foreground: Boolean = true,
     var installed: Boolean = true,
+    var deviceName: String? = null,
     private val onLaunch: () -> Unit = {},
 ) : SpotifyAppLauncher {
     var launches = 0
+    var storeOpens = 0
 
     override fun isAppInForeground(): Boolean = foreground
+
+    override fun isSpotifyInstalled(): Boolean = installed
 
     override fun launchSpotify(): Boolean {
         launches++
         if (!installed) return false
         onLaunch()
         return true
+    }
+
+    override fun openSpotifyStoreListing() {
+        storeOpens++
+    }
+
+    override fun localDeviceName(): String? = deviceName
+}
+
+class FakeSpotifyDevicePreferenceStore(initial: PreferredSpotifyDevice? = null) : SpotifyDevicePreferenceStore {
+    override val preferred = kotlinx.coroutines.flow.MutableStateFlow(initial)
+    override suspend fun awaitLoaded(): PreferredSpotifyDevice? = preferred.value
+    override suspend fun set(device: PreferredSpotifyDevice?) {
+        preferred.value = device
     }
 }

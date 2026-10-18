@@ -22,4 +22,10 @@ internal abstract class SpotifyPlaybackModule {
 
     @Binds
     abstract fun bindSpotifyAppLauncher(impl: AndroidSpotifyAppLauncher): SpotifyAppLauncher
+
+    @Binds
+    abstract fun bindSpotifyDevicePreferenceStore(impl: SharedPrefsSpotifyDevicePreferenceStore): SpotifyDevicePreferenceStore
+
+    @Binds
+    abstract fun bindSpotifyDevices(impl: SpotifyDeviceResolver): SpotifyDevices
 }

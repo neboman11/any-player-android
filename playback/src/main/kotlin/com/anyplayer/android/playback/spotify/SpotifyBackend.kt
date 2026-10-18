@@ -294,10 +294,14 @@ class SpotifyBackend internal constructor(
         try {
             api.pause()
         } catch (e: SpotifyCommandException) {
-            manualPauseUntilMs = 0L
-            fail(e, "Spotify failed to pause")
-            armEndTimer()
-            return@command
+            // Spotify rejects pausing playback that is already paused (403 "Restriction violated"),
+            // e.g. after the user paused in the Spotify app; only a still-playing device is a failure.
+            if (e.httpStatus == null || pollState()?.isPlaying != false) {
+                manualPauseUntilMs = 0L
+                fail(e, "Spotify failed to pause")
+                armEndTimer()
+                return@command
+            }
         }
         manualPauseUntilMs = clock() + MANUAL_PAUSE_GRACE_MS
         intendedPlaying = false
@@ -395,6 +399,7 @@ class SpotifyBackend internal constructor(
     /** Starts the loaded list at [index]; throws [SpotifyCommandException]. Requires [commandMutex]. */
     private suspend fun startAt(index: Int, positionMs: Long) {
         if (!shuffleChecked) {
+            // Strict: with device shuffle on, Spotify would play the URI list out of the app's order.
             if (pollState()?.shuffle == true) forceShuffleOff()
             shuffleChecked = true
         }
@@ -425,7 +430,9 @@ class SpotifyBackend internal constructor(
         resetStall()
         beginSettle(index, positionMs)
         setAnchor(positionMs, playing = false)
-        applyRepeat()
+        // The track is already playing: settings Spotify rejects while the device activates must
+        // not report the start as failed.
+        applyRepeatQuietly()
         applyVolume()
     }
 
@@ -444,7 +451,7 @@ class SpotifyBackend internal constructor(
         startedAtMs = clock()
         startPositionMs = snapshot.progressMs
         if (snapshot.shuffle) forceShuffleOff()
-        applyRepeat()
+        applyRepeatQuietly()
         applyVolume()
         setAnchor(snapshot.progressMs, playing = true, durationMs = durationFor(snapshot, currentIndex))
         reportPlaying(isPlaying = true, buffering = false, byPlayer = false)
@@ -559,14 +566,7 @@ class SpotifyBackend internal constructor(
             recoveryFailed = false
             lastPlayingRemainingMs = if (duration > 0) duration - snapshot.progressMs else Long.MAX_VALUE
         }
-        if (snapshot.shuffle) {
-            try {
-                forceShuffleOff()
-            } catch (e: SpotifyCommandException) {
-                fail(e, "Spotify command failed")
-                return
-            }
-        }
+        if (snapshot.shuffle) forceShuffleOffQuietly()
 
         if (!snapshot.isPlaying && playingSeen && !repeatOne && endedNaturally(snapshot, duration)) {
             if (index >= stopIndex) {
@@ -890,9 +890,29 @@ class SpotifyBackend internal constructor(
         }
     }
 
+    /**
+     * The app owns play order, so device shuffle is switched off before a start; a failure aborts
+     * the start (throws) because Spotify would otherwise play the run out of order.
+     */
     private suspend fun forceShuffleOff() {
         api.setShuffle(false)
         shuffleChecked = true
+    }
+
+    /** Mid-run re-check (user turned shuffle on in Spotify): the next poll retries, so stay quiet. */
+    private suspend fun forceShuffleOffQuietly() {
+        try {
+            forceShuffleOff()
+        } catch (_: SpotifyCommandException) {
+        }
+    }
+
+    /** Repeat applied automatically on start/adopt; a rejection is not worth an error. */
+    private suspend fun applyRepeatQuietly() {
+        try {
+            applyRepeat()
+        } catch (_: SpotifyCommandException) {
+        }
     }
 
     private suspend fun applyRepeat() {

@@ -42,7 +42,7 @@ class SpotifyBackendTest {
         val clock = { testScheduler.currentTime }
         val api = FakeSpotifyPlayerApi(clock)
         val scope = CoroutineScope(backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext.job))
-        val backend = SpotifyBackend(api, SpotifyDeviceResolver(api, FakeSpotifyAppLauncher(), clock), scope, clock)
+        val backend = SpotifyBackend(api, SpotifyDeviceResolver(api, FakeSpotifyAppLauncher(), FakeSpotifyDevicePreferenceStore(), clock), scope, clock)
         val events = mutableListOf<BackendEvent>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { backend.events.collect { events += it } }
         return Env(backend, api, events)
@@ -298,6 +298,46 @@ class SpotifyBackendTest {
         e.api.setPlaying(listOf(id(1)), 0, 4_100) // stale "playing" report right after the pause
         advance(4_000)
         assertFalse(e.playing().last().isPlaying)
+    }
+
+    @Test
+    fun pauseRejected_whileSpotifyIsAlreadyPaused_isNotAnError() = runTest {
+        val e = env()
+        val a = e.entry(1)
+        e.backend.load(1, run(a), 0, 0, playWhenReady = true)
+        advance(4_100)
+        e.api.setPlaying(listOf(id(1)), 0, 4_100, isPlaying = false) // user paused in the Spotify app
+        e.api.failures["pause"] = 1 // Spotify: 403 "Restriction violated"
+
+        e.backend.pause()
+        assertEquals(emptyList<String>(), e.errors())
+        assertFalse(e.playing().last().isPlaying)
+    }
+
+    @Test
+    fun pauseRejected_whileSpotifyKeepsPlaying_isReported() = runTest {
+        val e = env()
+        val a = e.entry(1)
+        e.backend.load(1, run(a), 0, 0, playWhenReady = true)
+        advance(4_100)
+        e.api.failures["pause"] = 1
+
+        e.backend.pause()
+        assertEquals(listOf(SpotifyMessages.commandFailed("pause")), e.errors())
+    }
+
+    @Test
+    fun repeatOrVolumeRejectedAfterStart_doesNotReportTheStartAsFailed() = runTest {
+        val e = env()
+        val a = e.entry(1)
+        e.backend.setVolume(40)
+        e.api.failures["setRepeatMode"] = 1
+        e.api.failures["setVolume"] = 1
+
+        e.backend.load(1, run(a), 0, 0, playWhenReady = true)
+        advance(4_100)
+        assertEquals(emptyList<String>(), e.errors())
+        assertTrue(e.playing().last().isPlaying)
     }
 
     @Test

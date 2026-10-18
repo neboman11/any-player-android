@@ -46,8 +46,11 @@ data class SpotifyDevice(
     val isRestricted: Boolean,
 )
 
-/** A failed Spotify call; [message] is the user-facing legacy string. */
-class SpotifyCommandException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * A failed Spotify call; [message] is the user-facing legacy string. [httpStatus] is the Web API
+ * status (null for transport/token failures) so callers can tell benign rejections apart.
+ */
+class SpotifyCommandException(message: String, cause: Throwable? = null, val httpStatus: Int? = null) : Exception(message, cause)
 
 /**
  * Spotify Connect Web API (`https://api.spotify.com/v1/me/player…`). Write calls throw
@@ -175,14 +178,22 @@ class OkHttpSpotifyPlayerApi internal constructor(
         }
 
     private suspend fun write(action: String, method: String, path: String, query: Map<String, String>, json: String?) {
-        val ok = authorized(action) { token ->
+        authorized(action) { token ->
             Request.Builder()
                 .url(url(path, query))
                 .headers(token)
                 .method(method, (json ?: "").toRequestBody(JSON))
                 .build()
-        }.use { it.isSuccessful }
-        if (!ok) throw SpotifyCommandException(SpotifyMessages.commandFailed(action))
+        }.use { response ->
+            if (response.isSuccessful) return
+            // Spotify explains rejections as {"error":{"status":403,"message":"Player command failed: …"}}.
+            val reason = runCatching {
+                ((Json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)?.get("error") as? JsonObject)
+                    ?.get("message").stringOrNull()
+            }.getOrNull()
+            val detail = listOfNotNull(reason, "HTTP ${response.code}").joinToString(" ")
+            throw SpotifyCommandException(SpotifyMessages.commandFailed(action, detail), httpStatus = response.code)
+        }
     }
 
     /** Bearer token per call; a 401 forces one refresh and one retry. */

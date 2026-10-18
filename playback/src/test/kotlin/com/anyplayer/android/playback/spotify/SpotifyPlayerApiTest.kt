@@ -68,7 +68,7 @@ class SpotifyPlayerApiTest {
             server.enqueue(MockResponse().setResponseCode(401))
             server.enqueue(MockResponse().setResponseCode(401))
             val failure = try { api.resume(); null } catch (e: SpotifyCommandException) { e }
-            assertEquals("Spotify command failed: play", failure?.message)
+            assertEquals("Spotify command failed: play. HTTP 401", failure?.message)
             assertEquals(4, server.requestCount)
             assertEquals(2, tokens.refreshes)
         }
