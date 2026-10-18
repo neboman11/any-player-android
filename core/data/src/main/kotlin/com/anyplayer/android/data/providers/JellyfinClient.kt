@@ -31,9 +31,14 @@ class JellyfinClient @Inject constructor(private val http: OkHttpClient, private
      * literal commas — no HttpUrl normalization or percent-encoding.
      */
     private fun legacyUrl(conn: StoredConnection, pathAndQuery: String) = conn.serverUrl.orEmpty().trimEnd('/') + "/" + pathAndQuery
+    /**
+     * Current Jellyfin servers reject the legacy `X-Emby-Token` / `X-Emby-Authorization` headers and
+     * `api_key` query (legacy authorization is disabled by default) with 401; the standard
+     * `Authorization: MediaBrowser Token=…` header works on every supported server version.
+     */
     private fun request(conn: StoredConnection, path: String, query: Map<String, String> = emptyMap()) =
-        Request.Builder().url(url(conn, path, query)).header("X-Emby-Token", conn.token.orEmpty())
-            .header("X-Emby-Authorization", "MediaBrowser Token=\"${conn.token.orEmpty()}\", Client=\"AnyPlayer\", Device=\"AnyPlayer\", DeviceId=\"AnyPlayer\", Version=\"1.0.0\"").build()
+        Request.Builder().url(url(conn, path, query))
+            .header("Authorization", "MediaBrowser Token=\"${conn.token.orEmpty()}\", Client=\"AnyPlayer\", Device=\"AnyPlayer\", DeviceId=\"AnyPlayer\", Version=\"1.0.0\"").build()
     private suspend fun resolveUser(conn: StoredConnection): ValidationResult = userMutex.withLock {
         val identity = conn.serverUrl to conn.token
         resolved[identity]?.let { return@withLock it }

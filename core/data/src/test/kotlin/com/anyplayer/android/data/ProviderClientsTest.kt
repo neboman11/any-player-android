@@ -33,8 +33,12 @@ class ProviderClientsTest {
             assertEquals("Mix", client.playlists(conn).single().name)
             assertEquals("/Users", server.takeRequest().path)
             val first = server.takeRequest()
-            assertEquals("secret", first.getHeader("X-Emby-Token"))
-            assertTrue(first.getHeader("X-Emby-Authorization")!!.contains("Client=\"AnyPlayer\""))
+            // Current Jellyfin servers 401 on the legacy X-Emby-* headers; only Authorization works.
+            assertEquals(
+                "MediaBrowser Token=\"secret\", Client=\"AnyPlayer\", Device=\"AnyPlayer\", DeviceId=\"AnyPlayer\", Version=\"1.0.0\"",
+                first.getHeader("Authorization"),
+            )
+            assertNull(first.getHeader("X-Emby-Token"))
             assertEquals("0", first.requestUrl!!.queryParameter("StartIndex"))
             assertEquals("2", server.takeRequest().requestUrl!!.queryParameter("StartIndex"))
             assertTrue(server.takeRequest().path!!.contains("IncludeItemTypes=Playlist"))
