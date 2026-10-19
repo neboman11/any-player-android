@@ -135,19 +135,19 @@ class FakeSpotifyPlayerApi(private val clock: () -> Long) : SpotifyPlayerApi {
         baseAt = clock()
     }
 
-    override suspend fun setVolume(percent: Int) {
+    override suspend fun setVolume(percent: Int, deviceId: String?) {
         calls += "volume:$percent"
         maybeFail("setVolume")
         volume = percent
     }
 
-    override suspend fun setShuffle(enabled: Boolean) {
+    override suspend fun setShuffle(enabled: Boolean, deviceId: String?) {
         calls += "shuffle:$enabled"
         maybeFail("setShuffle")
         shuffle = enabled
     }
 
-    override suspend fun setRepeat(mode: RepeatMode) {
+    override suspend fun setRepeat(mode: RepeatMode, deviceId: String?) {
         calls += "repeat:$mode"
         maybeFail("setRepeatMode")
         repeat = mode

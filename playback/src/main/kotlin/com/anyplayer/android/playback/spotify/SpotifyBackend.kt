@@ -120,6 +120,8 @@ class SpotifyBackend internal constructor(
     private var reloadJob: Job? = null
     private var reloadGeneration = 0L
     private var volumeJob: Job? = null
+    /** Device of the last successful start; settings target it (Spotify 404s untargeted calls until it's active). */
+    private var playingDeviceId: String? = null
 
     // ---------------------------------------------------------------- commands
 
@@ -404,7 +406,7 @@ class SpotifyBackend internal constructor(
             shuffleChecked = true
         }
         val ids = items.map { it.trackId }
-        val deviceId = devices.resolve()
+        var deviceId = devices.resolve()
         try {
             api.startPlayback(deviceId, ids, index, positionMs)
         } catch (e: SpotifyCommandException) {
@@ -413,7 +415,9 @@ class SpotifyBackend internal constructor(
             val fresh = devices.resolve()
             if (fresh == deviceId) throw e
             api.startPlayback(fresh, ids, index, positionMs)
+            deviceId = fresh
         }
+        playingDeviceId = deviceId
         started = true
         ended = false
         intendedPlaying = true
@@ -446,6 +450,7 @@ class SpotifyBackend internal constructor(
     /** The device already plays the target near the requested position: take it over as-is. */
     private suspend fun adopt(snapshot: SpotifyPlaybackSnapshot) {
         started = true
+        playingDeviceId = null // already playing: untargeted calls reach the active device
         manualPauseUntilMs = 0L
         playingSeen = true
         startedAtMs = clock()
@@ -895,7 +900,7 @@ class SpotifyBackend internal constructor(
      * the start (throws) because Spotify would otherwise play the run out of order.
      */
     private suspend fun forceShuffleOff() {
-        api.setShuffle(false)
+        api.setShuffle(false, playingDeviceId)
         shuffleChecked = true
     }
 
@@ -916,14 +921,14 @@ class SpotifyBackend internal constructor(
     }
 
     private suspend fun applyRepeat() {
-        api.setRepeat(if (repeatOne) RepeatMode.ONE else RepeatMode.OFF)
+        api.setRepeat(if (repeatOne) RepeatMode.ONE else RepeatMode.OFF, playingDeviceId)
     }
 
     private suspend fun applyVolume() {
         val volume = desiredVolume ?: return
         if (volume == sentVolume) return
         try {
-            api.setVolume(volume)
+            api.setVolume(volume, playingDeviceId)
             sentVolume = volume
         } catch (_: SpotifyCommandException) {
             sentVolume = null

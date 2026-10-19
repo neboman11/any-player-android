@@ -68,9 +68,13 @@ interface SpotifyPlayerApi {
     suspend fun resume()
     suspend fun pause()
     suspend fun seek(positionMs: Long)
-    suspend fun setVolume(percent: Int)
-    suspend fun setShuffle(enabled: Boolean)
-    suspend fun setRepeat(mode: RepeatMode)
+    /**
+     * Device settings. Pass the [deviceId] that was just started: right after `PUT play` Spotify
+     * has no "active" device yet and answers 404 to untargeted calls.
+     */
+    suspend fun setVolume(percent: Int, deviceId: String? = null)
+    suspend fun setShuffle(enabled: Boolean, deviceId: String? = null)
+    suspend fun setRepeat(mode: RepeatMode, deviceId: String? = null)
 }
 
 internal object SpotifyMessages {
@@ -152,20 +156,23 @@ class OkHttpSpotifyPlayerApi internal constructor(
     override suspend fun seek(positionMs: Long) =
         write("seek", "PUT", "me/player/seek", mapOf("position_ms" to positionMs.coerceAtLeast(0).toString()), null)
 
-    override suspend fun setVolume(percent: Int) =
-        write("setVolume", "PUT", "me/player/volume", mapOf("volume_percent" to percent.coerceIn(0, 100).toString()), null)
+    override suspend fun setVolume(percent: Int, deviceId: String?) =
+        write("setVolume", "PUT", "me/player/volume", mapOf("volume_percent" to percent.coerceIn(0, 100).toString()).onDevice(deviceId), null)
 
-    override suspend fun setShuffle(enabled: Boolean) =
-        write("setShuffle", "PUT", "me/player/shuffle", mapOf("state" to enabled.toString()), null)
+    override suspend fun setShuffle(enabled: Boolean, deviceId: String?) =
+        write("setShuffle", "PUT", "me/player/shuffle", mapOf("state" to enabled.toString()).onDevice(deviceId), null)
 
-    override suspend fun setRepeat(mode: RepeatMode) {
+    override suspend fun setRepeat(mode: RepeatMode, deviceId: String?) {
         val state = when (mode) {
             RepeatMode.OFF -> "off"
             RepeatMode.ONE -> "track"
             RepeatMode.ALL -> "context"
         }
-        write("setRepeatMode", "PUT", "me/player/repeat", mapOf("state" to state), null)
+        write("setRepeatMode", "PUT", "me/player/repeat", mapOf("state" to state).onDevice(deviceId), null)
     }
+
+    private fun Map<String, String>.onDevice(deviceId: String?): Map<String, String> =
+        if (deviceId.isNullOrBlank()) this else this + ("device_id" to deviceId)
 
     private suspend fun getJson(path: String, action: String): JsonObject? =
         authorized(action) { token ->

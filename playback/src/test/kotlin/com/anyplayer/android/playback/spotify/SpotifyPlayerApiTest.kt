@@ -100,6 +100,13 @@ class SpotifyPlayerApiTest {
             assertEquals("/v1/me/player/repeat?state=track", server.takeRequest().path)
             api.setRepeat(RepeatMode.OFF)
             assertEquals("/v1/me/player/repeat?state=off", server.takeRequest().path)
+            // Targeted at the just-started device: untargeted calls 404 until Spotify marks it active.
+            server.enqueue(MockResponse().setResponseCode(204))
+            server.enqueue(MockResponse().setResponseCode(204))
+            api.setRepeat(RepeatMode.OFF, "dev1")
+            assertEquals("/v1/me/player/repeat?state=off&device_id=dev1", server.takeRequest().path)
+            api.setVolume(40, "dev1")
+            assertEquals("/v1/me/player/volume?volume_percent=40&device_id=dev1", server.takeRequest().path)
         }
     }
 
