@@ -7,5 +7,5 @@ local.properties
 captures/
 *.log
 
-# Prebuilt native AARs fetched at build time (see downloadSherpaOnnxAar in app/build.gradle.kts)
-app/libs/
+# Prebuilt native AARs fetched at build time (see downloadSherpaOnnxAar in dj/build.gradle.kts)
+dj/libs/

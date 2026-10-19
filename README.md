@@ -1,104 +1,102 @@
 # Any Player Android
 
-Android companion app for **Any Player**, built with Kotlin + Jetpack Compose + Media3.
+Any Player combines Spotify, Jellyfin and Plex in one Android music player. Spotify
+playback controls a Spotify Connect device; Jellyfin and Plex audio streams locally
+through Media3 ExoPlayer. Mixed queues, shuffle/repeat, custom STANDARD/UNION playlists,
+distinct playback, search, sync, state/config import/export, and remote or on-device
+AI DJ breaks share the same playback engine. Background playback exposes notification
+controls and Android Auto media browsing.
 
-This app targets phone/tablet and Android Auto-style media browsing, and includes provider integrations (Spotify/Jellyfin/Plex), local playlist persistence, and background media playback.
+The integrated v2 app uses Kotlin, Jetpack Compose, Media3, Hilt, Room and Coroutines/Flow.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation and compatibility contracts.
 
-## Tech Stack
+## Module layout
 
-- Kotlin + Jetpack Compose
-- Media3 (`ExoPlayer`, `MediaSession`, `MediaLibraryService`)
-- Hilt (DI)
-- Room (local storage)
-- OkHttp
-- Coroutines + Flow
-- Optional Rust FFI shared library (`any_player_ffi_android`)
+| Module | Responsibility |
+|---|---|
+| `:core:model` | Pure Kotlin/JVM models, queue operations, run planning, DJ schedule, dedupe and normalization |
+| `:core:data` | Repository/store contracts and implementations, Room, provider clients, auth, transfer; sync/startup contracts |
+| `:playback` | Playback contract/engine, ExoPlayer and Spotify Connect backends, persistence, media service/session |
+| `:dj` | DJ controller/coordinator, passages, artifact downloads, remote generation and on-device LLM/TTS |
+| `:app` | Application/Activity, Compose screens and ViewModels, sync/startup implementations and cross-module Hilt wiring |
 
-## Project Layout
-
-- `app/` — Android application module
-- `docs/` — acceptance matrix, limitations, blockers, migration notes
+Dependency versions live in `gradle/libs.versions.toml`; Room schemas in `core/data/schemas`.
 
 ## Prerequisites
 
-- Linux/macOS/Windows with:
-  - Android Studio (or command-line Android SDK tools)
-  - Android SDK (API 35)
-  - JDK 21
-- For Rust FFI builds (optional but enabled by default):
-  - Rust toolchain + Cargo
-  - Android NDK installed via SDK Manager
-  - Shared Rust workspace at `../any-player-shared-rust`
+- JDK 21 (the Gradle daemon toolchain is pinned to 21).
+- Android SDK: API 35 platform, build tools 35.0.0 and platform-tools.
+- Android 8.0/API 26 or newer to run the app.
+- Internet access for initial dependency downloads.
 
-## Local Configuration
+**No Rust toolchain, Cargo, Android NDK or sibling Rust checkout is required.** Native
+LLM/TTS runtimes arrive as prebuilt dependencies. `:dj:downloadSherpaOnnxAar` downloads
+the pinned sherpa-onnx AAR into gitignored `dj/libs/` on the first build and verifies its
+SHA-256. DJ models/voices are downloaded separately through the app.
 
-Create/update `local.properties` in the repo root:
+## Local configuration
 
-- `sdk.dir=/path/to/Android/Sdk` (required)
-- `ndk.dir=/path/to/Android/Sdk/ndk/<version>` (recommended for deterministic Rust cross-compile)
-- `spotifyClientId=<your_spotify_client_id>` (optional at build time; needed for Spotify auth flow)
+Create `local.properties` at the repository root (do not commit it):
 
-You can also pass `spotifyClientId` as a Gradle property:
-
-- `-PspotifyClientId=...`
-
-## Build
-
-### Option A: Android-only build (skip Rust FFI)
-
-Use this if you do not have the sibling Rust workspace available.
-
-```bash
-./gradlew :app:assembleDebug -PskipRustFfiBuild=true
+```properties
+sdk.dir=/path/to/Android/Sdk
+spotifyClientId=your_spotify_client_id
 ```
 
-### Option B: Full build with Rust FFI
+`spotifyClientId` is optional for compilation but required for Spotify sign-in. A Gradle
+property overrides it: `-PspotifyClientId=...`. Register the Spotify redirect URI
+`anyplayer://spotify-callback` for your client. Spotify playback requires a suitable
+Spotify Connect device/account; the app does not decode Spotify audio locally.
 
-This is the default path and expects `../any-player-shared-rust`.
+## Build and run
 
 ```bash
 ./gradlew :app:assembleDebug
+./gradlew :app:installDebug
+adb shell am start -n com.anyplayer.android/.MainActivity
 ```
 
-## Install / Run
+Select the intended target with `ANDROID_SERIAL` when multiple devices are attached
+(and use `adb -s <serial>` for direct adb commands).
+
+APK: `app/build/outputs/apk/debug/app-debug.apk`. Debug builds bundle **arm64-v8a +
+x86_64** only (64-bit phones and emulators); release builds retain the dependency ABIs.
+
+## Tests and lint
+
+All module unit tests (no device needed):
 
 ```bash
-./gradlew :app:installDebug -PskipRustFfiBuild=true
+./gradlew :core:model:test :core:data:testDebugUnitTest :playback:testDebugUnitTest :dj:testDebugUnitTest :app:testDebugUnitTest
+./gradlew --console=plain -q :app:lintDebug
 ```
 
-Or run from Android Studio using the `app` configuration.
-
-## Testing
-
-Unit tests:
+Instrumented Room migration/repository tests (selected device/emulator required):
 
 ```bash
-./gradlew :app:testDebugUnitTest -PskipRustFfiBuild=true
+./gradlew :core:data:connectedDebugAndroidTest
 ```
 
-Instrumented tests (device/emulator required):
+CI runs all five unit-test tasks, assembles debug, uploads the APK, and runs app lint.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for layering, threading and review conventions.
 
-```bash
-./gradlew :app:connectedDebugAndroidTest -PskipRustFfiBuild=true
-```
+## Android Auto
 
-## Android Auto / Media Service Notes
+The Media3 library service retains its legacy fully qualified name:
+`com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService`.
+Browse root id is `root`; its playable children are the current queue in play order,
+identified by queue-entry uid. It is not a provider/library catalog tree. Validate
+projection behavior with Android Auto Desktop Head Unit (DHU) or compatible hardware;
+Spotify-only playback also keeps the media playback foreground service alive.
 
-- Media browsing is exposed via `AnyPlayerMediaLibraryService` in the app manifest.
-- Service access control is enforced at runtime in `AnyPlayerMediaLibraryService` via trusted-controller validation (`onConnect` / `onGetSession`).
-- Trusted controllers include the app itself, system UID/system apps, and package allowlist entries in `TRUSTED_CONTROLLER_PACKAGES`.
-- If a specific head unit host cannot connect, add its package name to `TRUSTED_CONTROLLER_PACKAGES` in `app/src/main/java/com/anyplayer/android/playback/AnyPlayerMediaLibraryService.kt`.
-- OAuth deep-link callback for Spotify uses: `anyplayer://spotify-callback`.
+## Existing installs
 
-## Useful Docs
+V2 upgrades in place (`com.anyplayer.android`, versionCode 2), preserving playlists,
+provider credentials, sync settings, DJ files and export formats. Room migrates
+`any_player.db` from v1/v2 to v3 without destructive fallback; the encrypted legacy
+queue is migrated once into Room plus plain non-secret playback settings. Restored
+playback is paused and does not take over a Spotify device until Play.
 
-- `docs/android-acceptance-matrix.md`
-- `docs/android-known-limitations.md`
-- `docs/android-release-blockers.md`
-
-## Troubleshooting
-
-- **Missing SDK/NDK errors**: verify `sdk.dir` and `ndk.dir` in `local.properties`.
-- **Rust build failures**: confirm `../any-player-shared-rust` exists, Cargo is installed, and NDK toolchains are available.
-- **Spotify login not working**: ensure `spotifyClientId` is set and redirect URI config matches `anyplayer://spotify-callback`.
-- **Android Auto discovery issues**: confirm the app is installed with the latest manifest/service changes and test via DHU or compatible head unit.
+Install with the same signing key as the existing app. Do not uninstall or clear app
+data to upgrade: those actions remove local data. A signature mismatch requires the
+original signing key, not a database reset.

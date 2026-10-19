@@ -2,17 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.type.automotive"
         android:required="false" />
 
-    <!-- Package visibility (Android 11+): needed so getLaunchIntentForPackage
-         can find Spotify to auto-launch it when no Connect device is active,
-         and so the ACTION_VIEW market:// fallback can resolve the Play Store. -->
+    <!-- Package visibility (Android 11+): lets getLaunchIntentForPackage find Spotify to
+         auto-launch it when no Connect device is active, and the market:// fallback resolve. -->
     <queries>
         <package android:name="com.spotify.music" />
         <intent>
@@ -55,8 +52,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Declared here (not in :playback) so the Android Auto lint checks, which only read the
+             app manifest next to the car meta-data, see the browser service and voice-search filter.
+             FQN kept from the legacy app: Android Auto / controllers bind to it by name. -->
         <service
-            android:name=".feature.playback.service.AnyPlayerMediaLibraryService"
+            android:name="com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>

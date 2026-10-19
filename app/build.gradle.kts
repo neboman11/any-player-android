@@ -1,100 +1,23 @@
-import org.gradle.api.GradleException
-import org.gradle.api.tasks.Copy
-import org.gradle.api.tasks.Exec
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
-import java.net.URI
-import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("com.google.dagger.hilt.android")
-    id("com.google.devtools.ksp")
-id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.plugin.serialization")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.kotlin.compose)
 }
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) {
-        file.inputStream().use { stream ->
-            load(stream)
-        }
+        file.inputStream().use { load(it) }
     }
 }
 val spotifyClientId = (
     (project.findProperty("spotifyClientId") as String?)?.trim()
         ?: localProperties.getProperty("spotifyClientId")?.trim()
 ).orEmpty()
-val sherpaOnnxVersion = "1.13.7"
-val sherpaOnnxAarSha256 = "c4ef49e309f24fcee5c106b8a279481aaecaabb078cd37b2cd6e9a62cc8a73c8"
-val sherpaOnnxAarUrl =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
-val sherpaOnnxAarFile = project.file("libs/sherpa-onnx-$sherpaOnnxVersion.aar")
 
-val rustSharedWorkspaceDir = rootProject.file("../any-player-shared-rust")
-val rustFfiArm64Target = "aarch64-linux-android"
-val rustFfiX8664Target = "x86_64-linux-android"
-val rustFfiArmv7Target = "armv7-linux-androideabi"
-val rustFfiX86Target = "i686-linux-android"
-val rustFfiCrate = "any_player_ffi_android"
-val rustFfiSoName = "libany_player_ffi_android.so"
-val rustFfiArm64OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiArm64Target/release/$rustFfiSoName")
-val rustFfiX8664OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiX8664Target/release/$rustFfiSoName")
-val rustFfiArmv7OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiArmv7Target/release/$rustFfiSoName")
-val rustFfiX86OutputSo = rustSharedWorkspaceDir.resolve("target/$rustFfiX86Target/release/$rustFfiSoName")
-val rustFfiJniRootDir = layout.buildDirectory.dir("generated/rustJniLibs").get().asFile
-val rustFfiArm64JniDir = rustFfiJniRootDir.resolve("arm64-v8a")
-val rustFfiX8664JniDir = rustFfiJniRootDir.resolve("x86_64")
-val rustFfiArmv7JniDir = rustFfiJniRootDir.resolve("armeabi-v7a")
-val rustFfiX86JniDir = rustFfiJniRootDir.resolve("x86")
-val skipRustFfiBuild =
-    ((project.findProperty("skipRustFfiBuild") as String?)?.toBooleanStrictOrNull()) ?: false
-
-// Dedicated configuration for Robolectric SDK JARs — kept separate from testImplementation so
-// Gradle resolves and caches the file, which we then copy to a known directory for offline use.
-val robolectricSdk: Configuration by configurations.creating {
-    isTransitive = false
-}
-val robolectricSdkDir = layout.buildDirectory.dir("robolectric-sdk").get().asFile
-val copyRobolectricSdk = tasks.register<Copy>("copyRobolectricSdk") {
-    from(robolectricSdk)
-    into(robolectricSdkDir)
-    doFirst { robolectricSdkDir.mkdirs() }
-}
-
-fun resolveNdkDir(): java.io.File {
-    val explicitNdkDir = (project.findProperty("androidNdkDir") as String?)
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?: localProperties.getProperty("ndk.dir")
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-    if (explicitNdkDir != null) {
-        val ndkDir = file(explicitNdkDir)
-        if (!ndkDir.exists()) {
-            throw GradleException("Configured Android NDK directory does not exist: $explicitNdkDir")
-        }
-        return ndkDir
-    }
-
-    val sdkDir = localProperties.getProperty("sdk.dir")
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?: throw GradleException(
-            "Missing sdk.dir in local.properties; required for Rust arm64 build."
-        )
-    val ndkRoot = file("$sdkDir/ndk")
-    val ndkDir = ndkRoot
-        .listFiles()
-        ?.filter { it.isDirectory }
-        ?.sortedByDescending { it.name }
-        ?.firstOrNull()
-        ?: throw GradleException("No Android NDK installation found under ${ndkRoot.absolutePath}")
-    return ndkDir
-}
-
-@Suppress("DEPRECATION")
 android {
     namespace = "com.anyplayer.android"
     compileSdk = 35
@@ -103,31 +26,21 @@ android {
         applicationId = "com.anyplayer.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
 
-        testInstrumentationRunner = "com.anyplayer.android.HiltTestRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"$spotifyClientId\"")
-        ndk {
-            abiFilters += "arm64-v8a"
-            abiFilters += "x86_64"
-            abiFilters += "armeabi-v7a"
-            abiFilters += "x86"
-        }
-    }
-
-    sourceSets {
-        getByName("main").jniLibs.directories.add(rustFfiJniRootDir.path)
     }
 
     buildTypes {
+        debug {
+            // Phones (arm64) and emulators (x86_64) only: halves the debug APK, which bundles the
+            // native LLM/TTS runtimes. Release builds keep every ABI.
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        }
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
 
@@ -146,319 +59,45 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/DEPENDENCIES"
-            excludes += "log4j2.xml"
-            excludes += "log4j.properties"
             pickFirsts += "**/*.proto"
         }
-    }
-
-    testOptions {
-        unitTests.all { test ->
-            test.dependsOn(copyRobolectricSdk)
-            test.systemProperty("robolectric.offline", "true")
-            test.systemProperty("robolectric.dependency.dir", robolectricSdkDir.absolutePath)
-        }
-    }
-}
-
-tasks.withType<KotlinCompilationTask<*>>().configureEach {
-    compilerOptions {
-        freeCompilerArgs.add("-opt-in=kotlin.ExperimentalStdlibApi")
     }
 }
 
 dependencies {
-    val hiltVersion = "2.60.1"
-    val roomVersion = "2.8.4"
-    val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
-    implementation(composeBom)
-    androidTestImplementation(composeBom)
+    implementation(project(":core:model"))
+    implementation(project(":core:data"))
+    implementation(project(":playback"))
+    implementation(project(":dj"))
 
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.core:core-splashscreen:1.2.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.10.0")
-    implementation("com.google.android.material:material:1.14.0")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("io.coil-kt:coil-compose:2.7.0")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    implementation(platform(libs.compose.bom))
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.google.material)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.hilt.navigation.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.coil.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.compose.material.icons.extended)
+    debugImplementation(libs.compose.ui.tooling)
 
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-session:1.5.1")
-    implementation("androidx.media3:media3-ui:1.5.1")
-    implementation("androidx.media3:media3-datasource:1.5.1")
-    implementation("androidx.media3:media3-database:1.5.1")
-    implementation("androidx.media:media:1.8.0")
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
 
-    // On-device LLM inference for the AI DJ feature (feature/djfiller): MediaPipe runs
-    // `.task` models, LiteRT-LM runs `.litertlm` ones (e.g. Gemma 4).
-    implementation("com.google.mediapipe:tasks-genai:0.10.24")
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.lifecycle.process)
 
-    // On-device neural TTS for the AI DJ feature - offline Piper/VITS voice synthesis
-    // via sherpa-onnx (see downloadSherpaOnnxAar below; no Maven Central artifact exists,
-    // k2-fsa publish a prebuilt AAR with all four ABIs' native libs as a GitHub release asset).
-    implementation(files("$projectDir/libs/sherpa-onnx-$sherpaOnnxVersion.aar"))
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 
-    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
-    implementation("com.google.dagger:hilt-android:$hiltVersion")
-    ksp("com.google.dagger:hilt-compiler:$hiltVersion")
-
-    implementation("androidx.room:room-runtime:$roomVersion")
-    implementation("androidx.room:room-ktx:$roomVersion")
-    ksp("androidx.room:room-compiler:$roomVersion")
-
-    implementation("androidx.security:security-crypto:1.1.0")
-
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("androidx.room:room-testing:$roomVersion")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
-    testImplementation("org.mockito:mockito-inline:5.2.0")
-    testImplementation("org.robolectric:robolectric:4.12.1")
-    // Lets Media3PlaybackControllerTest construct a real (Robolectric-shadowed)
-    // ExoPlayer in a plain JVM test - no device audio/codec hardware needed.
-    testImplementation("androidx.media3:media3-test-utils:1.5.1")
-    testImplementation("androidx.media3:media3-test-utils-robolectric:1.5.1")
-    // Robolectric 4.12.1 pre-instrumented SDK JAR (API 34, PREINSTRUMENTED_VERSION=6).
-    // Downloaded by Gradle and copied via copyRobolectricSdk into the build directory so that
-    // robolectric.dependency.dir can point to it for fully offline test execution.
-    robolectricSdk("org.robolectric:android-all-instrumented:14-robolectric-10818077-i6")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test:rules:1.6.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    androidTestImplementation("com.google.dagger:hilt-android-testing:$hiltVersion")
-    kspAndroidTest("com.google.dagger:hilt-compiler:$hiltVersion")
-}
-
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
-    arg("room.incremental", "true")
-}
-
-// sherpa-onnx has no Maven Central artifact; k2-fsa publish a prebuilt AAR (bundling the
-// compiled Kotlin API classes plus native .so libs for all four Android ABIs) as a GitHub
-// release asset. Fetched once and cached in libs/ (gitignored) rather than committed.
-val downloadSherpaOnnxAar = tasks.register("downloadSherpaOnnxAar") {
-    // Gradle's UP-TO-DATE check only looks at inputs/outputs, not doLast's body - without
-    // these, editing the pinned URL/hash below is silently ignored once the AAR already
-    // exists on disk from a prior build, skipping the SHA-256 check entirely.
-    inputs.property("sherpaOnnxAarUrl", sherpaOnnxAarUrl)
-    inputs.property("sherpaOnnxAarSha256", sherpaOnnxAarSha256)
-    outputs.file(sherpaOnnxAarFile)
-    doLast {
-        if (!sherpaOnnxAarFile.exists() || sherpaOnnxAarFile.length() == 0L) {
-            sherpaOnnxAarFile.parentFile.mkdirs()
-            logger.lifecycle("Downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
-            URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
-                sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
-            }
-        }
-
-        val actualSha256 = MessageDigest.getInstance("SHA-256")
-            .digest(sherpaOnnxAarFile.readBytes())
-            .joinToString("") { "%02x".format(it) }
-        if (actualSha256 != sherpaOnnxAarSha256) {
-            logger.warn("Corrupt sherpa-onnx AAR detected at ${sherpaOnnxAarFile.absolutePath}; deleting and re-downloading")
-            sherpaOnnxAarFile.delete()
-            sherpaOnnxAarFile.parentFile.mkdirs()
-            logger.lifecycle("Re-downloading sherpa-onnx AAR from $sherpaOnnxAarUrl")
-            URI(sherpaOnnxAarUrl).toURL().openStream().use { input ->
-                sherpaOnnxAarFile.outputStream().use { output -> input.copyTo(output) }
-            }
-            val recheckedSha256 = MessageDigest.getInstance("SHA-256")
-                .digest(sherpaOnnxAarFile.readBytes())
-                .joinToString("") { "%02x".format(it) }
-            if (recheckedSha256 != sherpaOnnxAarSha256) {
-                throw GradleException(
-                    "Downloaded sherpa-onnx AAR SHA-256 mismatch after re-download: expected $sherpaOnnxAarSha256 but got $recheckedSha256"
-                )
-            }
-        }
-    }
-}
-tasks.named("preBuild").configure {
-    dependsOn(downloadSherpaOnnxAar)
-}
-
-if (!skipRustFfiBuild) {
-    val buildRustFfiArm64 = tasks.register("buildRustFfiArm64", Exec::class.java) {
-        group = "build"
-        description = "Builds Rust any_player_ffi_android for arm64-v8a"
-        workingDir = rustSharedWorkspaceDir
-        commandLine("cargo", "build", "-p", rustFfiCrate, "--target", rustFfiArm64Target, "--release")
-        doFirst {
-            val ndkDir = resolveNdkDir()
-            val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("aarch64-linux-android26-clang")
-            val ar = toolchainBin.resolve("llvm-ar")
-            if (!rustSharedWorkspaceDir.exists()) {
-                throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
-            }
-            if (!linker.exists()) {
-                throw GradleException("Missing NDK linker: ${linker.absolutePath}")
-            }
-            if (!ar.exists()) {
-                throw GradleException("Missing NDK llvm-ar: ${ar.absolutePath}")
-            }
-            rustFfiArm64JniDir.mkdirs()
-            environment("CC_aarch64_linux_android", linker.absolutePath)
-            environment("AR_aarch64_linux_android", ar.absolutePath)
-            environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", linker.absolutePath)
-        }
-    }
-
-    val syncRustFfiArm64 = tasks.register("syncRustFfiArm64", Copy::class.java) {
-        group = "build"
-        description = "Copies Rust arm64-v8a FFI library into app jniLibs"
-        dependsOn(buildRustFfiArm64)
-        from(rustFfiArm64OutputSo)
-        into(rustFfiArm64JniDir)
-        doFirst {
-            if (!rustFfiArm64OutputSo.exists()) {
-                throw GradleException("Rust FFI output missing: ${rustFfiArm64OutputSo.absolutePath}")
-            }
-        }
-    }
-
-    val buildRustFfiX8664 = tasks.register("buildRustFfiX8664", Exec::class.java) {
-        group = "build"
-        description = "Builds Rust any_player_ffi_android for x86_64 emulator ABI"
-        workingDir = rustSharedWorkspaceDir
-        commandLine("cargo", "build", "-p", rustFfiCrate, "--target", rustFfiX8664Target, "--release")
-        doFirst {
-            val ndkDir = resolveNdkDir()
-            val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("x86_64-linux-android26-clang")
-            val ar = toolchainBin.resolve("llvm-ar")
-            if (!rustSharedWorkspaceDir.exists()) {
-                throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
-            }
-            if (!linker.exists()) {
-                throw GradleException("Missing NDK linker: ${linker.absolutePath}")
-            }
-            if (!ar.exists()) {
-                throw GradleException("Missing NDK llvm-ar: ${ar.absolutePath}")
-            }
-            rustFfiX8664JniDir.mkdirs()
-            environment("CC_x86_64_linux_android", linker.absolutePath)
-            environment("AR_x86_64_linux_android", ar.absolutePath)
-            environment("CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER", linker.absolutePath)
-        }
-    }
-
-    val syncRustFfiX8664 = tasks.register("syncRustFfiX8664", Copy::class.java) {
-        group = "build"
-        description = "Copies Rust x86_64 FFI library into app jniLibs"
-        dependsOn(buildRustFfiX8664)
-        from(rustFfiX8664OutputSo)
-        into(rustFfiX8664JniDir)
-        doFirst {
-            if (!rustFfiX8664OutputSo.exists()) {
-                throw GradleException("Rust FFI output missing: ${rustFfiX8664OutputSo.absolutePath}")
-            }
-        }
-    }
-
-    val buildRustFfiArmv7 = tasks.register("buildRustFfiArmv7", Exec::class.java) {
-        group = "build"
-        description = "Builds Rust any_player_ffi_android for armeabi-v7a"
-        workingDir = rustSharedWorkspaceDir
-        commandLine("cargo", "build", "-p", rustFfiCrate, "--target", rustFfiArmv7Target, "--release")
-        doFirst {
-            val ndkDir = resolveNdkDir()
-            val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("armv7a-linux-androideabi26-clang")
-            val ar = toolchainBin.resolve("llvm-ar")
-            if (!rustSharedWorkspaceDir.exists()) {
-                throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
-            }
-            if (!linker.exists()) {
-                throw GradleException("Missing NDK linker: ${linker.absolutePath}")
-            }
-            if (!ar.exists()) {
-                throw GradleException("Missing NDK llvm-ar: ${ar.absolutePath}")
-            }
-            rustFfiArmv7JniDir.mkdirs()
-            environment("CC_armv7_linux_androideabi", linker.absolutePath)
-            environment("AR_armv7_linux_androideabi", ar.absolutePath)
-            environment("CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER", linker.absolutePath)
-        }
-    }
-
-    val syncRustFfiArmv7 = tasks.register("syncRustFfiArmv7", Copy::class.java) {
-        group = "build"
-        description = "Copies Rust armeabi-v7a FFI library into app jniLibs"
-        dependsOn(buildRustFfiArmv7)
-        from(rustFfiArmv7OutputSo)
-        into(rustFfiArmv7JniDir)
-        doFirst {
-            if (!rustFfiArmv7OutputSo.exists()) {
-                throw GradleException("Rust FFI output missing: ${rustFfiArmv7OutputSo.absolutePath}")
-            }
-        }
-    }
-
-    val buildRustFfiX86 = tasks.register("buildRustFfiX86", Exec::class.java) {
-        group = "build"
-        description = "Builds Rust any_player_ffi_android for x86 ABI"
-        workingDir = rustSharedWorkspaceDir
-        commandLine("cargo", "build", "-p", rustFfiCrate, "--target", rustFfiX86Target, "--release")
-        doFirst {
-            val ndkDir = resolveNdkDir()
-            val toolchainBin = ndkDir.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
-            val linker = toolchainBin.resolve("i686-linux-android26-clang")
-            val ar = toolchainBin.resolve("llvm-ar")
-            if (!rustSharedWorkspaceDir.exists()) {
-                throw GradleException("Rust shared workspace not found: ${rustSharedWorkspaceDir.absolutePath}")
-            }
-            if (!linker.exists()) {
-                throw GradleException("Missing NDK linker: ${linker.absolutePath}")
-            }
-            if (!ar.exists()) {
-                throw GradleException("Missing NDK llvm-ar: ${ar.absolutePath}")
-            }
-            rustFfiX86JniDir.mkdirs()
-            environment("CC_i686_linux_android", linker.absolutePath)
-            environment("AR_i686_linux_android", ar.absolutePath)
-            environment("CARGO_TARGET_I686_LINUX_ANDROID_LINKER", linker.absolutePath)
-        }
-    }
-
-    val syncRustFfiX86 = tasks.register("syncRustFfiX86", Copy::class.java) {
-        group = "build"
-        description = "Copies Rust x86 FFI library into app jniLibs"
-        dependsOn(buildRustFfiX86)
-        from(rustFfiX86OutputSo)
-        into(rustFfiX86JniDir)
-        doFirst {
-            if (!rustFfiX86OutputSo.exists()) {
-                throw GradleException("Rust FFI output missing: ${rustFfiX86OutputSo.absolutePath}")
-            }
-        }
-    }
-
-    tasks.named("preBuild").configure {
-        dependsOn(syncRustFfiArm64)
-        dependsOn(syncRustFfiX8664)
-        dependsOn(syncRustFfiArmv7)
-        dependsOn(syncRustFfiX86)
-    }
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 }
