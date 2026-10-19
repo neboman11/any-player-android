@@ -483,6 +483,21 @@ class SpotifyBackendTest {
     }
 
     @Test
+    fun lateEndCheck_afterSpotifyAlreadyStopped_endsRunWithout403Error() = runTest {
+        val e = env()
+        val a = e.entry(1, durationMs = 10_000)
+        e.backend.load(1, run(a), 0, 0, playWhenReady = true)
+        advance(9_500)
+        // The track finished just before the end check: Spotify has no active playback (GET 204)
+        // and rejects the boundary pause with 403.
+        e.api.available = false
+        e.api.failures["pause"] = 1
+        advance(500)
+        assertEquals(emptyList<String>(), e.errors())
+        assertTrue(e.runEnded())
+    }
+
+    @Test
     fun frozenRawProgress_nearEndOfMidRunItemStillRecovers() = runTest {
         val e = env()
         val a = e.entry(1, durationMs = 60_000)

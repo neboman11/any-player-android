@@ -691,10 +691,19 @@ class SpotifyBackend internal constructor(
         if (!playingSeen) return
         try {
             api.pause()
-            endRun()
         } catch (e: SpotifyCommandException) {
-            fail(e, "Spotify failed to pause")
+            // A late end check can find the track already finished: Spotify then has no active
+            // playback (or is paused) and rejects the pause with 403/404. Only a device that is
+            // still playing this item means the boundary really failed.
+            val snapshot = if (e.httpStatus != null) pollState() else null
+            val stillPlayingHere = e.httpStatus == null ||
+                (snapshot != null && snapshot.isPlaying && indexOf(snapshot, currentIndex) == currentIndex)
+            if (stillPlayingHere) {
+                fail(e, "Spotify failed to pause")
+                return
+            }
         }
+        endRun()
     }
 
     /** Spotify stopped at the end of a mid-run item: continue with the next one. */
