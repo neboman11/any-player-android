@@ -471,15 +471,36 @@ class SpotifyBackendTest {
     }
 
     @Test
-    fun boundaryPauseFailure_reportsErrorInsteadOfClaimingRunEnded() = runTest {
+    fun boundaryPauseFailure_whileSpotifyPlaysOn_reportsErrorInsteadOfClaimingRunEnded() = runTest {
         val e = env()
-        val a = e.entry(1, durationMs = 10_000)
-        e.backend.load(1, run(a), 0, 0, playWhenReady = true)
-        advance(4_100)
-        e.api.failures["pause"] = 1
-        advance(5_700)
-        assertFalse(e.runEnded())
+        val a = e.entry(1, durationMs = 20_000)
+        val b = e.entry(2, durationMs = 20_000)
+        e.backend.load(1, run(a, b), 0, 0, playWhenReady = true)
+        advance(3_000)
+        e.backend.updateUpcoming(1, run(a), ItemKey.Song(1)) // a DJ break now comes after a
+        e.api.failures["pause"] = 2
+        advance(18_500) // past the end of a: Spotify moved on into b and both pauses failed
+        // The failure is reported; the next poll past the stop point pauses Spotify and only then
+        // hands over (never while it was still playing b).
         assertEquals(listOf("Spotify command failed: pause"), e.errors())
+        assertEquals(3, e.api.calls.count { it == "pause" })
+    }
+
+    @Test
+    fun boundaryPauseRejectedAtTrackEnd_beforeDjBreak_isNotAnError() = runTest {
+        val e = env()
+        val a = e.entry(1, durationMs = 20_000)
+        val b = e.entry(2, durationMs = 20_000)
+        e.backend.load(1, run(a, b), 0, 0, playWhenReady = true)
+        advance(3_000)
+        e.backend.updateUpcoming(1, run(a), ItemKey.Song(1)) // a DJ break now comes after a
+        // Spotify answers the end-of-song pause with 403 while a is still finishing, then stops.
+        e.api.failures["pause"] = 1
+        advance(16_700) // t = 19.7 s: end-of-item pause rejected
+        e.api.setPlaying(listOf(id(1), id(2)), 0, 20_000, isPlaying = false)
+        advance(1_500)
+        assertEquals(emptyList<String>(), e.errors())
+        assertTrue(e.runEnded())
     }
 
     @Test
@@ -492,7 +513,7 @@ class SpotifyBackendTest {
         // and rejects the boundary pause with 403.
         e.api.available = false
         e.api.failures["pause"] = 1
-        advance(500)
+        advance(1_500)
         assertEquals(emptyList<String>(), e.errors())
         assertTrue(e.runEnded())
     }

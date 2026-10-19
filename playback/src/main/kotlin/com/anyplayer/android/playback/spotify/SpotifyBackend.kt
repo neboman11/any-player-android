@@ -298,7 +298,8 @@ class SpotifyBackend internal constructor(
         } catch (e: SpotifyCommandException) {
             // Spotify rejects pausing playback that is already paused (403 "Restriction violated"),
             // e.g. after the user paused in the Spotify app; only a still-playing device is a failure.
-            if (e.httpStatus == null || pollState()?.isPlaying != false) {
+            // A 204 (no active playback) counts as "not playing" too.
+            if (e.httpStatus == null || pollState()?.isPlaying == true) {
                 manualPauseUntilMs = 0L
                 fail(e, "Spotify failed to pause")
                 armEndTimer()
@@ -686,24 +687,40 @@ class SpotifyBackend internal constructor(
         emit(BackendEvent.RunEnded(loadId))
     }
 
-    /** Do not hand audio to another backend unless Spotify actually accepted the pause. */
+    /** Do not hand audio to another backend unless Spotify actually stopped this item. */
     private suspend fun finishAtBoundary() {
         if (!playingSeen) return
+        val rejection = pauseAtBoundary() ?: return endRun()
+        // At the very end of a track Spotify rejects the pause (403/404) while the context ends,
+        // and GET me/player can still report the old track for a moment. Let the end pass, then
+        // look again and retry once before calling it a failure.
+        if (rejection.httpStatus == null) return fail(rejection, "Spotify failed to pause")
+        delay(BOUNDARY_RETRY_DELAY_MS)
+        if (!spotifyStillAudible()) return endRun()
+        val retry = pauseAtBoundary() ?: return endRun()
+        if (retry.httpStatus != null && !spotifyStillAudible()) return endRun()
+        fail(retry, "Spotify failed to pause")
+    }
+
+    /** Null when Spotify accepted the pause. */
+    private suspend fun pauseAtBoundary(): SpotifyCommandException? =
         try {
             api.pause()
+            null
         } catch (e: SpotifyCommandException) {
-            // A late end check can find the track already finished: Spotify then has no active
-            // playback (or is paused) and rejects the pause with 403/404. Only a device that is
-            // still playing this item means the boundary really failed.
-            val snapshot = if (e.httpStatus != null) pollState() else null
-            val stillPlayingHere = e.httpStatus == null ||
-                (snapshot != null && snapshot.isPlaying && indexOf(snapshot, currentIndex) == currentIndex)
-            if (stillPlayingHere) {
-                fail(e, "Spotify failed to pause")
-                return
-            }
+            e
         }
-        endRun()
+
+    /**
+     * Whether Spotify would keep playing over the next backend: anything audible except the last
+     * moments of the current item (Spotify moving on to a later uri or autoplay counts as audible).
+     */
+    private suspend fun spotifyStillAudible(): Boolean {
+        val snapshot = pollState() ?: return false
+        if (!snapshot.isPlaying) return false
+        if (indexOf(snapshot, currentIndex) != currentIndex) return true
+        val duration = durationFor(snapshot, currentIndex)
+        return duration <= 0 || snapshot.progressMs < duration - END_LEAD_MS
     }
 
     /** Spotify stopped at the end of a mid-run item: continue with the next one. */
@@ -972,6 +989,7 @@ class SpotifyBackend internal constructor(
         const val RECOVERY_FIRST_COOLDOWN_MS = 2_500L
         const val RECOVERY_COOLDOWN_MS = 4_000L
         const val RELOAD_DEBOUNCE_MS = 300L
+        const val BOUNDARY_RETRY_DELAY_MS = 1_000L
         const val VOLUME_DEBOUNCE_MS = 300L
         const val REASON_SNAPSHOT_LOST = "Spotify snapshot unavailable after interruption"
         const val REASON_STALLED = "Spotify playback stalled while reporting playing"
