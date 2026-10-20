@@ -30,7 +30,9 @@ runs:
         packages: 'platform-tools'
 
     - name: Install Android SDK packages
-      shell: bash
+      # Composite `bash` adds pipefail; `yes` dies of SIGPIPE once sdkmanager exits, so match the
+      # workflow default (`bash -e`) the step ran under before it moved here.
+      shell: bash --noprofile --norc -e {0}
       run: |
         SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
         if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
