@@ -221,6 +221,13 @@ commit together. Observing UI data never initiates a provider fetch.
   position) coalesce with a 2 s minimum interval. There are **no periodic position pushes**.
 - Startup pull applies playback only if local playback did not change during fetch.
   Applied snapshot versions always advance. Playlist overwrite requires confirmation.
+- App-state merge base: the queue-content signature (current track, queue, shuffle, repeat)
+  last pushed to or applied from the target is persisted (`sync_app_state_base`). Startup
+  and realtime pulls push local state instead of applying when the server still holds that
+  base but local content differs (playback moved on while the server was unreachable or
+  before sync started, e.g. Android Auto). The startup pull never replaces playback that is
+  already playing. Content another client changed still applies; explicit pulls and conflict
+  resolution always apply the server.
 - WebSocket reconnect backs off 1–60 s with jitter and network availability gating.
   App-state events first fetch `/v1/state/app-state`, with snapshot fallback. Other
   namespace events never apply snapshot playback and skip unconfirmed playlist overwrites.
@@ -551,7 +558,8 @@ DjController lazily through DefaultAppStartup after the visibility/playback gate
   never redirects automatic pushes or realtime; they retain the last start/Connect account.
 - Push only after a non-empty queue has been observed post-restore; never push SYNC/RESTORE-origin
   changes; keep the 3.5 s post-apply suppression as a backstop; keep "apply startup pull only if
-  local playback didn't change during the fetch".
+  local playback didn't change during the fetch"; never rewind local content to a server copy
+  that still equals the persisted merge base.
 - Push on discrete events only (track/content/state/shuffle/repeat/volume change, pause and seek
   with exact position) — never periodically. WS events fetch `GET /v1/state/app-state` when only
   `app_state` changed, falling back to `/v1/snapshot?since_version`.

@@ -45,12 +45,14 @@ class DefaultSyncEngineTest {
         val config = FakeConfig()
         val network = MutableStateFlow(online)
         val backoffs = mutableListOf<Long>()
+        val base = FakeAppStateBase()
         val importStatus = SyncImportStatus()
         val imports = SyncImports(config, com.anyplayer.android.ui.settings.FakeConnections(),
             com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
         val sync = DefaultSyncEngine(engine, settings, playerSettings, playlistSource ?: playlists, config, SyncClient(http),
             object : SyncNetwork { override val available = network }, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler),
-            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports)
+            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base)
+        val target = server.url("/").toString().trimEnd('/')
         suspend fun start() {
             server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
             sync.start()
@@ -312,6 +314,78 @@ class DefaultSyncEngineTest {
         f.sync.state.first { it.status == "Sync pull complete." }
         assertEquals(secondSong, f.engine.queue.value.current?.track)
         assertEquals(9L, f.sync.lastSyncVersion)
+    }
+
+    private fun remote(state: JsonObject, version: Long = 9) = MockResponse().setBody(buildJsonObject { put("version", version); put("app_state", state) }.toString())
+    private fun pushedCurrentId(push: okhttp3.mockwebserver.RecordedRequest) =
+        json(push.body.readUtf8())["data"]!!.jsonObject["current_track"]!!.jsonObject.string("id")
+
+    @Test fun `startup pushes playback changed since the last sync instead of rewinding to the unchanged server copy`() = runTest {
+        val f = Fixture(this)
+        // The server still holds what this device last pushed; playback moved on while it was unreachable.
+        f.base.values.value = mapOf(f.target to appStateSignature(song, listOf(song), true, "all"))
+        f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
+        server.enqueue(remote(appState()))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals(secondSong, f.engine.queue.value.current?.track)
+        assertEquals("/v1/snapshot", request().path)
+        val push = request()
+        assertEquals("/v1/state/app-state", push.path)
+        assertEquals("two", pushedCurrentId(push))
+    }
+
+    @Test fun `startup applies server state another client changed even when local playback changed too`() = runTest {
+        val f = Fixture(this)
+        f.base.values.value = mapOf(f.target to appStateSignature(secondSong, listOf(secondSong), false, "off"))
+        f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
+        server.enqueue(remote(appState()))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals(song, f.engine.queue.value.current?.track)
+        assertEquals(appStateSignature(song, listOf(song), true, "all"), f.base.values.value[f.target])
+    }
+
+    @Test fun `startup never replaces playback already running locally`() = runTest {
+        val f = Fixture(this)
+        f.engine.setQueue(listOf(secondSong), origin = ChangeOrigin.RESTORE)
+        f.engine.player.value = f.engine.player.value.copy(status = PlaybackStateType.PLAYING, playRequested = true)
+        server.enqueue(remote(appState()))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals(secondSong, f.engine.queue.value.current?.track)
+        assertFalse("pause" in f.engine.calls)
+        request()
+        assertEquals("two", pushedCurrentId(request()))
+    }
+
+    @Test fun `realtime republish of the last synced state answers with unpushed local playback`() = runTest {
+        val f = Fixture(this); f.start(); request(); runCurrent()
+        server.enqueue(MockResponse().setBody("{}"))
+        f.engine.setQueue(listOf(song)); runCurrent()
+        request()
+        f.base.values.first { it[f.target] != null }
+        advanceTimeBy(2_001); runCurrent()
+        // Server unreachable: the next change is not stored remotely.
+        server.enqueue(MockResponse().setResponseCode(503))
+        f.engine.setQueue(listOf(song, secondSong), startIndex = 1); runCurrent()
+        request()
+        val stale = buildJsonObject {
+            put("state", "paused"); put("shuffle", false); put("repeat_mode", "off")
+            put("current_track", AppJson.encodeToJsonElement(Track.serializer(), song))
+            put("queue", JsonArray(listOf(AppJson.encodeToJsonElement(Track.serializer(), song))))
+        }
+        server.enqueue(MockResponse().setBody(buildJsonObject { put("version", 5); put("data", stale) }.toString()))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("app_state", 5, "other"))
+        assertEquals(secondSong, f.engine.queue.value.current?.track)
+        assertFalse("pause" in f.engine.calls)
+        assertEquals("/v1/state/app-state", request().path)
+        val push = request()
+        assertEquals("PUT", push.method)
+        assertEquals("two", pushedCurrentId(push))
     }
 
     @Test fun `websocket filters malformed frames and fetches app state only for remote event`() = runTest {
