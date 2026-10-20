@@ -1,17 +1,10 @@
 package com.anyplayer.android.sync
 
-import android.Manifest
-import android.content.ComponentName
-import android.os.Build
-import android.os.Looper
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.rule.GrantPermissionRule
 import com.anyplayer.android.MainActivity
 import com.anyplayer.android.core.model.AppJson
 import com.anyplayer.android.core.model.PlaybackStateType
@@ -22,11 +15,12 @@ import com.anyplayer.android.data.db.entity.QueueMetaEntity
 import com.anyplayer.android.data.settings.SyncSettingsStore
 import com.anyplayer.android.data.sync.AppStartup
 import com.anyplayer.android.data.sync.SyncEngine
-import com.anyplayer.android.feature.playback.service.AnyPlayerMediaLibraryService
 import com.anyplayer.android.playback.PlaybackEngine
+import com.anyplayer.android.testing.Device
+import com.anyplayer.android.testing.Device.awaitUntil
+import com.anyplayer.android.testing.Device.onMain
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.flow.first
@@ -50,8 +44,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AndroidAutoSyncTest {
     @get:Rule(order = 0) val hilt = HiltAndroidRule(this)
-    @get:Rule(order = 1) val notifications: GrantPermissionRule =
-        if (Build.VERSION.SDK_INT >= 33) GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS) else GrantPermissionRule.grant()
+    @get:Rule(order = 1) val notifications = Device.notificationPermission()
     @get:Rule(order = 2) val compose = createEmptyComposeRule()
 
     // Providers: the engine must not restore before a test has seeded persisted state.
@@ -62,8 +55,6 @@ class AndroidAutoSyncTest {
     @Inject lateinit var base: AppStateBaseStore
     @Inject lateinit var database: AppDatabase
 
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private val context = instrumentation.targetContext
     private lateinit var server: FakeSyncServer
     private lateinit var songs: List<Track>
     private var car: MediaController? = null
@@ -83,7 +74,7 @@ class AndroidAutoSyncTest {
     }
 
     @After fun tearDown() {
-        car?.let { controller -> instrumentation.runOnMainSync { controller.release() } }
+        car?.let { controller -> onMain { controller.release() } }
         app?.close()
         server.shutdown()
     }
@@ -152,11 +143,7 @@ class AndroidAutoSyncTest {
         awaitUntil { engine.queue.value.current?.track == songs[startAt] }
     }
 
-    private fun connectCar(): MediaController {
-        val token = SessionToken(context, ComponentName(context, AnyPlayerMediaLibraryService::class.java))
-        val future = onMain { MediaController.Builder(context, token).setApplicationLooper(Looper.getMainLooper()).buildAsync() }
-        return future.get(30, TimeUnit.SECONDS).also { car = it }
-    }
+    private fun connectCar(): MediaController = Device.connectController().also { car = it }
 
     private suspend fun skipInCar(car: MediaController, to: Int) {
         val engine = engine.get()
@@ -176,14 +163,4 @@ class AndroidAutoSyncTest {
 
     private fun assertAppShows(title: String) =
         compose.waitUntil(15_000) { compose.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty() }
-
-    private suspend fun awaitUntil(timeoutMs: Long = 30_000, condition: () -> Boolean) = withTimeout(timeoutMs) {
-        while (!condition()) kotlinx.coroutines.delay(50)
-    }
-
-    private fun <T> onMain(block: () -> T): T {
-        var result: Result<T>? = null
-        instrumentation.runOnMainSync { result = runCatching(block) }
-        return result!!.getOrThrow()
-    }
 }
