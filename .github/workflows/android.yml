@@ -36,10 +36,17 @@ jobs:
       - name: Assemble debug
         run: ./gradlew --no-daemon --warning-mode=summary :app:assembleDebug
 
+      - name: Name debug APK artifact
+        id: artifact
+        env:
+          REF: ${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.ref_name }}
+        # Artifact names may not contain '/', which branch names often do.
+        run: echo "name=any-player-debug-${REF//\//-}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: any-player-debug-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.ref_name }}-${{ github.sha }}
+          name: ${{ steps.artifact.outputs.name }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
