@@ -436,8 +436,14 @@ All module JVM suites: `:core:model:test`, `:core:data:testDebugUnitTest`,
 They cover queue/planning/schedule/wire parity, provider paging/auth/transfer, backend and
 engine reconciliation, DJ lifecycle/artifacts/passages, sync/startup and ViewModel state.
 Instrumented `:core:data:connectedDebugAndroidTest` covers migration 1→2→3, legacy DB
-opening, normalized caches and repository/transfer transactions. CI assembles the debug
-APK, runs all module unit tests and `:app:lintDebug`, and uploads the APK.
+opening, normalized caches and repository/transfer transactions. Instrumented
+`:app:connectedDebugAndroidTest` (Hilt test app, orchestrator with cleared data per test)
+drives the media session through a `MediaController` as Android Auto would, plays silent
+WAVs through ExoPlayer and syncs against an in-process server: late sync start under live
+playback, an offline drive answered by a stale republish, and a new process after an
+offline drive must keep the car's position and push it. CI assembles the debug
+APK, runs all module unit tests and `:app:lintDebug`, uploads the APK, and runs
+`:app:connectedDebugAndroidTest` on an API 35 `google_apis` x86_64 emulator in a parallel job.
 
 Device validation includes same-signature in-place upgrade, local mock-provider streaming,
 queue/transport/notification/session controls, paused process restore and Auto projection.

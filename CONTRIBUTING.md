@@ -23,13 +23,16 @@ Install/run with a deliberately selected device (`ANDROID_SERIAL` for Gradle,
 ./gradlew :app:installDebug
 ```
 
-Room migration/repository instrumentation requires that selected device/emulator:
+Instrumented tests require that selected device/emulator. `:core:data` covers Room
+migrations/repositories; `:app` drives the media session like Android Auto against an
+in-process sync server (each test runs in a fresh process via the test orchestrator):
 
 ```bash
-./gradlew :core:data:connectedDebugAndroidTest
+./gradlew :core:data:connectedDebugAndroidTest :app:connectedDebugAndroidTest
 ```
 
-CI runs all module unit tests, debug assembly, APK upload and app lint. Do not suppress
+CI runs all module unit tests, debug assembly, APK upload, app lint and, in a parallel job,
+`:app:connectedDebugAndroidTest` on an API 35 emulator. Do not suppress
 or disable lint to hide a real issue; report the finding and fix it in its owning layer.
 Validate Android Auto/session/notification changes with DHU or compatible hardware.
 

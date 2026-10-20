@@ -71,13 +71,14 @@ All module unit tests (no device needed):
 ./gradlew --console=plain -q :app:lintDebug
 ```
 
-Instrumented Room migration/repository tests (selected device/emulator required):
+Instrumented Room migration/repository tests and Android Auto session/sync tests (selected device/emulator required):
 
 ```bash
-./gradlew :core:data:connectedDebugAndroidTest
+./gradlew :core:data:connectedDebugAndroidTest :app:connectedDebugAndroidTest
 ```
 
-CI runs all five unit-test tasks, assembles debug, uploads the APK, and runs app lint.
+CI runs all five unit-test tasks, assembles debug, uploads the APK, runs app lint, and runs
+`:app:connectedDebugAndroidTest` on an API 35 emulator in a parallel job.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for layering, threading and review conventions.
 
 ## Android Auto
