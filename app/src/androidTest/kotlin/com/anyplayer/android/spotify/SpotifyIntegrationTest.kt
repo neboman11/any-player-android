@@ -131,8 +131,8 @@ class SpotifyIntegrationTest {
         val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
             SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
         sessions.save(pending)
-        // Cold callbacks race NavHost creation (reported product bug). Deliver after the
-        // app's default navigation graph exists, without ever opening Settings beforehand.
+        // Warm callback while Now Playing is shown, without ever opening Settings beforehand
+        // (the cold-launch path is coldCallbackLaunchNavigatesToSettingsAndCompletesLinking).
         openApp()
         callback("code=cold-code&state=${pending.state}")
         visible("Spotify connected successfully.")
@@ -183,6 +183,21 @@ class SpotifyIntegrationTest {
         awaitDisconnectedMarker()
         assertEquals(false, connections.awaitLoaded()[SourceType.SPOTIFY]?.spotifyPremium)
         assertNotNull(connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+    }
+
+    @Test fun coldCallbackLaunchNavigatesToSettingsAndCompletesLinking() = runBlocking {
+        val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
+            SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
+        sessions.save(pending)
+        app = ActivityScenario.launch(Intent(Device.context, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW)
+            .setData(Uri.parse("${SpotifyAuthFlow.REDIRECT_URI}?code=cold-code&state=${pending.state}")))
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
+        assertNull(sessions.read())
     }
 
     @Test fun startupRefreshesExpiringTokenAndUsesRotationForCatalog() = runBlocking {

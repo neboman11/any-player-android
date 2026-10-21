@@ -49,6 +49,7 @@ import com.anyplayer.android.ui.components.Artwork
 import com.anyplayer.android.ui.components.LocalSnackbarHostState
 import com.anyplayer.android.ui.nav.AnyPlayerNavigation
 import com.anyplayer.android.ui.nav.MainDestination
+import kotlinx.coroutines.flow.first
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,6 +68,9 @@ fun AnyPlayerShell(viewModel: ShellViewModel = hiltViewModel()) {
         }
     }
     LaunchedEffect(viewModel, controller) {
+        // NavHost sets the graph later, inside the Scaffold's content; a cold-start callback is already
+        // pending when this effect starts, so wait for the first back-stack entry before navigating.
+        controller.currentBackStackEntryFlow.first()
         viewModel.spotifySettingsRequests.collect { uri ->
             // Same as the Settings tab: a saved Settings entry (and its ViewModel) is restored, not duplicated.
             if (controller.currentDestination?.route != MainDestination.SETTINGS.route) navigate(MainDestination.SETTINGS)
