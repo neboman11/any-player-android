@@ -18,12 +18,9 @@ class SpotifyRedirectHolder @Inject constructor() : SpotifyRedirectSource {
     override val redirects: Flow<String> = unhandled.filterNotNull()
     /** Callbacks the shell has not yet opened Settings for. */
     val settingsRequests: Flow<String> = settingsNotOpened.filterNotNull()
-    private var lastPublished: String? = null
 
-    /** Ignores a repeat of the last callback, e.g. the launch Intent seen again after recreation. */
+    /** Publishes a newly delivered callback; the Activity excludes restored launch Intents. */
     fun publish(uri: String) {
-        if (lastPublished == uri) return
-        lastPublished = uri
         settingsNotOpened.value = uri
         unhandled.value = uri
     }

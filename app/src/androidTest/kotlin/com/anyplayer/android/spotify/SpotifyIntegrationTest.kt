@@ -31,12 +31,15 @@ import com.anyplayer.android.testing.SpotifyHosts
 import com.anyplayer.android.testing.TestServer
 import com.anyplayer.android.ui.settings.SpotifyDevicePickerState
 import com.anyplayer.android.ui.shell.AnyPlayerShell
+import com.anyplayer.android.ui.shell.SpotifyRedirectHolder
 import com.anyplayer.android.ui.theme.AnyPlayerTheme
 import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.BindValue
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.runBlocking
@@ -60,6 +63,7 @@ class SpotifyIntegrationTest {
     @Inject lateinit var sessions: SpotifyAuthSessionStore
     @Inject lateinit var engineProvider: Provider<PlaybackEngine>
     @Inject lateinit var startup: AppStartup
+    @BindValue @JvmField var redirectHolder = SpotifyRedirectHolder()
 
     private lateinit var server: TestServer
     private lateinit var spotify: FakeSpotify
@@ -173,6 +177,31 @@ class SpotifyIntegrationTest {
         assertNull(sessions.read())
     }
 
+    @Test fun leavingSettingsDuringTokenExchangeStillCompletesAndRevealsResultOnReturn() = runBlocking {
+        val release = CountDownLatch(1)
+        spotify.tokenResponseGate = release
+        try {
+            openApp()
+            val pending = beginLink()
+            callback("code=delayed-code&state=${pending.state}")
+            server.awaitRequest { it.path == FakeSpotify.TOKEN_PATH }
+            visible("Finishing Spotify login...")
+            // Back pops Settings rather than saving its ViewModel in the bottom-tab back stack.
+            app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+            release.countDown()
+            compose.onNodeWithTag("tab_SETTINGS").performClick()
+            visible("Spotify connected successfully.")
+            compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+            compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+            assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+            assertNull(sessions.read())
+            assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        } finally {
+            release.countDown()
+        }
+    }
+
     @Test fun freeAccountLinksButExplainsWhyProviderIsIgnored() = runBlocking {
         spotify.premium = false
         openApp()
@@ -197,6 +226,26 @@ class SpotifyIntegrationTest {
         compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
         compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
         assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
+        assertNull(sessions.read())
+    }
+
+    @Test fun restoredColdCallbackDoesNotRepublishIntoFreshProcessHolder() = runBlocking {
+        val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
+            SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
+        sessions.save(pending)
+        val uri = "${SpotifyAuthFlow.REDIRECT_URI}?code=cold-code&state=${pending.state}"
+        app = ActivityScenario.launch(Intent(Device.context, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW).setData(Uri.parse(uri)))
+        visible("Spotify connected successfully.")
+        // Replace process-memory dedupe before restoring the callback launch Intent. Retained
+        // ViewModels preserve the visible result; the recreated Activity gets a fresh holder.
+        redirectHolder = SpotifyRedirectHolder()
+        app!!.recreate()
+        app!!.onActivity { assertSame(redirectHolder, it.spotifyRedirects) }
+        assertFalse("Restoration must not publish the spent launch callback", redirectHolder.consume(uri))
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
         assertNull(sessions.read())
     }
 
