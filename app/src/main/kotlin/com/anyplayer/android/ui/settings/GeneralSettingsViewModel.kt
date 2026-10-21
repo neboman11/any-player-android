@@ -153,10 +153,17 @@ class GeneralSettingsViewModel @Inject constructor(
     fun import(uri: String, policy: MergePolicy, passphrase: String?, dryRun: Boolean, configFile: Boolean) {
         val prefix = if (configFile) { if (dryRun) "Config dry run" else "Config import" } else { if (dryRun) "Dry run" else "Import" }
         runTransfer(if (configFile) "Config import" else prefix) {
-            documents.read(uri) {
+            val summary = documents.read(uri) {
                 if (configFile) config.import(it, policy, dryRun)
                 else transfer.import(it, policy, passphrase?.takeIf(String::isNotBlank), dryRun)
-            }.format(prefix)
+            }
+            // The engine applies the exported player flags and persists them to player settings.
+            summary.playbackSettings?.let { settings ->
+                engine.setVolume(settings.volume)
+                engine.setShuffle(settings.shuffle)
+                engine.setRepeat(settings.repeat)
+            }
+            summary.format(prefix)
         }
     }
     private fun runTransfer(prefix: String, action: suspend () -> String) {

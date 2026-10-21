@@ -196,4 +196,22 @@ class SettingsViewModelsTest {
         assertTrue(canDownload(catalog, com.anyplayer.android.dj.ArtifactDownloadState.Failed("offline")))
         assertFalse(canDownload(catalog, com.anyplayer.android.dj.ArtifactDownloadState.Downloading(0.5f)))
     }
+    @Test fun stateImportAppliesReturnedPlaybackSettingsToEngine() = runTest(dispatcher) {
+        val engine = FakeEngine()
+        val transfer = FakeTransfer().apply { summary = ImportSummary(playbackSettings = ImportedPlaybackSettings(37, true, RepeatMode.ALL)) }
+        val vm = general(transfer = transfer, engine = engine)
+        vm.import("content://test", MergePolicy.REPLACE_ALL, null, false, false)
+        assertEquals(transfer.summary.format("Import"), vm.state.first { !it.transferBusy }.transferStatus)
+        assertEquals(37, engine.player.value.volume)
+        assertTrue(engine.queue.value.shuffle)
+        assertEquals(RepeatMode.ALL, engine.queue.value.repeat)
+    }
+    @Test fun importWithoutPlaybackSettingsLeavesEngineAlone() = runTest(dispatcher) {
+        val engine = FakeEngine()
+        val before = engine.player.value to engine.queue.value
+        val vm = general(engine = engine)
+        vm.import("content://test", MergePolicy.MERGE_KEEP_LOCAL, null, false, false)
+        vm.state.first { !it.transferBusy }
+        assertEquals(before, engine.player.value to engine.queue.value)
+    }
 }
