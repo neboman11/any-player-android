@@ -332,6 +332,20 @@ class LibraryUiTest {
         show("Error")
     }
 
+    @Test fun skippedTrackErrorClearsOnceReplacementPlays() = runBlocking {
+        val missing = Track("missing", "Missing audio", "Library Artist", source = SourceType.CUSTOM)
+        queue(listOf(missing, song("after", "Playable after", duration = 120_000)))
+        open()
+        show("Error: Can't play \"Missing audio\"")
+        reveal(hasContentDescription("Play")).performClick()
+        awaitPlaying("after")
+        show("Playing")
+        awaitUntil(message = "skip error cleared while the replacement plays") { engine.player.value.error == null }
+        lazyList.performScrollToIndex(0)
+        waitAbsent("Error: Can't play \"Missing audio\"")
+        assertEquals(PlaybackStateType.PLAYING, engine.player.value.status)
+    }
+
     @Test fun navigationMiniPlayerBackAndTabState() = runBlocking {
         seed("Navigation mix", listOf(song("nav-a", "Nav Alpha", duration = 120_000), song("nav-b", "Nav Beta", duration = 120_000)))
         queue(listOf(song("mini-a", "Mini One", duration = 120_000), song("mini-b", "Mini Two", duration = 120_000)))
