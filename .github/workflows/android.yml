@@ -54,10 +54,15 @@ jobs:
       - name: Lint
         run: ./gradlew --no-daemon --warning-mode=summary :app:lintDebug
 
-  instrumented:
-    # Android Auto session/sync integration tests on an emulator (see AndroidAutoSyncTest).
+  instrumented-shard:
+    # Emulator integration tests (app/src/androidTest), split across parallel emulators.
+    name: instrumented (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       EMULATOR_API: 35
 
@@ -113,14 +118,26 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew --no-daemon --warning-mode=summary :app:connectedDebugAndroidTest
+          script: >-
+            ./gradlew --no-daemon --warning-mode=summary :app:connectedDebugAndroidTest
+            -Pandroid.testInstrumentationRunnerArguments.numShards=${{ strategy.job-total }}
+            -Pandroid.testInstrumentationRunnerArguments.shardIndex=${{ matrix.shard }}
 
       - name: Upload instrumented test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: instrumented-test-reports-${{ github.sha }}
+          name: instrumented-test-reports-shard${{ matrix.shard }}-${{ github.sha }}
           path: |
             app/build/reports/androidTests/connected/
             app/build/outputs/androidTest-results/connected/
           retention-days: 14
+
+  instrumented:
+    # Single required check for branch protection, independent of the shard count.
+    needs: instrumented-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All shards passed
+        run: test "${{ needs.instrumented-shard.result }}" = "success"

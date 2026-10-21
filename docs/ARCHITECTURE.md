@@ -437,13 +437,21 @@ They cover queue/planning/schedule/wire parity, provider paging/auth/transfer, b
 engine reconciliation, DJ lifecycle/artifacts/passages, sync/startup and ViewModel state.
 Instrumented `:core:data:connectedDebugAndroidTest` covers migration 1→2→3, legacy DB
 opening, normalized caches and repository/transfer transactions. Instrumented
-`:app:connectedDebugAndroidTest` (Hilt test app, orchestrator with cleared data per test)
-drives the media session through a `MediaController` as Android Auto would, plays silent
-WAVs through ExoPlayer and syncs against an in-process server: late sync start under live
-playback, an offline drive answered by a stale republish, and a new process after an
-offline drive must keep the car's position and push it. CI assembles the debug
-APK, runs all module unit tests and `:app:lintDebug`, uploads the APK, and runs
-`:app:connectedDebugAndroidTest` on an API 35 `google_apis` x86_64 emulator in a parallel job.
+`:app:connectedDebugAndroidTest` runs on a Hilt test app with the orchestrator (fresh
+process and cleared data per test) against real Room, EncryptedSharedPreferences,
+ExoPlayer, the Media3 session and Compose UI. All network traffic goes to an in-process
+`TestServer` (`app/src/androidTest/.../testing/`): fakes for sync, DJ, Jellyfin, Plex and
+Spotify (the hard-coded Spotify hosts are redirected by `TestNetworkModule`), plus silent
+WAV audio. Packages: `playback` (session/browser as Android Auto, ExoPlayer advance,
+repeat, retry/skip, persistence, legacy migration, startup gate, notification), `sync`
+(Android Auto vs sync merge base), `providers` (Jellyfin/Plex connect, playlists, auth
+headers on audio, gate, search, credential restore), `spotify` (PKCE linking, token
+refresh, catalog, devices, Spotify/Exo run hand-off), `library` (custom/union playlists,
+Now Playing, navigation) and `settings` (sync UI flows, realtime, transfer, AI DJ with
+remote breaks). CI assembles the debug APK, runs all module unit tests and
+`:app:lintDebug`, uploads the APK, and runs `:app:connectedDebugAndroidTest` on API 35
+`google_apis` x86_64 emulators split across 4 parallel shards; the `instrumented` job
+aggregates the shards into the single required check.
 
 Device validation includes same-signature in-place upgrade, local mock-provider streaming,
 queue/transport/notification/session controls, paused process restore and Auto projection.
