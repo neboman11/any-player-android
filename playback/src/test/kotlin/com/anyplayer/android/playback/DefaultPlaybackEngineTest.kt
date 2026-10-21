@@ -252,11 +252,47 @@ class DefaultPlaybackEngineTest {
         assertEquals(1, f.events.count { it == EngineEvent.BreakDropped("old") })
         assertEquals(1, f.events.count { it == EngineEvent.BreakDropped("new") })
     }
-    @Test fun skippedUnplayableSelectionSurfacesWarningWithoutStoppingPlayback() = runTest {
+    @Test fun skippedSelectionWarnsUntilReplacementPlaysThenClears() = runTest {
         val f = Fixture(this); runCurrent()
-        f.engine.setQueue(listOf(song("bad").copy(url = null), song("a"))); runCurrent()
+        f.engine.setQueue(listOf(song("bad").copy(url = null), song("a")), autoPlay = false); runCurrent()
         assertEquals("Can't play \"bad\"", f.engine.player.value.error)
+        assertEquals(PlaybackStateType.PAUSED, f.engine.player.value.status)
+        f.exo.block = CompletableDeferred()
+        f.engine.play(); runCurrent()
+        assertEquals(PlaybackStateType.BUFFERING, f.engine.player.value.status)
+        assertEquals("Can't play \"bad\"", f.engine.player.value.error)
+        f.exo.block!!.complete(Unit); runCurrent()
+        assertEquals("a", f.engine.queue.value.current?.track?.id)
         assertEquals(PlaybackStateType.PLAYING, f.engine.player.value.status)
+        assertNull(f.engine.player.value.error)
+    }
+    @Test fun inRunSkipLeavesNoErrorOnceReplacementPlays() = runTest {
+        val f = Fixture(this); runCurrent()
+        f.engine.setQueue(listOf(song("a"), song("bad").copy(url = null), song("b"), song("c"))); runCurrent()
+        assertNull(f.engine.player.value.error)
+        fun uid(id: String) = f.engine.queue.value.entries.first { it.track.id == id }.uid
+        // Gapless transition: the replacement is already playing.
+        f.exo.events.emit(BackendEvent.ItemStarted(f.exo.id, ItemKey.Song(uid("b")))); runCurrent()
+        assertEquals("b", f.engine.queue.value.current?.track?.id)
+        assertEquals(PlaybackStateType.PLAYING, f.engine.player.value.status)
+        assertNull(f.engine.player.value.error)
+        // A transition that rebuffers shows the notice only until the replacement plays.
+        f.engine.setQueue(listOf(song("a"), song("bad").copy(url = null), song("b"))); runCurrent()
+        f.exo.events.emit(BackendEvent.PlayingChanged(f.exo.id, false, true, false)); runCurrent()
+        f.exo.events.emit(BackendEvent.ItemStarted(f.exo.id, ItemKey.Song(uid("b")))); runCurrent()
+        assertEquals("Can't play \"bad\"", f.engine.player.value.error)
+        f.exo.events.emit(BackendEvent.PlayingChanged(f.exo.id, true, false, false)); runCurrent()
+        assertEquals(PlaybackStateType.PLAYING, f.engine.player.value.status)
+        assertNull(f.engine.player.value.error)
+    }
+    @Test fun nothingPlayableStaysAPersistentError() = runTest {
+        val f = Fixture(this); runCurrent()
+        f.engine.setQueue(listOf(song("bad").copy(url = null))); runCurrent()
+        assertEquals("Nothing playable in the queue", f.engine.player.value.error)
+        assertEquals(PlaybackStateType.ERROR, f.engine.player.value.status)
+        f.engine.play(); runCurrent()
+        assertEquals("Nothing playable in the queue", f.engine.player.value.error)
+        assertEquals(PlaybackStateType.ERROR, f.engine.player.value.status)
     }
     @Test fun clearingPendingWhileCoordinatorPreparesDoesNotCancelActiveBreak() = runTest {
         val f = Fixture(this); runCurrent()

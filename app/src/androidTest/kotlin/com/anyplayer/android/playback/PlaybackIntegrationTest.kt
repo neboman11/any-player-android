@@ -237,6 +237,10 @@ class PlaybackIntegrationTest {
         onMain { car.play() }
         playing(songs[1])
         awaitUntil { onMain { car.mediaMetadata.title.toString() == songs[1].title } }
+        // The skip notice is not a lasting error once the replacement plays.
+        awaitUntil(message = "Can't play error cleared while the replacement plays") { engine.player.value.error == null }
+        assertEquals(PlaybackStateType.PLAYING, engine.player.value.status)
+        assertNull(onMain { car.playerError })
     }
 
     @Test fun playingPostsMediaNotificationWithCurrentTitle() = runBlocking {

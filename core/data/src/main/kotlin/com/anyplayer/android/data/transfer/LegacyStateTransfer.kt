@@ -61,7 +61,10 @@ class LegacyStateTransfer @Inject constructor(
             }
             imported++
         }
-        summary.copy(connectionsImported = imported, connectionsSkipped = envelope.data.connections.size - imported, warnings = warnings)
+        // Like playlists, MERGE_KEEP_LOCAL keeps the local player flags; dry runs change nothing.
+        val playback = envelope.data.playbackState?.takeIf { !dryRun && policy != MergePolicy.MERGE_KEEP_LOCAL }
+        summary.copy(connectionsImported = imported, connectionsSkipped = envelope.data.connections.size - imported, warnings = warnings,
+            playbackSettings = playback?.let { ImportedPlaybackSettings(it.volume, it.shuffle, it.repeatMode) })
     }
 
     internal fun decodeAndVerify(raw: String, passphrase: String?): AnyPlayerStateEnvelope {
