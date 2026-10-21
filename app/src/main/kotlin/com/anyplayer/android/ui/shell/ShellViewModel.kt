@@ -52,10 +52,10 @@ class ShellViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MiniPlayerUi())
     val startupBanner = startup.status.map { StartupBannerUi(it.inProgress, it.message, it.warnings) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StartupBannerUi())
-    val spotifyRedirects = redirects.redirects
+    val spotifySettingsRequests = redirects.settingsRequests
 
     fun retryStartup() = startup.retry()
     fun togglePlayback() = engine.togglePlayPause()
     fun next() = engine.next()
-    fun leaveSettings() = redirects.clearHandled()
+    fun spotifySettingsOpened(uri: String) = redirects.settingsOpened(uri)
 }

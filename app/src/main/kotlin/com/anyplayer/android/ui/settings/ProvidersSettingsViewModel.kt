@@ -18,7 +18,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Activity-owned redirect stream. Bind the shell implementation in Hilt. */
-interface SpotifyRedirectSource { val redirects: SharedFlow<String> }
+interface SpotifyRedirectSource {
+    /** Callbacks not yet handled; [consume] one before handling it. */
+    val redirects: Flow<String>
+    /** Claims [uri] for handling; true only for the first caller, so each callback is handled once. */
+    fun consume(uri: String): Boolean
+}
 
 data class ProviderFields(val url: String = "", val token: String = "", val pageSize: String = "300", val pageSizeSaved: Boolean = false)
 data class ProvidersSettingsState(
@@ -37,7 +42,7 @@ class ProvidersSettingsViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val connections: ConnectionStore,
     private val catalog: CatalogRepository,
-    redirects: SpotifyRedirectSource,
+    private val redirects: SpotifyRedirectSource,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ProvidersSettingsState())
     val state = mutableState.asStateFlow()
@@ -60,7 +65,8 @@ class ProvidersSettingsViewModel @Inject constructor(
                 mutableState.update { it.copy(jellyfin = fields(SourceType.JELLYFIN, it.jellyfin), plex = fields(SourceType.PLEX, it.plex)) }
             }
         }
-        viewModelScope.launch { redirects.redirects.collect { completeSpotify(it) } }
+        // A saved Settings back-stack entry keeps collecting; whichever ViewModel claims a callback handles it.
+        viewModelScope.launch { redirects.redirects.collect { if (redirects.consume(it)) completeSpotify(it) } }
     }
     fun edit(source: SourceType, transform: (ProviderFields) -> ProviderFields) {
         edited += source

@@ -159,6 +159,20 @@ class SpotifyIntegrationTest {
         assertCallbackRejected()
     }
 
+    @Test fun callbackAfterLeavingSettingsIsHandledOnceAndShowsSuccess() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        compose.onNodeWithTag("tab_NOW_PLAYING").performClick()
+        callback("code=accepted-code&state=${pending.state}")
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        compose.onAllNodesWithText("No pending Spotify auth session", substring = true).assertCountEquals(0)
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        assertNull(sessions.read())
+    }
+
     @Test fun freeAccountLinksButExplainsWhyProviderIsIgnored() = runBlocking {
         spotify.premium = false
         openApp()

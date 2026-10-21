@@ -35,8 +35,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -61,11 +59,6 @@ fun AnyPlayerShell(viewModel: ShellViewModel = hiltViewModel()) {
     val mini by viewModel.miniPlayer.collectAsStateWithLifecycle()
     val startup by viewModel.startupBanner.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    var previousRoute by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(route) {
-        if (previousRoute == MainDestination.SETTINGS.route && route != MainDestination.SETTINGS.route) viewModel.leaveSettings()
-        previousRoute = route
-    }
     val navigate: (MainDestination) -> Unit = { destination ->
         controller.navigate(destination.route) {
             popUpTo(controller.graph.findStartDestination().id) { saveState = true }
@@ -74,8 +67,10 @@ fun AnyPlayerShell(viewModel: ShellViewModel = hiltViewModel()) {
         }
     }
     LaunchedEffect(viewModel, controller) {
-        viewModel.spotifyRedirects.collect {
-            controller.navigate(MainDestination.SETTINGS.route) { launchSingleTop = true }
+        viewModel.spotifySettingsRequests.collect { uri ->
+            // Same as the Settings tab: a saved Settings entry (and its ViewModel) is restored, not duplicated.
+            if (controller.currentDestination?.route != MainDestination.SETTINGS.route) navigate(MainDestination.SETTINGS)
+            viewModel.spotifySettingsOpened(uri)
         }
     }
     CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {

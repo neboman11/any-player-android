@@ -22,8 +22,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * Shell settings destination. Material3 theme and navigation ownership belong to the shell.
- * Bind [SpotifyRedirectSource] to the activity redirect stream; retain a pending callback until
- * this destination subscribes. Browser launch is consumed here via LocalUriHandler.
+ * Bind [SpotifyRedirectSource] to the activity redirect stream; it retains a callback until a
+ * Providers ViewModel consumes it. Browser launch is consumed here via LocalUriHandler.
  * General sync fields persist on IME Done/focus loss; SAF metadata and file work run on IO.
  */
 @Composable
