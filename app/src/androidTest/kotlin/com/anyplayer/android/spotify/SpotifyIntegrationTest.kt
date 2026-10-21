@@ -24,22 +24,28 @@ import com.anyplayer.android.data.auth.StoredConnection
 import com.anyplayer.android.data.sync.AppStartup
 import com.anyplayer.android.playback.PlaybackEngine
 import com.anyplayer.android.playback.spotify.SharedPrefsSpotifyDevicePreferenceStore
-import com.anyplayer.android.playback.spotify.SpotifyDevices
 import com.anyplayer.android.testing.Device
 import com.anyplayer.android.testing.Device.awaitUntil
 import com.anyplayer.android.testing.Device.onMain
 import com.anyplayer.android.testing.SpotifyHosts
 import com.anyplayer.android.testing.TestServer
+import com.anyplayer.android.ui.settings.SpotifyDevicePickerState
+import com.anyplayer.android.ui.settings.SpotifyLoginStatus
 import com.anyplayer.android.ui.shell.AnyPlayerShell
+import com.anyplayer.android.ui.shell.SpotifyRedirectHolder
 import com.anyplayer.android.ui.theme.AnyPlayerTheme
 import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.BindValue
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -60,7 +66,8 @@ class SpotifyIntegrationTest {
     @Inject lateinit var sessions: SpotifyAuthSessionStore
     @Inject lateinit var engineProvider: Provider<PlaybackEngine>
     @Inject lateinit var startup: AppStartup
-    @Inject lateinit var devices: SpotifyDevices
+    @Inject lateinit var spotifyLogin: SpotifyLoginStatus
+    @BindValue @JvmField var redirectHolder = SpotifyRedirectHolder()
 
     private lateinit var server: TestServer
     private lateinit var spotify: FakeSpotify
@@ -128,19 +135,57 @@ class SpotifyIntegrationTest {
         assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
     }
 
-    // The callback lands on Settings → General (reported UX issue); the connection is only visible
-    // after the user switches to Providers, so this test does not assert which settings tab opens.
-    @Test fun callbackFromNowPlayingOpensSettingsAndProvidersTabShowsConnection() = runBlocking {
+    @Test fun revealedLoginDoesNotSwitchTabsOrReplayAfterSettingsIsPopped() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        callback("code=accepted-code&state=${pending.state}")
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        // Pop the destination so returning creates a new Providers ViewModel.
+        app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        compose.onNodeWithTag("settings_tab_GENERAL").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").performClick()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        compose.onAllNodesWithText("Spotify connected successfully.").assertCountEquals(0)
+        compose.onAllNodesWithText("Spotify login failed:", substring = true).assertCountEquals(0)
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+    }
+
+    @Test fun duplicateCallbackViaNewIntentPreservesSuccessfulLoginOutcome() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        val query = "code=accepted-code&state=${pending.state}"
+        callback(query)
+        visible("Spotify connected successfully.")
+        compose.waitForIdle()
+        val outcome = spotifyLogin.state.value
+        assertFalse(outcome.busy)
+        assertNull(sessions.read())
+
+        callback(query)
+        // A duplicate must not publish a new outcome. Wait for any terminal update rather
+        // than asserting immediately while the onNewIntent collector may still be running.
+        withTimeoutOrNull(2_000) { spotifyLogin.state.first { it.id > outcome.id && !it.busy } }
+        visible("Spotify connected successfully.")
+        assertEquals(outcome, spotifyLogin.state.value)
+        compose.onAllNodesWithText("No pending Spotify auth session", substring = true).assertCountEquals(0)
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+    }
+
+    @Test fun callbackFromNowPlayingOpensSettingsOnProvidersTabWithConnection() = runBlocking {
         val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
             SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
         sessions.save(pending)
-        server.route("GET", "${FakeSpotify.PLAYER}/devices") { okhttp3.mockwebserver.MockResponse().setResponseCode(503) }
-        // Cold callbacks race NavHost creation (reported product bug). Deliver after the
-        // app's default navigation graph exists, without ever opening Settings beforehand.
+        // Warm callback while Now Playing is shown, without ever opening Settings beforehand
+        // (the cold-launch path is coldCallbackLaunchNavigatesToSettingsAndCompletesLinking).
         openApp()
         callback("code=cold-code&state=${pending.state}")
-        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsDisplayed().performClick()
         visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
         compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
         compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
         assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
@@ -163,6 +208,45 @@ class SpotifyIntegrationTest {
         assertCallbackRejected()
     }
 
+    @Test fun callbackAfterLeavingSettingsIsHandledOnceAndShowsSuccess() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        compose.onNodeWithTag("tab_NOW_PLAYING").performClick()
+        callback("code=accepted-code&state=${pending.state}")
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        compose.onAllNodesWithText("No pending Spotify auth session", substring = true).assertCountEquals(0)
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        assertNull(sessions.read())
+    }
+
+    @Test fun leavingSettingsDuringTokenExchangeStillCompletesAndRevealsResultOnReturn() = runBlocking {
+        val release = CountDownLatch(1)
+        spotify.tokenResponseGate = release
+        try {
+            openApp()
+            val pending = beginLink()
+            callback("code=delayed-code&state=${pending.state}")
+            server.awaitRequest { it.path == FakeSpotify.TOKEN_PATH }
+            visible("Finishing Spotify login...")
+            // Back pops Settings rather than saving its ViewModel in the bottom-tab back stack.
+            app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+            release.countDown()
+            compose.onNodeWithTag("tab_SETTINGS").performClick()
+            visible("Spotify connected successfully.")
+            compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+            compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+            assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+            assertNull(sessions.read())
+            assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        } finally {
+            release.countDown()
+        }
+    }
+
     @Test fun freeAccountLinksButExplainsWhyProviderIsIgnored() = runBlocking {
         spotify.premium = false
         openApp()
@@ -173,6 +257,41 @@ class SpotifyIntegrationTest {
         awaitDisconnectedMarker()
         assertEquals(false, connections.awaitLoaded()[SourceType.SPOTIFY]?.spotifyPremium)
         assertNotNull(connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+    }
+
+    @Test fun coldCallbackLaunchNavigatesToSettingsAndCompletesLinking() = runBlocking {
+        val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
+            SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
+        sessions.save(pending)
+        app = ActivityScenario.launch(Intent(Device.context, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW)
+            .setData(Uri.parse("${SpotifyAuthFlow.REDIRECT_URI}?code=cold-code&state=${pending.state}")))
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
+        assertNull(sessions.read())
+    }
+
+    @Test fun restoredColdCallbackDoesNotRepublishIntoFreshProcessHolder() = runBlocking {
+        val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
+            SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
+        sessions.save(pending)
+        val uri = "${SpotifyAuthFlow.REDIRECT_URI}?code=cold-code&state=${pending.state}"
+        app = ActivityScenario.launch(Intent(Device.context, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW).setData(Uri.parse(uri)))
+        visible("Spotify connected successfully.")
+        // Replace process-memory dedupe before restoring the callback launch Intent. Retained
+        // ViewModels preserve the visible result; the recreated Activity gets a fresh holder.
+        redirectHolder = SpotifyRedirectHolder()
+        app!!.recreate()
+        app!!.onActivity { assertSame(redirectHolder, it.spotifyRedirects) }
+        assertFalse("Restoration must not publish the spent launch callback", redirectHolder.consume(uri))
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        assertNull(sessions.read())
     }
 
     @Test fun startupRefreshesExpiringTokenAndUsesRotationForCatalog() = runBlocking {
@@ -236,25 +355,32 @@ class SpotifyIntegrationTest {
 
     @Test fun deviceSelectionPersistsAndTargetsLaterPlayback() = runBlocking {
         seedConnection()
-        // Picker UI currently crashes while reading HTTP bodies on Main; exercise its real
-        // SpotifyDevices contract on IO, without suppressing StrictMode or replacing the API.
-        val listed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { devices.available() }
-        assertEquals(listOf("Studio", "Kitchen"), listed.map { it.name })
-        val kitchen = listed.single { it.id == "speaker" }
-        devices.setPreferred(kitchen)
-        assertEquals("speaker", SharedPrefsSpotifyDevicePreferenceStore(Device.context).awaitLoaded()?.id)
         openApp()
+        providers()
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains(SpotifyDevicePickerState.AUTOMATIC)
+        compose.onNodeWithTag("spotify_device_picker").performClick()
+        visible("Studio (Computer)")
+        visible("Kitchen (Speaker)")
+        // Restricted devices cannot be controlled and are not offered.
+        compose.onAllNodesWithText("Restricted TV", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("Kitchen (Speaker)").performClick()
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains("Kitchen (Speaker)")
+        awaitUntil(message = "preferred device persisted") {
+            runBlocking { SharedPrefsSpotifyDevicePreferenceStore(Device.context).awaitLoaded()?.id } == "speaker"
+        }
         play(spotify.songs)
         val request = server.awaitRequest { it.path == "${FakeSpotify.PLAYER}/play" && it.body.contains("uris") }
         assertEquals("speaker", request.query("device_id"))
         awaitPlaying()
     }
 
-    @Test fun emptyConnectDeviceListIsReturnedWithoutInventingADevice() = runBlocking {
+    @Test fun emptyDevicePickerExplainsHowToFindDevices() = runBlocking<Unit> {
         seedConnection()
         spotify.devices = emptyList()
-        val listed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { devices.available() }
-        assertTrue(listed.isEmpty())
+        openApp()
+        providers()
+        visible("No Spotify devices online. Open Spotify on a device, then Refresh.")
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains(SpotifyDevicePickerState.AUTOMATIC)
         assertEquals(1, server.requestsTo("${FakeSpotify.PLAYER}/devices", "GET").size)
     }
 
@@ -421,9 +547,6 @@ class SpotifyIntegrationTest {
     }
 
     private suspend fun beginLink(): PendingSpotifyAuthSession {
-        // Isolate login from the separately reported picker main-thread body-read bug.
-        // Spotify device discovery may be unavailable while account linking still succeeds.
-        server.route("GET", "${FakeSpotify.PLAYER}/devices") { okhttp3.mockwebserver.MockResponse().setResponseCode(503) }
         providers()
         compose.onNodeWithText("Link Spotify Account").performClick()
         compose.waitUntil(30_000) { browserUris.isNotEmpty() }

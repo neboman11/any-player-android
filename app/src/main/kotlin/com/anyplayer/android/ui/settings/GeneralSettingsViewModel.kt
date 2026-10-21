@@ -51,6 +51,7 @@ class GeneralSettingsViewModel @Inject constructor(
     private var targetDirty = false
     private var tokenDirty = false
     private val commits = Mutex()
+    private var pullPending = false
 
     init {
         viewModelScope.launch {
@@ -61,7 +62,13 @@ class GeneralSettingsViewModel @Inject constructor(
                     authToken = if (tokenDirty) it.authToken else prefs.authToken) }
             }
         }
-        viewModelScope.launch { syncEngine.state.collect { sync -> mutableState.update { it.copy(sync = sync) } } }
+        viewModelScope.launch {
+            syncEngine.state.collect { sync ->
+                if (pullPending && state.value.sync.inProgress && !sync.inProgress && !sync.playlistConfirmationRequired) pullPending = false
+                mutableState.update { it.copy(sync = sync,
+                    confirmOverwrite = pullPending && sync.playlistConfirmationRequired) }
+            }
+        }
         viewModelScope.launch { playerSettings.settings.collect { settings -> mutableState.update { it.copy(normalization = settings.normalizationEnabled) } } }
         viewModelScope.launch {
             syncImports.message.filterNotNull().collect { message -> mutableState.update { it.copy(transferStatus = message) } }
@@ -118,17 +125,22 @@ class GeneralSettingsViewModel @Inject constructor(
         }
     }
     fun connect() { viewModelScope.launch { if (persistFields()) syncEngine.connect() } }
-    fun requestPull() {
-        if (state.value.preferences.syncPlaylists) mutableState.update { it.copy(confirmOverwrite = true) }
-        else pullAfterCommit(false)
+    fun requestPull() { pullPending = true; pullAfterCommit(false) }
+    fun confirmPull() { pullPending = false; mutableState.update { it.copy(confirmOverwrite = false) }; pullAfterCommit(true) }
+    fun cancelPull() {
+        pullPending = false
+        mutableState.update { it.copy(confirmOverwrite = false) }
+        syncEngine.dismissConflict()
     }
-    fun confirmPull() { mutableState.update { it.copy(confirmOverwrite = false) }; pullAfterCommit(true) }
-    fun cancelPull() { mutableState.update { it.copy(confirmOverwrite = false) } }
     private fun pullAfterCommit(overwrite: Boolean) {
         if (!targetDirty && !tokenDirty) syncEngine.pull(overwrite)
         else viewModelScope.launch { if (persistFields()) syncEngine.pull(overwrite) }
     }
-    fun resolveConflict(useLocal: Boolean) = syncEngine.resolveConflict(useLocal)
+    fun resolveConflict(useLocal: Boolean) {
+        pullPending = false
+        mutableState.update { it.copy(confirmOverwrite = false) }
+        syncEngine.resolveConflict(useLocal)
+    }
     fun cancelConflict() = syncEngine.dismissConflict()
     fun setNormalization(enabled: Boolean) {
         engine.setNormalization(enabled)
@@ -153,10 +165,17 @@ class GeneralSettingsViewModel @Inject constructor(
     fun import(uri: String, policy: MergePolicy, passphrase: String?, dryRun: Boolean, configFile: Boolean) {
         val prefix = if (configFile) { if (dryRun) "Config dry run" else "Config import" } else { if (dryRun) "Dry run" else "Import" }
         runTransfer(if (configFile) "Config import" else prefix) {
-            documents.read(uri) {
+            val summary = documents.read(uri) {
                 if (configFile) config.import(it, policy, dryRun)
                 else transfer.import(it, policy, passphrase?.takeIf(String::isNotBlank), dryRun)
-            }.format(prefix)
+            }
+            // The engine applies the exported player flags and persists them to player settings.
+            summary.playbackSettings?.let { settings ->
+                engine.setVolume(settings.volume)
+                engine.setShuffle(settings.shuffle)
+                engine.setRepeat(settings.repeat)
+            }
+            summary.format(prefix)
         }
     }
     private fun runTransfer(prefix: String, action: suspend () -> String) {

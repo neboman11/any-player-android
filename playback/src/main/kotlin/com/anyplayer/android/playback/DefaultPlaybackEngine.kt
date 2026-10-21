@@ -416,8 +416,11 @@ class DefaultPlaybackEngine internal constructor(
                         if (breakItem != null) finishBreak()
                         if (queue.value.cursor != pos) mutableQueue.value = queue.value.copy(cursor = pos, playNextOffset = 0)
                         applied.key = key
+                        // A skipped-track error is a notice, not a lasting error: in a gapless in-run
+                        // transition the replacement is already PLAYING, so none remains.
+                        val playing = player.value.status == PlaybackStateType.PLAYING
                         mutablePlayer.value = player.value.copy(currentUid = key.uid, activeBreak = null,
-                            error = if (sameItem) skipped ?: player.value.error else skipped)
+                            error = when { playing -> null; sameItem -> skipped ?: player.value.error; else -> skipped })
                         anchor(backend.positionMs(), backend.durationMs().takeIf { it > 0 } ?: (queue.value.current?.track?.durationMs ?: 0))
                         validateBreak(); eventMessages.trySend(EngineEvent.TrackStarted(key.uid, pos))
                     }
@@ -444,7 +447,9 @@ class DefaultPlaybackEngine internal constructor(
                         event.isPlaying -> PlaybackStateType.PLAYING
                         event.buffering || intent -> PlaybackStateType.BUFFERING
                         else -> PlaybackStateType.PAUSED
-                    })
+                    },
+                    // Healthy playback supersedes any shown error (e.g. the skipped track's notice).
+                    error = if (event.isPlaying) null else player.value.error)
                 applied.playing = intent
                 enforceGate(); requestReconcile()
             }

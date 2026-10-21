@@ -22,7 +22,8 @@ class SettingsViewModelsTest {
         syncImports: com.anyplayer.android.sync.SyncImportStatus = com.anyplayer.android.sync.SyncImportStatus()): GeneralSettingsViewModel =
         GeneralSettingsViewModel(settings, FakePlayerSettings(), sync, engine, transfer, transfer, FakeDocuments(), syncImports).also { viewModels += it }
     private fun providers(auth: FakeAuth, catalog: FakeCatalog): ProvidersSettingsViewModel = ProvidersSettingsViewModel(auth, FakeConnections(), catalog,
-        object : SpotifyRedirectSource { override val redirects = MutableSharedFlow<String>() }).also { viewModels += it }
+        object : SpotifyRedirectSource { override val redirects = MutableSharedFlow<String>(); override fun consume(uri: String) = true },
+        SpotifyLoginStatus(), FakeSpotifySessions()).also { viewModels += it }
 
     @Test fun syncFieldsPersistOnlyOnCommit() = runTest(dispatcher) {
         val settings = FakeSyncSettings()
@@ -62,7 +63,8 @@ class SettingsViewModelsTest {
         val auth = FakeAuth().apply { onCompleteSpotify = { completion.await() } }
         val callbacks = MutableSharedFlow<String>()
         val vm = ProvidersSettingsViewModel(auth, FakeConnections(), FakeCatalog(),
-            object : SpotifyRedirectSource { override val redirects = callbacks }).also { viewModels += it }
+            object : SpotifyRedirectSource { override val redirects = callbacks; override fun consume(uri: String) = true },
+            SpotifyLoginStatus(), FakeSpotifySessions()).also { viewModels += it }
         runCurrent()
         callbacks.emit("anyplayer://spotify-callback?code=code")
         vm.state.first { it.feedback == "Finishing Spotify login..." }
@@ -81,13 +83,50 @@ class SettingsViewModelsTest {
         runCurrent(); vm.setDomain("playlists", false)
         assertFalse(settings.writes.receive().syncPlaylists)
     }
-    @Test fun playlistOverwriteRequiresConfirmationAndCancelDoesNotPull() = runTest(dispatcher) {
+    @Test fun backgroundPlaylistConflictDoesNotOpenDialogOnSettingsVisits() = runTest(dispatcher) {
+        val sync = FakeSync().apply { state.value = state.value.copy(playlistConfirmationRequired = true) }
+        val first = general(sync = sync); runCurrent()
+        assertFalse("Opening Settings is not permission to overwrite", first.state.value.confirmOverwrite)
+        first.viewModelScope.cancel()
+        val second = general(sync = sync); runCurrent()
+        assertFalse(second.state.value.confirmOverwrite)
+    }
+
+    @Test fun keepDeviceChoiceDismissesPullDialog() = runTest(dispatcher) {
         val sync = FakeSync(); val vm = general(sync = sync)
         runCurrent(); vm.requestPull()
-        assertTrue(vm.state.value.confirmOverwrite); assertTrue(sync.pulls.isEmpty())
-        vm.cancelPull(); assertFalse(vm.state.value.confirmOverwrite); assertTrue(sync.pulls.isEmpty())
-        vm.requestPull(); vm.confirmPull()
-        assertEquals(listOf(true), sync.pulls)
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent()
+        assertTrue(vm.state.value.confirmOverwrite)
+        vm.resolveConflict(true); runCurrent()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals("Keep must not issue a destructive pull", listOf(false), sync.pulls)
+    }
+
+    @Test fun manualPlaylistPullRunsMergeBeforeAskingForConfirmation() = runTest(dispatcher) {
+        val sync = FakeSync(); val vm = general(sync = sync)
+        runCurrent(); vm.requestPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false), sync.pulls)
+        vm.cancelPull()
+        assertEquals(listOf(false), sync.pulls)
+    }
+    @Test fun playlistDialogOnlyFollowsEngineConflictAndContinueForcesOverwrite() = runTest(dispatcher) {
+        val sync = FakeSync(); val vm = general(sync = sync)
+        runCurrent(); vm.requestPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent()
+        assertTrue(vm.state.value.confirmOverwrite)
+        vm.cancelPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false), sync.pulls)
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = false)
+        runCurrent(); vm.requestPull()
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent(); vm.confirmPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false, false, true), sync.pulls)
     }
     @Test fun disabledPlaylistDomainPullsWithoutConfirmation() = runTest(dispatcher) {
         val settings = FakeSyncSettings().apply { preferences.value = SyncPreferences(syncPlaylists = false) }
@@ -195,5 +234,23 @@ class SettingsViewModelsTest {
         assertTrue(canDownload(catalog, com.anyplayer.android.dj.ArtifactDownloadState.Ready(java.io.File("old"))))
         assertTrue(canDownload(catalog, com.anyplayer.android.dj.ArtifactDownloadState.Failed("offline")))
         assertFalse(canDownload(catalog, com.anyplayer.android.dj.ArtifactDownloadState.Downloading(0.5f)))
+    }
+    @Test fun stateImportAppliesReturnedPlaybackSettingsToEngine() = runTest(dispatcher) {
+        val engine = FakeEngine()
+        val transfer = FakeTransfer().apply { summary = ImportSummary(playbackSettings = ImportedPlaybackSettings(37, true, RepeatMode.ALL)) }
+        val vm = general(transfer = transfer, engine = engine)
+        vm.import("content://test", MergePolicy.REPLACE_ALL, null, false, false)
+        assertEquals(transfer.summary.format("Import"), vm.state.first { !it.transferBusy }.transferStatus)
+        assertEquals(37, engine.player.value.volume)
+        assertTrue(engine.queue.value.shuffle)
+        assertEquals(RepeatMode.ALL, engine.queue.value.repeat)
+    }
+    @Test fun importWithoutPlaybackSettingsLeavesEngineAlone() = runTest(dispatcher) {
+        val engine = FakeEngine()
+        val before = engine.player.value to engine.queue.value
+        val vm = general(engine = engine)
+        vm.import("content://test", MergePolicy.MERGE_KEEP_LOCAL, null, false, false)
+        vm.state.first { !it.transferBusy }
+        assertEquals(before, engine.player.value to engine.queue.value)
     }
 }

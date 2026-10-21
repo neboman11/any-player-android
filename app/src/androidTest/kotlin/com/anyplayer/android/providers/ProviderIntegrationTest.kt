@@ -249,6 +249,25 @@ class ProviderIntegrationTest {
         compose.waitUntil(30_000) { compose.onAllNodesWithText("Plex Mix").fetchSemanticsNodes().isEmpty() }
     }
 
+    @Test fun providerSearchHttpFailureShowsAnErrorInsteadOfNoResults(): Unit = runBlocking {
+        connectBoth()
+        jellyfin.searchFailure = true
+        openApp()
+        tab("SEARCH")
+        compose.onNodeWithText("jellyfin").performClick()
+        search("Finale")
+        compose.waitUntil(30_000) {
+            compose.onAllNodesWithText("No results").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("Search failed:", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue(searchRequests("Finale").isNotEmpty())
+        compose.onNodeWithText("Search failed: Jellyfin: HTTP 503").assertExists()
+        // A failing provider must not hide another provider's results.
+        compose.onNodeWithText("all").performClick()
+        waitText("Plex Finale", substring = true)
+        compose.onNodeWithText("Search failed: Jellyfin: HTTP 503").assertDoesNotExist()
+    }
+
     @Test fun encryptedCredentialsReloadAndStartupRestoresBothProvidersWithoutSettings() = runBlocking {
         // A separate store writes the previous instance's committed encrypted file. The app's Hilt
         // store/auth/engine have not been constructed: startup must read disk, not reuse that flow.

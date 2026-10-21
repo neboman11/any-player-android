@@ -6,11 +6,13 @@ import com.anyplayer.android.core.model.ProviderConnectionProfile
 import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.data.auth.AuthRepository
 import com.anyplayer.android.data.auth.ConnectionStore
+import com.anyplayer.android.data.auth.SpotifyAuthSessionStore
 import com.anyplayer.android.data.catalog.CatalogRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -18,7 +20,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Activity-owned redirect stream. Bind the shell implementation in Hilt. */
-interface SpotifyRedirectSource { val redirects: SharedFlow<String> }
+interface SpotifyRedirectSource {
+    /** Callbacks not yet handled; [consume] one before handling it. */
+    val redirects: Flow<String>
+    /** Claims [uri] for handling; true only for the first caller, so each callback is handled once. */
+    fun consume(uri: String): Boolean
+}
 
 data class ProviderFields(val url: String = "", val token: String = "", val pageSize: String = "300", val pageSizeSaved: Boolean = false)
 data class ProvidersSettingsState(
@@ -28,6 +35,8 @@ data class ProvidersSettingsState(
     val busy: Boolean = false,
     val feedback: String = "",
     val authUrl: String? = null,
+    /** A Spotify callback is being handled; Settings switches to the Providers tab, where its result shows. */
+    val revealSpotifyResult: Boolean = false,
 )
 
 @HiltViewModel
@@ -35,12 +44,15 @@ class ProvidersSettingsViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val connections: ConnectionStore,
     private val catalog: CatalogRepository,
-    redirects: SpotifyRedirectSource,
+    private val redirects: SpotifyRedirectSource,
+    private val spotifyLogin: SpotifyLoginStatus,
+    private val spotifySessions: SpotifyAuthSessionStore,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ProvidersSettingsState())
     val state = mutableState.asStateFlow()
     private val edited = mutableSetOf<SourceType>()
     private val pageSizeWrites = Mutex()
+    private var spotifyResultId: Long? = null
     init {
         viewModelScope.launch { auth.profiles.collect { profiles -> mutableState.update { old ->
             old.copy(profiles = profiles,
@@ -58,7 +70,22 @@ class ProvidersSettingsViewModel @Inject constructor(
                 mutableState.update { it.copy(jellyfin = fields(SourceType.JELLYFIN, it.jellyfin), plex = fields(SourceType.PLEX, it.plex)) }
             }
         }
-        viewModelScope.launch { redirects.redirects.collect { completeSpotify(it) } }
+        viewModelScope.launch {
+            spotifyLogin.state.collect { result ->
+                if (result.feedback.isNotEmpty() && !result.acknowledged) {
+                    spotifyResultId = result.id
+                    mutableState.update {
+                        it.copy(busy = result.busy, feedback = result.feedback, revealSpotifyResult = true)
+                    }
+                }
+            }
+        }
+        // Once claimed, exchange, persistence and outcome publication must outlive this destination.
+        viewModelScope.launch {
+            redirects.redirects.collect { uri ->
+                if (redirects.consume(uri)) withContext(NonCancellable) { completeSpotify(uri) }
+            }
+        }
     }
     fun edit(source: SourceType, transform: (ProviderFields) -> ProviderFields) {
         edited += source
@@ -121,21 +148,28 @@ class ProvidersSettingsViewModel @Inject constructor(
     }
     fun authLaunchHandled() { mutableState.update { it.copy(authUrl = null) } }
     fun authLaunchFailed(message: String) { mutableState.update { it.copy(authUrl = null, feedback = "Spotify connection failed: $message") } }
+    fun spotifyResultRevealed() {
+        spotifyResultId?.let(spotifyLogin::acknowledge)
+        mutableState.update { it.copy(revealSpotifyResult = false) }
+    }
     private suspend fun completeSpotify(uri: String) {
-        // The callback is handled even while a browser-launch action is finishing.
-        mutableState.update { it.copy(busy = true, feedback = "Finishing Spotify login...") }
+        // A repeated onNewIntent delivery must not replace a completed login's outcome.
         try {
+            val alreadyLinked = withContext(Dispatchers.IO) {
+                spotifySessions.read() == null &&
+                    !connections.awaitLoaded()[SourceType.SPOTIFY]?.token.isNullOrBlank()
+            }
+            if (alreadyLinked) return
+            spotifyLogin.publish(busy = true, feedback = "Finishing Spotify login...")
             withContext(Dispatchers.IO) {
                 auth.completeSpotifyAuth(uri)
                 catalog.clearCache()
                 catalog.refreshPlaylists()
             }
-            mutableState.update { it.copy(feedback = "Spotify connected successfully.") }
+            spotifyLogin.publish(busy = false, feedback = "Spotify connected successfully.")
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            mutableState.update { it.copy(feedback = "Spotify login failed: ${e.message ?: "Unknown error"}") }
-        } finally {
-            mutableState.update { it.copy(busy = false) }
+            spotifyLogin.publish(busy = false, feedback = "Spotify login failed: ${e.message ?: "Unknown error"}")
         }
     }
     private fun action(start: String, failure: String, block: suspend () -> String) {

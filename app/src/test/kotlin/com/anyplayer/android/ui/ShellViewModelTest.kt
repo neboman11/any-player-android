@@ -23,29 +23,47 @@ class ShellViewModelTest {
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun cleanup() { viewModel?.viewModelScope?.cancel(); Dispatchers.resetMain() }
 
-    @Test fun callbackReplaysToBothShellAndSettingsAndRotationDoesNotRepublishHandledUri() = runTest(dispatcher) {
+    @Test fun callbackStaysPendingForShellAndSettingsUntilEachConsumesItOnce() = runTest(dispatcher) {
         val holder = SpotifyRedirectHolder()
+        val startup = object : AppStartup {
+            override val status = MutableStateFlow(StartupStatus())
+            override fun start() = Unit
+            override fun retry() = Unit
+        }
+        val vm = ShellViewModel(RecordingEngine(), startup, holder).also { viewModel = it }
         val callback = "anyplayer://spotify-callback?code=code&state=state"
+        val opened = mutableListOf<String>()
+        val handled = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.spotifySettingsRequests.toList(opened) }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { holder.redirects.toList(handled) }
         holder.publish(callback)
+        assertEquals(listOf(callback), opened)
+        assertEquals(listOf(callback), handled)
+        // Opening Settings and handling the callback are consumed independently, each exactly once.
+        vm.spotifySettingsOpened(callback)
         assertEquals(callback, holder.redirects.first())
-        assertEquals(callback, holder.redirects.first())
-        holder.clearHandled()
+        assertTrue(holder.consume(callback))
+        assertFalse(holder.consume(callback))
+        // A ViewModel subscribing later (new Settings destination) and the shell see nothing pending.
+        val late = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { holder.redirects.toList(late) }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.spotifySettingsRequests.toList(late) }
+        assertTrue(late.isEmpty())
+        // publish represents a newly delivered Intent, not Activity restoration. Restoration is
+        // covered with a fresh holder in SpotifyIntegrationTest, at the Activity boundary.
         holder.publish(callback)
-        assertTrue(holder.redirects.replayCache.isEmpty())
-        holder.publish("anyplayer://spotify-callback?code=new&state=new")
-        assertEquals(1, holder.redirects.replayCache.size)
+        assertEquals(listOf(callback, callback), late)
     }
 
-    @Test fun newestCallbackIsRetainedWhileSettingsHandlesEarlierCallback() = runTest(dispatcher) {
+    @Test fun newestCallbackIsRetainedAndAStaleClaimCannotTakeIt() = runTest(dispatcher) {
         val holder = SpotifyRedirectHolder()
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-            holder.redirects.collect { awaitCancellation() }
-        }
         holder.publish("first")
-        runCurrent()
-        holder.publish("second")
         holder.publish("latest")
-        assertEquals(listOf("latest"), holder.redirects.replayCache)
+        assertFalse(holder.consume("first"))
+        assertEquals("latest", holder.redirects.first())
+        assertEquals("latest", holder.settingsRequests.first())
+        holder.settingsOpened("first")
+        assertEquals("latest", holder.settingsRequests.first())
     }
 
     @Test fun miniPlayerAndStartupBannerFollowTheirOwnStateAndRetryUsesCoordinator() = runTest(dispatcher) {

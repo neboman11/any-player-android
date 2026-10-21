@@ -51,9 +51,9 @@ internal class FakeEngine : PlaybackEngine {
     override fun next() = Unit
     override fun previous() = Unit
     override fun seekTo(ms: Long, origin: ChangeOrigin) = Unit
-    override fun setVolume(percent: Int, origin: ChangeOrigin) = Unit
-    override fun setShuffle(on: Boolean, origin: ChangeOrigin) = Unit
-    override fun setRepeat(mode: RepeatMode, origin: ChangeOrigin) = Unit
+    override fun setVolume(percent: Int, origin: ChangeOrigin) { player.value = player.value.copy(volume = percent) }
+    override fun setShuffle(on: Boolean, origin: ChangeOrigin) { queue.value = queue.value.copy(shuffle = on) }
+    override fun setRepeat(mode: RepeatMode, origin: ChangeOrigin) { queue.value = queue.value.copy(repeat = mode) }
     override fun setNormalization(enabled: Boolean, strict: Boolean) { player.value = player.value.copy(normalization = enabled) }
     override fun setPendingBreak(pendingBreak: PendingBreak?) = Unit
 }
@@ -82,6 +82,11 @@ internal class FakeConnections : ConnectionStore {
             if (updated == null) remove(source) else put(source, updated)
         }
     }
+}
+internal class FakeSpotifySessions(private var pending: PendingSpotifyAuthSession? = null) : SpotifyAuthSessionStore {
+    override suspend fun read() = pending
+    override suspend fun save(session: PendingSpotifyAuthSession) { pending = session }
+    override suspend fun clear() { pending = null }
 }
 internal class FakeAuth : AuthRepository {
     override val profiles = MutableStateFlow<Map<SourceType, ProviderConnectionProfile>>(emptyMap())

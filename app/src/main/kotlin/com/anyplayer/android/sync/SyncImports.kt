@@ -8,6 +8,7 @@ import com.anyplayer.android.data.transfer.ConfigFiles
 import com.anyplayer.android.data.transfer.MergePolicy
 import com.anyplayer.android.data.transfer.format
 import javax.inject.Inject
+import com.anyplayer.android.data.transfer.ImportSummary
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,10 +31,15 @@ class SyncImports @Inject constructor(
     private val catalog: CatalogRepository,
     private val status: SyncImportStatus,
 ) {
-    suspend fun apply(file: JsonObject, policy: MergePolicy): Boolean {
+    suspend fun apply(file: JsonObject, policy: MergePolicy): Boolean = apply {
+        config.importJson(file, policy, dryRun = false)
+    }
+
+    /** The import can use an enclosing Room transaction; provider network refreshes happen afterwards. */
+    internal suspend fun apply(import: suspend () -> ImportSummary?): Boolean {
         try {
             val before = connections.awaitLoaded()
-            val summary = config.importJson(file, policy, dryRun = false)
+            val summary = import() ?: return true
             val warnings = mutableListOf<String>()
             val after = connections.awaitLoaded()
             var changed = false

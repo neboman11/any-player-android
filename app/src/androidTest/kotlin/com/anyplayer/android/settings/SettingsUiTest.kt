@@ -1,5 +1,8 @@
 package com.anyplayer.android.settings
 
+import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.content.Context
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -8,11 +11,11 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.anyplayer.android.MainActivity
 import com.anyplayer.android.core.model.*
+import com.anyplayer.android.data.db.AppDatabase
 import com.anyplayer.android.data.playlists.PlaylistRepository
 import com.anyplayer.android.data.settings.*
 import com.anyplayer.android.data.store.SecurePrefs
 import com.anyplayer.android.data.sync.SyncEngine
-import com.anyplayer.android.data.transfer.ConfigFiles
 import com.anyplayer.android.dj.*
 import com.anyplayer.android.playback.PlaybackEngine
 import com.anyplayer.android.sync.FakeSyncServer
@@ -51,7 +54,7 @@ class SettingsUiTest {
     @Inject lateinit var djSettings: DjSettingsStore
     @Inject lateinit var secure: SecurePrefs
     @Inject lateinit var playlists: PlaylistRepository
-    @Inject lateinit var config: ConfigFiles
+    @Inject lateinit var database: AppDatabase
     @Inject lateinit var dj: Provider<DjController>
     private lateinit var server: FakeSyncServer
     private var activity: ActivityScenario<MainActivity>? = null
@@ -167,6 +170,29 @@ class SettingsUiTest {
         assertTrue(server.server.log.none { it.method == "PUT" })
     }
 
+    @Test fun cancellingConflictStopsRealtimeAndAutomaticPushes() = runBlocking {
+        playlists.create("Untouched phone", PlaylistType.STANDARD)
+        seedServerPlaylist("Untouched server")
+        val song = server.track(1, "Phone song")
+        engine.get().awaitRestored()
+        openSettings()
+        click("Connect")
+        status("Sync server already has data")
+        val socket = server.awaitSocket()
+        click("Cancel")
+        status("Sync connect cancelled.")
+        val snapshots = server.server.requestsTo("/v1/snapshot").size
+        onMain { engine.get().setQueue(listOf(song), autoPlay = false) }
+        playlists.create("After cancel", PlaylistType.STANDARD)
+        server.publishFromOtherClient(socket, "app_state")
+        server.publishFromOtherClient(socket, "playlists")
+        // Absence check: automatic pushes leave within the 2 s throttle and socket events fetch at once.
+        kotlinx.coroutines.delay(5_000)
+        assertEquals("No PUT after Cancel", emptyList<String>(), server.server.log.filter { it.method == "PUT" }.map { it.path })
+        assertEquals("No snapshot GET after Cancel", snapshots, server.server.requestsTo("/v1/snapshot").size)
+        assertTrue(server.server.requestsTo("/v1/state/app-state", "GET").isEmpty())
+    }
+
     @Test fun forcePullCancelPreservesThenContinueReplacesLocalPlaylists() = runBlocking {
         val local = playlists.create("Local only", PlaylistType.STANDARD)
         seedServerPlaylist("Replacement")
@@ -176,16 +202,83 @@ class SettingsUiTest {
         click("Cancel")
         absent("Confirm playlist overwrite")
         assertEquals(listOf(local.id), playlists.customPlaylists.first().map { it.id })
-        assertTrue(server.server.requestsTo("/v1/snapshot").isEmpty())
+        assertEquals(1, server.server.requestsTo("/v1/snapshot").size)
         click("Force Pull from Server")
+        status("Confirm playlist overwrite")
         click("Continue")
         status("Sync pull complete.")
         assertEquals(listOf("Replacement"), playlists.customPlaylists.first().map { it.name })
-        // Ordered absence check: had Cancel started a pull, Continue's pull would be the second snapshot.
-        assertEquals(1, server.server.requestsTo("/v1/snapshot").size)
+        // Each attempt checks the merge; only Continue performs the final, forced pull.
+        assertEquals(3, server.server.requestsTo("/v1/snapshot").size)
         compose.onNodeWithTag("tab_PLAYLISTS").performClick()
         status("Replacement")
         absent("Local only")
+    }
+
+    @Test fun manualPullPreservesLocalOnlyEditsWithoutOverwriteDialog() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Agreed phone", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val before = server.server.requestsTo("/v1/snapshot").size
+        playlists.create("Unpushed phone edit", PlaylistType.STANDARD)
+        click("Force Pull from Server")
+        status("Sync pull complete.")
+        absent("Confirm playlist overwrite")
+        assertEquals(setOf("Agreed phone", "Unpushed phone edit"), playlists.customPlaylists.first().map { it.name }.toSet())
+        assertTrue(server.server.requestsTo("/v1/snapshot").size > before)
+        assertTrue(server.namespaces["playlists"].toString().contains("Unpushed phone edit"))
+    }
+    @Test fun resetServerPullKeepsLocalPlaylistsAndAsksForConfirmation() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Keep after reset", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.namespaces["playlists"] = JsonArray(emptyList())
+        sync.get().pull(false)
+        status("Sync cancelled: playlist overwrite requires confirmation.")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+        click("Cancel")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+    }
+
+
+    @Test fun realtimeResetWaitsForOwnPullAndKeepDeviceRestoresServer() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Keep phone after reset", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val socket = server.awaitSocket()
+        server.namespaces["playlists"] = JsonArray(emptyList())
+        server.publishFromOtherClient(socket, "playlists")
+        awaitUntil { sync.get().state.value.playlistSyncPaused }
+        status("Playlist sync paused: confirm in Settings")
+        absent("Confirm playlist overwrite")
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        absent("Confirm playlist overwrite")
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        click("Cancel")
+        awaitUntil { !sync.get().state.value.playlistConfirmationRequired }
+        assertTrue(sync.get().state.value.playlistSyncPaused)
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        absent("Confirm playlist overwrite")
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        click("Keep this device's playlists")
+        status("Pushed local data to server.")
+        absent("Confirm playlist overwrite")
+        assertEquals(listOf("Keep phone after reset"), playlists.customPlaylists.first().map { it.name })
+        assertTrue(server.namespaces["playlists"].toString().contains("Keep phone after reset"))
+        assertFalse(sync.get().state.value.playlistSyncPaused)
     }
 
     @Test fun unreachableServerReportsExactStatusAndKeepsLocalPlaylist() = runBlocking {
@@ -226,6 +319,103 @@ class SettingsUiTest {
         click("Normalize Audio Across Providers")
         awaitUntil { !engine.get().player.value.normalization }
         awaitUntil { !playerPrefs().getBoolean("normalizationEnabled", true) }
+    }
+
+    @Test fun localNormalizationChangePushesSettingsOverRealtime() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncPlaylists = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        assertEquals(false, server.namespaces.getValue("settings").jsonObject.getValue("audio_normalization_enabled").jsonPrimitive.boolean)
+        click("Normalize Audio Across Providers")
+        awaitUntil(6_000, "settings PUT enabling normalization; settings=${server.namespaces["settings"]}") {
+            server.namespaces["settings"]?.jsonObject?.get("audio_normalization_enabled")?.jsonPrimitive?.boolean == true
+        }
+    }
+
+    @Test fun localPlaylistCreationPushesOverRealtime() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("field_new_standard_playlist_name").performTextInput("New phone playlist")
+        compose.onNodeWithTag("create_standard_playlist_button").performClick()
+        status("New phone playlist")
+        awaitUntil(6_000, "playlist PUT containing New phone playlist; wire=${server.server.log.map { it.method + it.path }}") {
+            server.namespaces["playlists"].toString().contains("New phone playlist")
+        }
+    }
+
+    @Test fun trackOnlyWritePushesWithoutTouchingParentPlaylist() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        val playlist = playlists.create("Tracks", PlaylistType.STANDARD)
+        playlists.addTrack(playlist.id, server.track(1, "Before edit"))
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        awaitUntil { sync.get().state.value.realtimeConnected }
+        // Drain initial subscription/socket-open checks behind the 2 s push throttle before the isolated child write.
+        kotlinx.coroutines.delay(2_500)
+        val dao = database.customPlaylistDao()
+        val parent = dao.get(playlist.id)
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                database.openHelper.writableDatabase.execSQL("UPDATE playlist_tracks SET title = ? WHERE playlistId = ?", arrayOf("Track-only edit", playlist.id))
+            }
+        }
+        assertEquals(parent, dao.get(playlist.id))
+        awaitUntil(6_000, "track-only write must reach sync server") {
+            server.namespaces["playlists"].toString().contains("Track-only edit")
+        }
+    }
+
+    @Test fun sourceOnlyWritePushesWithoutTouchingParentPlaylist() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        val first = playlists.create("First", PlaylistType.STANDARD)
+        val second = playlists.create("Second", PlaylistType.STANDARD)
+        val union = playlists.create("Union", PlaylistType.UNION)
+        playlists.replaceUnionSources(union.id, listOf(SourceType.CUSTOM to first.id))
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        awaitUntil { sync.get().state.value.realtimeConnected }
+        // Drain initial subscription/socket-open checks behind the 2 s push throttle before the isolated child write.
+        kotlinx.coroutines.delay(2_500)
+        val dao = database.customPlaylistDao()
+        val parent = dao.get(union.id)
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                database.openHelper.writableDatabase.execSQL("UPDATE union_playlist_sources SET sourcePlaylistId = ? WHERE unionPlaylistId = ?", arrayOf(second.id, union.id))
+            }
+        }
+        assertEquals(parent, dao.get(union.id))
+        awaitUntil(6_000, "source-only write must reach sync server") {
+            server.namespaces["playlists"]?.jsonArray?.first { it.jsonObject["playlist"]?.jsonObject?.get("id")?.jsonPrimitive?.content == union.id }
+                ?.jsonObject?.get("union_sources")?.jsonArray?.single()?.jsonObject?.get("source_playlist_id")?.jsonPrimitive?.content == second.id
+        }
+    }
+
+    @Test fun otherClientCanReplaceAnExistingLocalPlaylist() = runBlocking {
+        playlists.create("Old phone playlist", PlaylistType.STANDARD)
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val socket = server.awaitSocket()
+        server.namespaces["playlists"] = AppJson.parseToJsonElement(
+            server.namespaces.getValue("playlists").toString().replace("Old phone playlist", "Desktop edited playlist"))
+        val before = server.server.requestsTo("/v1/snapshot").size
+        server.publishFromOtherClient(socket, "playlists")
+        awaitUntil { server.server.requestsTo("/v1/snapshot").size > before }
+        awaitUntil { runBlocking { playlists.customPlaylists.first().map { it.name } == listOf("Desktop edited playlist") } }
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        status("Desktop edited playlist")
+        absent("Old phone playlist")
     }
 
     @Test fun aiDjTogglesPersistAcrossRecreationAndGenerationModes() = runBlocking {
@@ -345,11 +535,19 @@ class SettingsUiTest {
 
     private fun playerPrefs() = Device.context.getSharedPreferences("player_settings", Context.MODE_PRIVATE)
 
-    private suspend fun seedServerPlaylist(name: String) {
-        val playlist = playlists.create(name, PlaylistType.STANDARD)
-        server.namespaces["playlists"] = config.exportPlaylistsJson().jsonArray.let { entries ->
-            JsonArray(entries.filter { it.jsonObject.getValue("playlist").jsonObject.getValue("id").jsonPrimitive.content == playlist.id })
+    /** Server-only playlist: built directly as sync JSON so seeding never mutates (and auto-pushes) local Room. */
+    private fun seedServerPlaylist(name: String) {
+        val now = System.currentTimeMillis() / 1_000
+        server.namespaces["playlists"] = buildJsonArray {
+            addJsonObject {
+                putJsonObject("playlist") {
+                    put("id", java.util.UUID.randomUUID().toString()); put("name", name)
+                    put("created_at", now); put("updated_at", now); put("track_count", 0)
+                    put("playlist_type", "standard"); put("is_distinct", false)
+                }
+                putJsonArray("tracks") {}
+                putJsonArray("union_sources") {}
+            }
         }
-        playlists.delete(playlist.id)
     }
 }

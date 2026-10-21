@@ -58,10 +58,25 @@ internal class FakeSyncSettings(initial: SyncPreferences) : SyncSettingsStore {
     override suspend fun clientId() = "this-client"
 }
 
-internal class FakeAppStateBase : AppStateBaseStore {
-    val values = MutableStateFlow<Map<String, String>>(emptyMap())
-    override suspend fun get(target: String) = values.value[target]
-    override suspend fun set(target: String, signature: String) { values.value += target to signature }
+internal class FakeSyncBase : SyncBaseStore {
+    val values = MutableStateFlow<Map<Pair<SyncBase, String>, String>>(emptyMap())
+    private val versions = mutableMapOf<String, Long>()
+    private val localValues = mutableMapOf<Pair<SyncBase, String>, String>()
+    override suspend fun get(domain: SyncBase, target: String) = values.value[domain to target]?.let {
+        SyncSignatures(it, localValues[domain to target] ?: it)
+    }
+    override suspend fun set(domain: SyncBase, target: String, signature: String, localSignature: String) {
+        localValues[domain to target] = localSignature
+        values.value += (domain to target) to signature
+    }
+    override suspend fun version(target: String) = versions[target]
+    override suspend fun recordVersion(target: String, version: Long) { versions[target] = version }
+    override suspend fun clear(target: String) {
+        values.value = values.value.filterKeys { it.second != target }
+        localValues.keys.removeAll { it.second == target }
+        versions.remove(target)
+    }
+    override suspend fun legacyTargets() = values.value.keys.map { it.second }.filterNot { '#' in it }.toSet()
 }
 
 internal class FakePlayerSettings : PlayerSettingsStore {
@@ -74,14 +89,36 @@ internal class FakePlaylists : PlaylistRepository by unused<PlaylistRepository>(
     override val customPlaylists = MutableStateFlow<List<CustomPlaylist>>(emptyList())
 }
 
+/** [playlists] stands in for Room: REPLACE_ALL imports replace it and exports return it. */
 internal class FakeConfig : ConfigFiles {
     val imports = mutableListOf<Pair<JsonElement, MergePolicy>>()
+    val transaction = kotlinx.coroutines.sync.Mutex()
+    var playlists: JsonElement = JsonArray(emptyList())
     var summary = ImportSummary()
     var onImport: suspend () -> Unit = {}
     override suspend fun importJson(config: JsonElement, policy: MergePolicy, dryRun: Boolean): ImportSummary {
-        check(!dryRun); onImport(); imports += config to policy; return summary
+        check(!dryRun); onImport(); imports += config to policy
+        if (policy == MergePolicy.REPLACE_ALL) playlists = normalize(config.jsonObject.getValue("custom_playlists"))
+        return summary
     }
     override suspend fun import(input: InputStream, policy: MergePolicy, dryRun: Boolean): ImportSummary = error("unused")
-    override suspend fun exportPlaylistsJson(): JsonElement = JsonArray(emptyList())
+    override suspend fun exportPlaylistsJson(): JsonElement = playlists
     override suspend fun exportProviderConfigJson(): JsonElement = JsonObject(emptyMap())
+
+    private fun normalize(data: JsonElement): JsonElement {
+        val json = Json { ignoreUnknownKeys = true }
+        val entries = json.decodeFromJsonElement<List<ConfigCustomPlaylist>>(data)
+        fun source(value: String) = SourceType.entries.firstOrNull { it.name.equals(value.trim(), ignoreCase = true) }?.name?.lowercase()
+        return JsonArray(entries.map { entry ->
+            val type = PlaylistType.entries.firstOrNull { it.name.equals(entry.playlist.playlistType.trim(), ignoreCase = true) }
+            val tracks = entry.tracks.mapNotNull { track -> source(track.trackSource)?.let { track.copy(trackSource = it) } }
+                .sortedBy { it.position }.mapIndexed { index, track -> track.copy(position = index) }
+            val sources = entry.unionSources.mapNotNull { row -> source(row.sourceType)?.let { row.copy(sourceType = it) } }
+                .sortedBy { it.position }.mapIndexed { index, row -> row.copy(position = index) }
+            val normalized = entry.copy(playlist = entry.playlist.copy(playlistType = (type ?: PlaylistType.STANDARD).name.lowercase()),
+                tracks = tracks, unionSources = sources)
+            JsonObject(json.encodeToJsonElement(normalized).jsonObject + mapOf(
+                "tracks" to json.encodeToJsonElement(tracks), "union_sources" to json.encodeToJsonElement(sources)))
+        })
+    }
 }

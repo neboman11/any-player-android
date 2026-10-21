@@ -5,6 +5,7 @@ import com.anyplayer.android.core.model.SourceType
 import com.anyplayer.android.data.auth.ConnectionStore
 import com.anyplayer.android.data.auth.SpotifyTokenProvider
 import com.anyplayer.android.data.auth.StoredConnection
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -12,8 +13,10 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.BufferedSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -135,6 +138,32 @@ class SpotifyPlayerApiTest {
             server.enqueue(MockResponse().setResponseCode(401))
             assertEquals(SpotifyMessages.TOKEN_REFRESH_FAILED, message(true))
             assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun responseBodies_areReadOffTheCallersThread() = runTest {
+        MockWebServer().use { server ->
+            val readers = CopyOnWriteArrayList<Thread>()
+            // Records the thread that consumes each body; on Android a Main-thread read throws NetworkOnMainThreadException.
+            val client = OkHttpClient.Builder().addNetworkInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                val body = requireNotNull(response.body)
+                response.newBuilder().body(object : ResponseBody() {
+                    override fun contentType() = body.contentType()
+                    override fun contentLength() = body.contentLength()
+                    override fun source(): BufferedSource { readers += Thread.currentThread(); return body.source() }
+                }).build()
+            }.build()
+            server.enqueue(MockResponse().setBody("""{"devices":[]}"""))
+            server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":{"status":403,"message":"Restricted device"}}"""))
+            val api = OkHttpSpotifyPlayerApi(client, Tokens(), Connections(), server.url("/v1/"))
+            val caller = Thread.currentThread()
+            assertEquals(emptyList<SpotifyDevice>(), api.devices())
+            val jsonReads = readers.size
+            val failure = try { api.pause(); null } catch (e: SpotifyCommandException) { e }
+            assertEquals("Spotify command failed: pause. Restricted device HTTP 403", failure?.message)
+            assertTrue("JSON and error bodies were both read", jsonReads > 0 && readers.size > jsonReads)
+            assertTrue("Body read on the caller's thread", readers.none { it == caller })
         }
     }
 }

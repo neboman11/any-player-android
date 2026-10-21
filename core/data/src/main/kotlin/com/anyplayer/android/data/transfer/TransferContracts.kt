@@ -1,6 +1,7 @@
 package com.anyplayer.android.data.transfer
 
 import com.anyplayer.android.core.model.PlaybackStatus
+import com.anyplayer.android.core.model.RepeatMode
 import java.io.InputStream
 import java.io.OutputStream
 import kotlinx.serialization.json.JsonElement
@@ -19,7 +20,12 @@ data class ImportSummary(
     val connectionsImported: Int = 0,
     val connectionsSkipped: Int = 0,
     val warnings: List<String> = emptyList(),
+    /** Exported player flags the caller must apply to the live engine; null for dry runs, MERGE_KEEP_LOCAL or files without playback state. */
+    val playbackSettings: ImportedPlaybackSettings? = null,
 )
+
+/** The player flags an `any-player-state` file carries in `playbackState`. */
+data class ImportedPlaybackSettings(val volume: Int, val shuffle: Boolean, val repeat: RepeatMode)
 
 /** Legacy summary line: "$prefix complete. playlists +A/~U, tracks +A/~U, union +A/~U, connections +I/skip S, <warnings>". */
 fun ImportSummary.format(prefix: String): String =

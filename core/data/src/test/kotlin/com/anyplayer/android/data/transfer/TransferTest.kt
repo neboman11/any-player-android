@@ -173,6 +173,38 @@ class TransferTest {
         }
     }
 
+    private suspend fun exportedWithPlayback(): ByteArray {
+        val playback = PlaybackStatus(PlaybackStateType.PAUSED, shuffle = true, repeatMode = RepeatMode.ONE, volume = 37,
+            position = 0, duration = 0, queue = emptyList())
+        val output = ByteArrayOutputStream()
+        transferOf(MemoryTransferStore(data())).export(output, ExportMode.PORTABLE, null, playback)
+        return output.toByteArray()
+    }
+    private suspend fun importedPlayback(policy: MergePolicy, dryRun: Boolean = false) =
+        transferOf(MemoryTransferStore()).import(exportedWithPlayback().inputStream(), policy, null, dryRun).playbackSettings
+
+    @Test fun replaceAllAppliesExportedPlaybackSettings() = runTest {
+        assertEquals(ImportedPlaybackSettings(37, true, RepeatMode.ONE), importedPlayback(MergePolicy.REPLACE_ALL))
+    }
+
+    @Test fun preferImportAppliesExportedPlaybackSettings() = runTest {
+        assertEquals(ImportedPlaybackSettings(37, true, RepeatMode.ONE), importedPlayback(MergePolicy.MERGE_PREFER_IMPORT))
+    }
+
+    @Test fun keepLocalLeavesLocalPlaybackSettingsAlone() = runTest {
+        assertNull(importedPlayback(MergePolicy.MERGE_KEEP_LOCAL))
+    }
+
+    @Test fun dryRunAppliesNoPlaybackSettingsUnderAnyPolicy() = runTest {
+        for (policy in MergePolicy.entries) assertNull(policy.name, importedPlayback(policy, dryRun = true))
+    }
+
+    @Test fun fileWithoutPlaybackStateAppliesNoPlaybackSettings() = runTest {
+        val output = ByteArrayOutputStream()
+        transferOf(MemoryTransferStore(data())).export(output, ExportMode.PORTABLE, null, null)
+        assertNull(transferOf(MemoryTransferStore()).import(output.toByteArray().inputStream(), MergePolicy.REPLACE_ALL, null, false).playbackSettings)
+    }
+
     @Test fun configWarningsMatchLegacyAndDryRunIsPure() = runTest {
         val store = MemoryTransferStore()
         val connections = MemoryConnections()

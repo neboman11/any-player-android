@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         startService(Intent(this, AnyPlayerMediaLibraryService::class.java))
-        handleIncomingIntent(intent)
+        if (savedInstanceState == null) handleIncomingIntent(intent)
         requestNotificationsOnFirstPlayback()
         setContent {
             AnyPlayerTheme { AnyPlayerShell() }

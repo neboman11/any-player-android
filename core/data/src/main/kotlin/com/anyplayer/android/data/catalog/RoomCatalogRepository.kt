@@ -109,17 +109,41 @@ class RoomCatalogRepository @Inject constructor(
     override suspend fun search(query: String, source: SourceType, type: SearchType): SearchResult = supervisorScope {
         if (query.isBlank()) return@supervisorScope SearchResult()
         val saved = connections.awaitLoaded()
-        val results = sourceOrder.filter { source == SourceType.ALL || source == it }.map { provider -> async(Dispatchers.IO) {
-            val conn = saved[provider] ?: return@async SearchResult()
-            try { providers[provider]?.search(conn, query.trim(), type, 100) ?: SearchResult() }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { SearchResult() }
-        } }.awaitAll()
-        SearchResult(results.flatMap { it.tracks }, results.flatMap { it.playlists })
+        val outcomes = sourceOrder.filter { source == SourceType.ALL || source == it }.mapNotNull { provider ->
+            val conn = saved[provider] ?: return@mapNotNull null
+            val client = providers[provider] ?: return@mapNotNull null
+            async(Dispatchers.IO) {
+                try { Result.success(client.search(conn, query.trim(), type, 100)) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    Result.failure(providerSearchFailure(provider, e))
+                }
+            }
+        }.awaitAll()
+        mergeSearchOutcomes(outcomes)
     }
     override suspend fun clearCache() { dao.clearProviders() }
     override suspend fun isDistinct(source: SourceType, playlistId: String) = dao.preference(source.name, normalizePlaylistId(source, playlistId))?.isDistinct ?: false
     override suspend fun setDistinct(source: SourceType, playlistId: String, distinct: Boolean) {
         dao.putPreference(ProviderPlaylistPreferenceEntity(source.name, normalizePlaylistId(source, playlistId), distinct))
     }
+}
+
+internal fun providerSearchFailure(provider: SourceType, error: Exception): IllegalStateException {
+    val label = provider.name.lowercase().replaceFirstChar { it.titlecase() }
+    val message = error.message?.takeIf { it.isNotBlank() } ?: "Unknown error"
+    return IllegalStateException(if (message.startsWith(label, ignoreCase = true)) message else "$label: $message", error)
+}
+
+/** Combines per-provider results; summarizes failures only when every searched provider failed. */
+internal fun mergeSearchOutcomes(outcomes: List<Result<SearchResult>>): SearchResult {
+    val results = outcomes.mapNotNull { it.getOrNull() }
+    if (results.isEmpty()) {
+        val failures = outcomes.mapNotNull { it.exceptionOrNull() }
+        if (failures.isNotEmpty()) {
+            val message = failures.joinToString("; ") { it.message?.takeIf { message -> message.isNotBlank() } ?: "Unknown error" }
+            throw IllegalStateException(message, failures.first())
+        }
+    }
+    return SearchResult(results.flatMap { it.tracks }, results.flatMap { it.playlists })
 }

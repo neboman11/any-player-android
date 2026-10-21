@@ -64,6 +64,31 @@ class SearchViewModelTest {
         assertEquals(SearchPhase.RESULTS, vm.state.value.phase)
     }
 
+    @Test fun missingOrBlankFailureMessageUsesNeutralFallback() = runTest(dispatcher) {
+        val catalog = UiCatalog()
+        val vm = SearchViewModel(SavedStateHandle(), catalog, UiPlaylists(), RecordingEngine(), dispatcher).also { viewModel = it }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect() }
+        vm.setQuery("song")
+        for (message in listOf(null, "", "   ")) {
+            catalog.search = { _, _, _ -> throw IllegalStateException(message) }
+            vm.submit(); runCurrent()
+            assertEquals(SearchPhase.ERROR, vm.state.value.phase)
+            assertEquals("Unknown error", vm.state.value.error)
+            assertTrue(vm.state.value.table.rows.isEmpty())
+        }
+    }
+
+    @Test fun providerFailureDetailsArePreservedForDisplay() = runTest(dispatcher) {
+        val catalog = UiCatalog().apply {
+            search = { _, _, _ -> error("Jellyfin: HTTP 503; Plex: offline") }
+        }
+        val vm = SearchViewModel(SavedStateHandle(), catalog, UiPlaylists(), RecordingEngine(), dispatcher).also { viewModel = it }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect() }
+        vm.setQuery("song"); vm.submit(); runCurrent()
+        assertEquals(SearchPhase.ERROR, vm.state.value.phase)
+        assertEquals("Jellyfin: HTTP 503; Plex: offline", vm.state.value.error)
+    }
+
     @Test fun restoredQuerySourceAndTypeRunOnlyRequestedSearchAndPlaylistCanPlay() = runTest(dispatcher) {
         val handle = SavedStateHandle(mapOf(
             SearchViewModel.KEY_QUERY to "saved",
