@@ -832,6 +832,35 @@ class DefaultSyncEngineTest {
         assertEquals("Future events belong to the restored server's version sequence", 2L, f.sync.lastSyncVersion)
     }
 
+    @Test fun `runtime lower event fetches full snapshot and resets version cursor`() = runTest {
+        val f = Fixture(this)
+        server.enqueue(MockResponse().setBody("{\"version\":12,\"app_state\":${appState()}}"))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request()
+        val restored = JsonObject(appState(queue = listOf(secondSong)) + ("current_track" to AppJson.encodeToJsonElement(Track.serializer(), secondSong)))
+        server.enqueue(MockResponse().setBody("{\"version\":2,\"app_state\":$restored}"))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("app_state", 2, "other"))
+        assertEquals("A restored server starts a new version sequence", 2L, f.sync.lastSyncVersion)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(listOf(secondSong), f.engine.queue.value.entries.map { it.track })
+        assertEquals(2L, f.base.version(f.target))
+    }
+
+    @Test fun `socket Open detects rollback through unconditional snapshot`() = runTest {
+        val f = Fixture(this)
+        server.enqueue(MockResponse().setBody("{\"version\":12,\"app_state\":${appState()}}"))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.enqueue(MockResponse().setBody("{\"version\":2,\"app_state\":{}}"))
+        f.network.value = true; runCurrent()
+        assertEquals("/v1/ws", request().path)
+        val snapshot = withContext(Dispatchers.IO) { server.takeRequest(2, TimeUnit.SECONDS) }
+        assertEquals("/v1/snapshot", snapshot?.path)
+        f.sync.state.first { it.realtimeConnected }
+        f.network.value = false; runCurrent()
+        assertEquals(2L, f.sync.lastSyncVersion)
+        assertTrue(f.engine.queue.value.entries.isEmpty())
+    }
+
     @Test fun `sync base target hashes normalized credentials and rejects URL only legacy bases`() = runTest {
         val prefs = playlistPreferences()
         val f = Fixture(this, prefs)

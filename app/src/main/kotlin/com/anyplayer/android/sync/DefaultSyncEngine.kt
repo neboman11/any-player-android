@@ -597,6 +597,13 @@ class DefaultSyncEngine internal constructor(
                     when (message) {
                         SocketMessage.Open -> {
                             openedAt = now()
+                            operation.withLock {
+                                if (!state.value.conflictPending) client.snapshot(preferences)?.let { snapshot ->
+                                    if (snapshot.number("version")?.let { it < lastSyncVersion } == true) {
+                                        applySnapshot(snapshot, realtimePreferences() ?: preferences, confirm = false, merge = true)
+                                    }
+                                }
+                            }
                             mutableState.update { it.copy(realtimeConnected = true) }
                             playlistPush.request()
                             settingsPush.request()
@@ -614,10 +621,15 @@ class DefaultSyncEngine internal constructor(
     }
 
     internal suspend fun receiveUpdate(preferences: SyncPreferences, event: SyncUpdate) {
-        if (state.value.conflictPending || event.sourceClientId == settings.clientId()) return
+        if (state.value.conflictPending) return
         val current = realtimePreferences() ?: preferences
         if (target(preferences) != target(current)) return
         resetVersionIfNeeded(preferences)
+        if (event.version != null && event.version < lastSyncVersion) {
+            client.snapshot(preferences)?.let { applySnapshot(it, current, confirm = false, merge = true) }
+            return
+        }
+        if (event.sourceClientId == settings.clientId()) return
         if (event.version != null && event.version <= lastSyncVersion) return
         when (event.namespace) {
             "app_state" -> if (current.syncAppState) {
