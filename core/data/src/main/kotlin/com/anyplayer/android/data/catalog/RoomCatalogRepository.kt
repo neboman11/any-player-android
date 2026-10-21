@@ -116,8 +116,7 @@ class RoomCatalogRepository @Inject constructor(
                 try { Result.success(client.search(conn, query.trim(), type, 100)) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
-                    val label = provider.name.lowercase().replaceFirstChar { it.titlecase() }
-                    Result.failure(IllegalStateException("$label: ${e.message?.takeIf { it.isNotBlank() } ?: "Unknown error"}", e))
+                    Result.failure(providerSearchFailure(provider, e))
                 }
             }
         }.awaitAll()
@@ -128,6 +127,12 @@ class RoomCatalogRepository @Inject constructor(
     override suspend fun setDistinct(source: SourceType, playlistId: String, distinct: Boolean) {
         dao.putPreference(ProviderPlaylistPreferenceEntity(source.name, normalizePlaylistId(source, playlistId), distinct))
     }
+}
+
+internal fun providerSearchFailure(provider: SourceType, error: Exception): IllegalStateException {
+    val label = provider.name.lowercase().replaceFirstChar { it.titlecase() }
+    val message = error.message?.takeIf { it.isNotBlank() } ?: "Unknown error"
+    return IllegalStateException(if (message.startsWith(label, ignoreCase = true)) message else "$label: $message", error)
 }
 
 /** Combines per-provider results; summarizes failures only when every searched provider failed. */
