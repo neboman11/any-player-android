@@ -31,7 +31,7 @@ interface CatalogRepository {
 
     /**
      * Blank query → empty. Only the requested [type]; [source] ALL → every connected provider.
-     * Results from providers that succeed are kept; throws the first failure when every searched provider failed.
+     * Results from providers that succeed are kept; summarizes named failures when every searched provider failed.
      */
     suspend fun search(query: String, source: SourceType, type: SearchType): SearchResult
 

@@ -172,7 +172,7 @@ class SearchViewModel @Inject constructor(
             throw e
         } catch (e: Exception) {
             trackResults.value = emptyList()
-            outcome.value = SearchOutcome(SearchPhase.ERROR, e.message ?: "Search failed", request.type)
+            outcome.value = SearchOutcome(SearchPhase.ERROR, e.message?.takeIf { it.isNotBlank() } ?: "Unknown error", request.type)
         }
     }
 

@@ -13,11 +13,21 @@ class SearchOutcomesTest {
     private val jellyfinTrack = Track("jf", "Jellyfin Finale", "Artist", source = SourceType.JELLYFIN)
     private val plexPlaylist = Playlist("px", "Plex Mix", "owner", 2, SourceType.PLEX)
 
-    @Test fun everySearchedProviderFailingThrowsTheFirstFailure() {
-        val error = assertThrows(HttpFailure::class.java) {
-            mergeSearchOutcomes(listOf(Result.failure(HttpFailure(503, "HTTP 503")), Result.failure(IOException("offline"))))
+    @Test fun everySearchedProviderFailingIncludesEveryProviderInOrder() {
+        val jellyfinFailure = IllegalStateException("Jellyfin: HTTP 503", HttpFailure(503, "HTTP 503"))
+        val plexFailure = IllegalStateException("Plex: offline", IOException("offline"))
+        val error = assertThrows(IllegalStateException::class.java) {
+            mergeSearchOutcomes(listOf(Result.failure(jellyfinFailure), Result.failure(plexFailure)))
         }
-        assertEquals("HTTP 503", error.message)
+        assertEquals("Jellyfin: HTTP 503; Plex: offline", error.message)
+        assertSame(jellyfinFailure, error.cause)
+    }
+
+    @Test fun failureWithoutAMessageUsesNeutralFallback() {
+        val error = assertThrows(IllegalStateException::class.java) {
+            mergeSearchOutcomes(listOf(Result.failure(IOException())))
+        }
+        assertEquals("Unknown error", error.message)
     }
 
     @Test fun partialFailureKeepsResultsFromProvidersThatSucceeded() {
