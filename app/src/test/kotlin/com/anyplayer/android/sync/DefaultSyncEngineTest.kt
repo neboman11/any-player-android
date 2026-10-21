@@ -45,7 +45,7 @@ class DefaultSyncEngineTest {
         val config = FakeConfig()
         val network = MutableStateFlow(online)
         val backoffs = mutableListOf<Long>()
-        val base = FakeAppStateBase()
+        val base = FakeSyncBase()
         val importStatus = SyncImportStatus()
         val imports = SyncImports(config, com.anyplayer.android.ui.settings.FakeConnections(),
             com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
@@ -196,15 +196,27 @@ class DefaultSyncEngineTest {
         assertFalse(DefaultSyncEngine.hasServerData(json("{\"app_state\":{\"current_track\":{},\"queue\":[]}}"), empty.copy(syncAppState = true)))
     }
 
-    @Test fun `connect detects conflict and dismiss preserves local state`() = runTest {
-        val f = Fixture(this)
+    @Test fun `dismissing the connect conflict preserves local state and stops realtime and automatic pushes`() = runTest {
+        val f = Fixture(this, online = true)
+        val opened = CompletableDeferred<Unit>()
         server.enqueue(MockResponse().setBody(buildJsonObject { put("version", 2); put("app_state", appState()) }.toString()))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.complete(Unit) }
+        }))
         f.sync.connect()
         f.sync.state.first { it.conflictPending }
         assertEquals("Server already has synced data - choose which side to keep.", f.sync.state.value.status)
+        opened.await()
+        f.sync.state.first { it.realtimeConnected }
         f.sync.dismissConflict()
         assertEquals("Sync connect cancelled.", f.sync.state.value.status)
         assertTrue(f.engine.queue.value.entries.isEmpty())
+        f.sync.state.first { !it.realtimeConnected }
+        f.engine.setQueue(listOf(song)); runCurrent()
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("/v1/ws", request().path)
+        assertEquals("No reconnect or push after Cancel", 2, server.requestCount)
     }
 
     @Test fun `playlist overwrite requires confirmation and skips provider import too`() = runTest {
@@ -323,7 +335,7 @@ class DefaultSyncEngineTest {
     @Test fun `startup pushes playback changed since the last sync instead of rewinding to the unchanged server copy`() = runTest {
         val f = Fixture(this)
         // The server still holds what this device last pushed; playback moved on while it was unreachable.
-        f.base.values.value = mapOf(f.target to appStateSignature(song, listOf(song), true, "all"))
+        f.base.values.value = mapOf((SyncBase.APP_STATE to f.target) to appStateSignature(song, listOf(song), true, "all"))
         f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
         server.enqueue(remote(appState()))
         server.enqueue(MockResponse().setBody("{}"))
@@ -338,13 +350,13 @@ class DefaultSyncEngineTest {
 
     @Test fun `startup applies server state another client changed even when local playback changed too`() = runTest {
         val f = Fixture(this)
-        f.base.values.value = mapOf(f.target to appStateSignature(secondSong, listOf(secondSong), false, "off"))
+        f.base.values.value = mapOf((SyncBase.APP_STATE to f.target) to appStateSignature(secondSong, listOf(secondSong), false, "off"))
         f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
         server.enqueue(remote(appState()))
         f.sync.start()
         f.sync.state.first { it.status == "Sync pull complete." }
         assertEquals(song, f.engine.queue.value.current?.track)
-        assertEquals(appStateSignature(song, listOf(song), true, "all"), f.base.values.value[f.target])
+        assertEquals(appStateSignature(song, listOf(song), true, "all"), f.base.values.value[SyncBase.APP_STATE to f.target])
     }
 
     @Test fun `startup never replaces playback already running locally`() = runTest {
@@ -366,7 +378,7 @@ class DefaultSyncEngineTest {
         server.enqueue(MockResponse().setBody("{}"))
         f.engine.setQueue(listOf(song)); runCurrent()
         request()
-        f.base.values.first { it[f.target] != null }
+        f.base.values.first { it[SyncBase.APP_STATE to f.target] != null }
         advanceTimeBy(2_001); runCurrent()
         // Server unreachable: the next change is not stored remotely.
         server.enqueue(MockResponse().setResponseCode(503))
@@ -491,5 +503,217 @@ class DefaultSyncEngineTest {
         assertEquals("paused", payload.string("state"))
         advanceTimeBy(120_000); runCurrent()
         assertEquals(3, server.requestCount)
+    }
+
+    private fun playlistsJson(name: String) = buildJsonArray {
+        addJsonObject {
+            putJsonObject("playlist") {
+                put("id", "p1"); put("name", name); put("created_at", 1); put("updated_at", 1)
+                put("track_count", 0); put("playlist_type", "standard")
+            }
+            putJsonArray("tracks") {}
+            putJsonArray("union_sources") {}
+        }
+    }
+    private fun playlistSnapshot(playlists: JsonElement, version: Long = 1) =
+        MockResponse().setBody(buildJsonObject { put("version", version); put("playlists", playlists) }.toString())
+    private fun playlistPreferences() = preferences().copy(syncAppState = false, syncPlaylists = true)
+    /** Local playlists now export as [name]; a new list value stands in for Room's re-emission after the write. */
+    private fun Fixture.editLocalPlaylists(name: String) {
+        config.playlists = playlistsJson(name)
+        playlists.customPlaylists.value = listOf(localPlaylist.copy(name = name))
+    }
+    private suspend fun Fixture.connectToEmptyServer() {
+        server.enqueue(MockResponse().setBody("{\"version\":1}"))
+        server.enqueue(MockResponse().setBody("{}"))
+        sync.connect()
+        sync.state.first { it.status == "Connected. Pushed local data to server." }
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("/v1/state/playlists", request().path)
+    }
+
+    @Test fun `local playlist edits push coalesced at least two seconds after the previous push`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Phone")
+        f.connectToEmptyServer()
+        runCurrent()
+        val pushes = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                pushes.trySend(request.path + " " + request.body.readUtf8())
+                return MockResponse().setBody("{}")
+            }
+        }
+        f.editLocalPlaylists("One"); runCurrent()
+        f.editLocalPlaylists("Two"); runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals("Throttled behind the Connect push", 2, server.requestCount)
+        advanceTimeBy(1_001); runCurrent()
+        val (path, body) = pushes.receive().split(" ", limit = 2)
+        assertEquals("/v1/state/playlists", path)
+        assertEquals(playlistsJson("Two"), json(body)["data"])
+        f.base.values.first { it[SyncBase.PLAYLISTS to f.target] == playlistsSignature(playlistsJson("Two")) }
+        // Room re-emits without an export change: the base filters it.
+        f.playlists.customPlaylists.value = listOf(localPlaylist.copy(name = "Re-emitted"))
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `realtime playlist import is never echoed back`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.connectToEmptyServer()
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop"), version = 2))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+        assertEquals("/v1/snapshot?since_version=0", request().path)
+        assertEquals(MergePolicy.REPLACE_ALL, f.config.imports.single().second)
+        f.playlists.customPlaylists.value = listOf(localPlaylist.copy(name = "Desktop"))
+        runCurrent(); advanceTimeBy(120_000); runCurrent()
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `local normalization changes push the settings namespace and applied remote settings are not echoed`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"settings\":{\"audio_normalization_enabled\":true}}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request()
+        assertTrue(f.playerSettings.settings.value.normalizationEnabled)
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("Applied remote settings are not pushed back", 1, server.requestCount)
+        f.playerSettings.update { it.copy(aiDjEnabled = true) }
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("Settings outside the namespace never push", 1, server.requestCount)
+        server.enqueue(MockResponse().setBody("{}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = false) }; runCurrent()
+        val push = request()
+        assertEquals("/v1/state/settings", push.path)
+        assertEquals(settingsJson(false, false), json(push.body.readUtf8())["data"])
+    }
+
+    /** Local playlists export as [local]; this device and the server last agreed on [base]. */
+    private fun Fixture.syncedPlaylists(base: String, local: String) {
+        this.base.values.value += (SyncBase.PLAYLISTS to target) to playlistsSignature(playlistsJson(base))
+        editLocalPlaylists(local)
+    }
+    private fun Fixture.playlistBase() = base.values.value[SyncBase.PLAYLISTS to target]
+
+    @Test fun `startup merge silently applies playlists only the server changed`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Base", local = "Base")
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop")))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals(listOf(MergePolicy.REPLACE_ALL), f.config.imports.map { it.second })
+        assertEquals(playlistsJson("Desktop"), f.config.playlists)
+        assertEquals(playlistsSignature(playlistsJson("Desktop")), f.playlistBase())
+        f.playlists.customPlaylists.value = listOf(localPlaylist.copy(name = "Desktop"))
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("The applied import is never pushed back", 1, server.requestCount)
+    }
+
+    @Test fun `startup merge pushes playlists only this device changed`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Base", local = "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Base")))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals("/v1/snapshot", request().path)
+        val push = request()
+        assertEquals("/v1/state/playlists", push.path)
+        assertEquals(playlistsJson("Phone"), json(push.body.readUtf8())["data"])
+        assertTrue(f.config.imports.isEmpty())
+        assertEquals(playlistsSignature(playlistsJson("Phone")), f.playlistBase())
+    }
+
+    @Test fun `startup merge with both sides changed still asks and holds automatic pushes until confirmed`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Base", local = "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop")))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync cancelled: playlist overwrite requires confirmation." }
+        assertEquals("/v1/snapshot", request().path)
+        assertTrue(f.config.imports.isEmpty())
+        f.editLocalPlaylists("Phone again")
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("No automatic push may bypass the pending confirmation", 1, server.requestCount)
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop"), version = 2))
+        f.sync.pull(true)
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(playlistsJson("Desktop"), f.config.playlists)
+        server.enqueue(MockResponse().setBody("{}"))
+        f.editLocalPlaylists("After confirming"); runCurrent()
+        assertEquals(playlistsJson("After confirming"), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `realtime merge with both sides changed pushes this device's playlists`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Base", local = "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop"), version = 2))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+        assertEquals("/v1/snapshot?since_version=0", request().path)
+        val push = request()
+        assertEquals("PUT", push.method)
+        assertEquals(playlistsJson("Phone"), json(push.body.readUtf8())["data"])
+        assertTrue(f.config.imports.isEmpty())
+        assertEquals(playlistsSignature(playlistsJson("Phone")), f.playlistBase())
+    }
+
+    @Test fun `realtime merge applies or pushes whichever side alone changed since the base`() = runTest {
+        data class Case(val local: String, val remote: String, val imported: String?, val pushed: String?)
+        val cases = listOf(Case("Base", "Desktop", imported = "Desktop", pushed = null), Case("Phone", "Base", imported = null, pushed = "Phone"),
+            Case("Base", "Base", imported = null, pushed = null))
+        for (case in cases) {
+            val f = Fixture(this, playlistPreferences())
+            f.syncedPlaylists(base = "Base", local = case.local)
+            server.enqueue(playlistSnapshot(playlistsJson(case.remote), version = 2))
+            if (case.pushed != null) server.enqueue(MockResponse().setBody("{}"))
+            f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+            assertEquals("/v1/snapshot?since_version=0", request().path)
+            assertEquals(case.toString(), listOfNotNull(case.imported).map(::playlistsJson),
+                f.config.imports.map { it.first.jsonObject.getValue("custom_playlists") })
+            case.pushed?.let { assertEquals(case.toString(), playlistsJson(it), json(request().body.readUtf8())["data"]) }
+            assertEquals(case.toString(), playlistsSignature(playlistsJson(case.imported ?: case.pushed ?: "Base")), f.playlistBase())
+        }
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test fun `first sync without a base keeps the overwrite guard on startup and realtime`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop")))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync cancelled: playlist overwrite requires confirmation." }
+        assertEquals("/v1/snapshot", request().path)
+        f.editLocalPlaylists("Phone edit")
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop edit"), version = 2))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+        assertEquals("/v1/snapshot?since_version=1", request().path)
+        assertTrue(f.config.imports.isEmpty())
+        assertNull(f.playlistBase())
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `playlist signature ignores exporter formatting but not content`() {
+        val phone = json("""{"p":[
+            {"playlist":{"id":"a","name":"A","description":null,"created_at":1,"updated_at":2,"track_count":2,"playlist_type":"standard","is_distinct":false},
+             "tracks":[{"id":1,"playlist_id":"a","track_source":"jellyfin","track_id":"t1","position":0,"added_at":1,"title":"One","artist":"X","album":null},
+                       {"id":2,"playlist_id":"a","track_source":"jellyfin","track_id":"t2","position":1,"added_at":1,"title":"Two","artist":"X","album":null}],
+             "union_sources":[]},
+            {"playlist":{"id":"b","name":"B","created_at":1,"updated_at":1,"track_count":0,"playlist_type":"union","is_distinct":false},"tracks":[],
+             "union_sources":[{"id":3,"union_playlist_id":"b","source_type":"plex","source_playlist_id":"s","position":0,"added_at":1}]}]}""")["p"]
+        val desktop = json("""{"p":[
+            {"playlist":{"is_distinct":false,"playlist_type":"union","track_count":0,"updated_at":1,"created_at":1,"name":"B","id":"b"},
+             "union_sources":[{"id":9,"union_playlist_id":"b","source_type":"plex","source_playlist_id":"s","position":0,"added_at":1}]},
+            {"playlist":{"id":"a","name":"A","created_at":1,"updated_at":2,"track_count":2,"playlist_type":"standard","is_distinct":false},
+             "tracks":[{"id":7,"playlist_id":"a","track_source":"jellyfin","track_id":"t2","position":1,"added_at":1,"title":"Two","artist":"X"},
+                       {"id":8,"playlist_id":"a","track_source":"jellyfin","track_id":"t1","position":0,"added_at":1,"title":"One","artist":"X"}]}]}""")["p"]
+        assertEquals(playlistsSignature(phone), playlistsSignature(desktop))
+        assertNotEquals(playlistsSignature(phone), playlistsSignature(JsonArray(phone!!.jsonArray.take(1))))
+        assertNotEquals(playlistsSignature(phone), playlistsSignature(AppJson.parseToJsonElement(phone.toString().replace("\"Two\"", "\"Renamed\""))))
+        assertEquals(playlistsSignature(JsonArray(emptyList())), playlistsSignature(null))
     }
 }

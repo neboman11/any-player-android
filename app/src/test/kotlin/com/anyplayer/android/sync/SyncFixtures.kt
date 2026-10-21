@@ -58,10 +58,10 @@ internal class FakeSyncSettings(initial: SyncPreferences) : SyncSettingsStore {
     override suspend fun clientId() = "this-client"
 }
 
-internal class FakeAppStateBase : AppStateBaseStore {
-    val values = MutableStateFlow<Map<String, String>>(emptyMap())
-    override suspend fun get(target: String) = values.value[target]
-    override suspend fun set(target: String, signature: String) { values.value += target to signature }
+internal class FakeSyncBase : SyncBaseStore {
+    val values = MutableStateFlow<Map<Pair<SyncBase, String>, String>>(emptyMap())
+    override suspend fun get(domain: SyncBase, target: String) = values.value[domain to target]
+    override suspend fun set(domain: SyncBase, target: String, signature: String) { values.value += (domain to target) to signature }
 }
 
 internal class FakePlayerSettings : PlayerSettingsStore {
@@ -74,14 +74,18 @@ internal class FakePlaylists : PlaylistRepository by unused<PlaylistRepository>(
     override val customPlaylists = MutableStateFlow<List<CustomPlaylist>>(emptyList())
 }
 
+/** [playlists] stands in for Room: REPLACE_ALL imports replace it and exports return it. */
 internal class FakeConfig : ConfigFiles {
     val imports = mutableListOf<Pair<JsonElement, MergePolicy>>()
+    var playlists: JsonElement = JsonArray(emptyList())
     var summary = ImportSummary()
     var onImport: suspend () -> Unit = {}
     override suspend fun importJson(config: JsonElement, policy: MergePolicy, dryRun: Boolean): ImportSummary {
-        check(!dryRun); onImport(); imports += config to policy; return summary
+        check(!dryRun); onImport(); imports += config to policy
+        if (policy == MergePolicy.REPLACE_ALL) playlists = config.jsonObject.getValue("custom_playlists")
+        return summary
     }
     override suspend fun import(input: InputStream, policy: MergePolicy, dryRun: Boolean): ImportSummary = error("unused")
-    override suspend fun exportPlaylistsJson(): JsonElement = JsonArray(emptyList())
+    override suspend fun exportPlaylistsJson(): JsonElement = playlists
     override suspend fun exportProviderConfigJson(): JsonElement = JsonObject(emptyMap())
 }
