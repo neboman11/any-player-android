@@ -1,5 +1,7 @@
 package com.anyplayer.android.sync
 
+import androidx.room.withTransaction
+import com.anyplayer.android.data.db.AppDatabase
 import com.anyplayer.android.core.model.*
 import com.anyplayer.android.data.net.normalizeSyncServerAuthToken
 import com.anyplayer.android.data.net.normalizeSyncServerBaseUrl
@@ -11,6 +13,7 @@ import com.anyplayer.android.data.sync.SyncEngine
 import com.anyplayer.android.data.sync.SyncUiState
 import com.anyplayer.android.data.transfer.ConfigFiles
 import com.anyplayer.android.data.transfer.MergePolicy
+import com.anyplayer.android.data.transfer.ImportSummary
 import com.anyplayer.android.playback.ChangeOrigin
 import com.anyplayer.android.playback.PlaybackEngine
 import java.util.concurrent.atomic.AtomicBoolean
@@ -42,6 +45,7 @@ class DefaultSyncEngine internal constructor(
     private val jitter: (Long) -> Long,
     private val imports: SyncImports,
     private val base: SyncBaseStore,
+    private val playlistTransaction: suspend (suspend () -> Unit) -> Unit,
 ) : SyncEngine {
     @Inject constructor(
         engine: PlaybackEngine,
@@ -53,10 +57,11 @@ class DefaultSyncEngine internal constructor(
         network: SyncNetwork,
         imports: SyncImports,
         base: SyncBaseStore,
+        database: AppDatabase,
     ) : this(engine, settings, playerSettings, playlists, config, client, network,
         CoroutineScope(SupervisorJob() + Dispatchers.IO), Dispatchers.Main.immediate,
         { System.nanoTime() / 1_000_000 }, { jitterBase -> Random.nextLong((jitterBase * 3 / 4).coerceAtLeast(1), jitterBase + 1) },
-        imports, base)
+        imports, base, { block -> database.withTransaction { block() } })
 
     private val mutableState = MutableStateFlow(SyncUiState())
     override val state: StateFlow<SyncUiState> = mutableState.asStateFlow()
@@ -297,27 +302,34 @@ class DefaultSyncEngine internal constructor(
         }
         var applied = true
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
-            val merge = if (preferences.syncPlaylists && !confirm) mergePlaylists(snapshot, target, realtime) else PlaylistMerge.APPLY_REMOTE
-            if (merge == PlaylistMerge.CONFIRM) {
-                playlistPush.awaitingConfirmation = true
-                mutableState.update { it.copy(playlistConfirmationRequired = true) }
-                if (!realtime) {
-                    status("Sync cancelled: playlist overwrite requires confirmation.")
-                }
-                applied = realtime
-            } else {
-                val replace = preferences.syncPlaylists && merge == PlaylistMerge.APPLY_REMOTE
-                if (replace || preferences.syncProviderConfiguration) {
-                    val file = buildJsonObject {
-                        put("export_version", 1)
-                        put("provider_configs", if (preferences.syncProviderConfiguration) snapshot["provider_configuration"] ?: JsonObject(emptyMap()) else JsonObject(emptyMap()))
-                        put("custom_playlists", if (replace) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
+            var decision = PlaylistMerge.UNCHANGED
+            applied = imports.apply {
+                var summary: ImportSummary? = null
+                // Merge reads, REPLACE_ALL and the resulting local base share the importer's Room transaction.
+                // A concurrent writer therefore lands before the comparison or after the recorded import.
+                playlistTransaction {
+                    decision = if (preferences.syncPlaylists && !confirm) mergePlaylists(snapshot, target, realtime) else PlaylistMerge.APPLY_REMOTE
+                    if (decision == PlaylistMerge.CONFIRM) {
+                        playlistPush.awaitingConfirmation = true
+                        mutableState.update { it.copy(playlistConfirmationRequired = true) }
+                        if (!realtime) status("Sync cancelled: playlist overwrite requires confirmation.")
+                    } else {
+                        val replace = preferences.syncPlaylists && decision == PlaylistMerge.APPLY_REMOTE
+                        if (replace || preferences.syncProviderConfiguration) {
+                            val file = buildJsonObject {
+                                put("export_version", 1)
+                                put("provider_configs", if (preferences.syncProviderConfiguration) snapshot["provider_configuration"] ?: JsonObject(emptyMap()) else JsonObject(emptyMap()))
+                                put("custom_playlists", if (replace) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
+                            }
+                            summary = config.importJson(file, if (replace) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL, dryRun = false)
+                            if (replace) playlistPush.record(target, snapshot["playlists"] ?: JsonArray(emptyList()), config.exportPlaylistsJson())
+                        }
                     }
-                    applied = imports.apply(file, if (replace) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
-                    if (applied && replace) playlistPush.record(target, snapshot["playlists"] ?: JsonArray(emptyList()), config.exportPlaylistsJson())
                 }
-                if (merge == PlaylistMerge.PUSH_LOCAL) playlistPush.push(preferences)
+                summary
             }
+            if (decision == PlaylistMerge.CONFIRM && !realtime) applied = false
+            if (decision == PlaylistMerge.PUSH_LOCAL) playlistPush.push(preferences)
         }
         // Versions belong to the entire snapshot, not just the app-state domain.
         lastSyncVersion = maxOf(lastSyncVersion, snapshot.number("version") ?: lastSyncVersion)

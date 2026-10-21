@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -51,7 +52,7 @@ class DefaultSyncEngineTest {
             com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
         val sync = DefaultSyncEngine(engine, settings, playerSettings, playlistSource ?: playlists, config, SyncClient(http),
             object : SyncNetwork { override val available = network }, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler),
-            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base)
+            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base, { block -> config.transaction.withLock { block() } })
         val target = syncBaseTarget(preferences)
         suspend fun start() {
             server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
@@ -902,6 +903,25 @@ class DefaultSyncEngineTest {
         server.enqueue(MockResponse().setBody("{}"))
         f.editLocalPlaylists("Later edit"); runCurrent()
         assertEquals(playlistsJson("Later edit"), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `local edit during import is not overwritten or recorded as agreed`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        val importing = CompletableDeferred<Unit>()
+        val proceed = CompletableDeferred<Unit>()
+        f.config.onImport = { importing.complete(Unit); proceed.await() }
+        server.enqueue(playlistSnapshot(playlistsJson("Remote")))
+        f.sync.pull(true)
+        importing.await()
+        val edit = backgroundScope.launch {
+            f.config.transaction.withLock { f.config.playlists = playlistsJson("Racing local edit") }
+        }
+        runCurrent()
+        proceed.complete(Unit)
+        f.sync.state.first { it.status == "Sync pull complete." }
+        edit.join()
+        assertEquals(playlistsJson("Racing local edit"), f.config.playlists)
+        assertEquals(playlistsSignature(playlistsJson("Remote")), f.base.get(SyncBase.PLAYLISTS, f.target)?.local)
     }
 
     @Test fun `playlist signature ignores exporter formatting but not content`() {

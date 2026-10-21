@@ -91,6 +91,7 @@ internal class FakePlaylists : PlaylistRepository by unused<PlaylistRepository>(
 /** [playlists] stands in for Room: REPLACE_ALL imports replace it and exports return it. */
 internal class FakeConfig : ConfigFiles {
     val imports = mutableListOf<Pair<JsonElement, MergePolicy>>()
+    val transaction = kotlinx.coroutines.sync.Mutex()
     var playlists: JsonElement = JsonArray(emptyList())
     var summary = ImportSummary()
     var onImport: suspend () -> Unit = {}
