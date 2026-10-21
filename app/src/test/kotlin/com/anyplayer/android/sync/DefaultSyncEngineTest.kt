@@ -99,6 +99,7 @@ class DefaultSyncEngineTest {
         repeat(2) {
             val socket = connected.receive()
             f.sync.state.first { it.realtimeConnected }
+            advanceTimeBy(30_001); runCurrent()
             server.enqueue(response())
             socket.close(1000, "drop")
             f.sync.state.first { !it.realtimeConnected }
@@ -108,6 +109,28 @@ class DefaultSyncEngineTest {
         assertEquals(listOf(1_000L, 1_000L), f.backoffs)
         f.network.value = false
         runCurrent()
+    }
+
+    @Test fun `short lived socket opens do not reset exponential backoff`() = runTest {
+        val f = Fixture(this, online = true)
+        val connected = kotlinx.coroutines.channels.Channel<WebSocket>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        fun response() = MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { connected.trySend(webSocket) }
+        })
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
+        server.enqueue(response())
+        f.sync.start()
+        repeat(3) {
+            val socket = connected.receive()
+            f.sync.state.first { it.realtimeConnected }
+            server.enqueue(response())
+            socket.close(1000, "immediate drop")
+            f.sync.state.first { !it.realtimeConnected }
+            runCurrent()
+        }
+        connected.receive()
+        assertEquals(listOf(1_000L, 2_000L, 4_000L), f.backoffs)
+        f.network.value = false; runCurrent()
     }
     private suspend fun request() = withContext(Dispatchers.IO) { server.takeRequest(5, TimeUnit.SECONDS) ?: error("Expected sync request") }
     /** Let real OkHttp responses settle while advancing only the retry clock, never creating edits. */

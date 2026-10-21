@@ -555,11 +555,12 @@ class DefaultSyncEngine internal constructor(
     private suspend fun reconnect(preferences: SyncPreferences) {
         var backoff = 1_000L
         while (currentCoroutineContext().isActive) {
+            var openedAt: Long? = null
             try {
                 client.updates(preferences).collect { message ->
                     when (message) {
                         SocketMessage.Open -> {
-                            backoff = 1_000L
+                            openedAt = now()
                             mutableState.update { it.copy(realtimeConnected = true) }
                             playlistPush.request()
                             settingsPush.request()
@@ -570,6 +571,7 @@ class DefaultSyncEngine internal constructor(
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
             } finally { mutableState.update { it.copy(realtimeConnected = false) } }
+            if (openedAt?.let { now() - it >= 30_000 } == true) backoff = 1_000L
             delay(jitter(backoff))
             backoff = (backoff * 2).coerceAtMost(60_000)
         }
