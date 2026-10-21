@@ -338,7 +338,12 @@ class DefaultSyncEngine internal constructor(
         if (localPlaylists && (snapshot["playlists"] as? JsonArray).isNullOrEmpty()) return PlaylistMerge.CONFIRM
         val agreed = base.get(SyncBase.PLAYLISTS, target)
         if (agreed == null) {
-            // Absence of a credential-keyed base is an explicit first-sync decision.
+            val remote = snapshot["playlists"] ?: JsonArray(emptyList())
+            val local = config.exportPlaylistsJson()
+            if (playlistsSignature(local) == playlistsSignature(remote)) {
+                playlistPush.record(target, remote, local)
+                return PlaylistMerge.UNCHANGED
+            }
             return if (localPlaylists) PlaylistMerge.CONFIRM else PlaylistMerge.APPLY_REMOTE
         }
         if (playlistPush.awaitingConfirmation) return PlaylistMerge.CONFIRM

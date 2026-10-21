@@ -888,6 +888,22 @@ class DefaultSyncEngineTest {
         assertEquals(1, server.requestCount)
     }
 
+    @Test fun `identical playlists without a base establish agreement and allow later edits`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Already equal")
+        server.enqueue(playlistSnapshot(playlistsJson("Already equal")))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertEquals("Sync pull complete.", f.sync.state.value.status)
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertTrue(f.config.imports.isEmpty())
+        assertEquals(playlistsSignature(playlistsJson("Already equal")), f.playlistBase())
+        request()
+        server.enqueue(MockResponse().setBody("{}"))
+        f.editLocalPlaylists("Later edit"); runCurrent()
+        assertEquals(playlistsJson("Later edit"), json(request().body.readUtf8())["data"])
+    }
+
     @Test fun `playlist signature ignores exporter formatting but not content`() {
         val phone = json("""{"p":[
             {"playlist":{"id":"a","name":"A","description":null,"created_at":1,"updated_at":2,"track_count":2,"playlist_type":"standard","is_distinct":false},
