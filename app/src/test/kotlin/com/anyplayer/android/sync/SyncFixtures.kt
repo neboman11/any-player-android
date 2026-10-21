@@ -89,10 +89,27 @@ internal class FakeConfig : ConfigFiles {
     var onImport: suspend () -> Unit = {}
     override suspend fun importJson(config: JsonElement, policy: MergePolicy, dryRun: Boolean): ImportSummary {
         check(!dryRun); onImport(); imports += config to policy
-        if (policy == MergePolicy.REPLACE_ALL) playlists = config.jsonObject.getValue("custom_playlists")
+        if (policy == MergePolicy.REPLACE_ALL) playlists = normalize(config.jsonObject.getValue("custom_playlists"))
         return summary
     }
     override suspend fun import(input: InputStream, policy: MergePolicy, dryRun: Boolean): ImportSummary = error("unused")
     override suspend fun exportPlaylistsJson(): JsonElement = playlists
     override suspend fun exportProviderConfigJson(): JsonElement = JsonObject(emptyMap())
+
+    private fun normalize(data: JsonElement): JsonElement {
+        val json = Json { ignoreUnknownKeys = true }
+        val entries = json.decodeFromJsonElement<List<ConfigCustomPlaylist>>(data)
+        fun source(value: String) = SourceType.entries.firstOrNull { it.name.equals(value.trim(), ignoreCase = true) }?.name?.lowercase()
+        return JsonArray(entries.map { entry ->
+            val type = PlaylistType.entries.firstOrNull { it.name.equals(entry.playlist.playlistType.trim(), ignoreCase = true) }
+            val tracks = entry.tracks.mapNotNull { track -> source(track.trackSource)?.let { track.copy(trackSource = it) } }
+                .sortedBy { it.position }.mapIndexed { index, track -> track.copy(position = index) }
+            val sources = entry.unionSources.mapNotNull { row -> source(row.sourceType)?.let { row.copy(sourceType = it) } }
+                .sortedBy { it.position }.mapIndexed { index, row -> row.copy(position = index) }
+            val normalized = entry.copy(playlist = entry.playlist.copy(playlistType = (type ?: PlaylistType.STANDARD).name.lowercase()),
+                tracks = tracks, unionSources = sources)
+            JsonObject(json.encodeToJsonElement(normalized).jsonObject + mapOf(
+                "tracks" to json.encodeToJsonElement(tracks), "union_sources" to json.encodeToJsonElement(sources)))
+        })
+    }
 }
