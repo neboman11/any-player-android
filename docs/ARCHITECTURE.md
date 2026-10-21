@@ -225,24 +225,28 @@ commit together. Observing UI data never initiates a provider fetch.
   Snapshot versions advance; if the server's version goes backwards (reset/restore), the
   merge bases and realtime version cursor are cleared.
 - Sync is confirmed (realtime and automatic pushes enabled) only after a successful snapshot
-  from start/Connect; an unreachable server or unreadable snapshot confirms nothing.
+  from start/Connect; an unreachable server or unreadable snapshot confirms nothing. A failed
+  startup snapshot keeps the target pending and retries with backoff when the network is
+  available; a failed Connect falls back to the previously confirmed target.
 - Playlists and settings: while sync is confirmed and the domain is selected, local
   custom-playlist edits (playlist, track and union-source tables are observed) and
-  normalization changes push their namespace (≥2 s coalescing, retried with backoff on failure
-  and re-checked when the socket reconnects) whenever the local export differs from that
-  domain's local base; applied remote data is never echoed back. Playlists merge three-way on
-  startup, realtime and manual pulls: only one side changed → that side wins silently; both
-  changed → startup and manual pulls ask for overwrite confirmation, realtime pushes the local
-  copy. With no base yet, identical payloads establish one silently and differing payloads ask.
-  An empty or missing remote playlist list never deletes local playlists without
-  confirmation. Force Pull runs this merge first and shows "Confirm playlist overwrite" only
-  when it needs confirmation; conflict resolution always overwrites. Settings get the same
-  protection: an unpushed local normalization change is pushed rather than overwritten.
+  normalization changes push their namespace (≥2 s coalescing) whenever the local export
+  differs from that domain's local base; applied remote data is never echoed back. Failed
+  pushes retry with backoff, and on socket open; both first fetch a full snapshot and run the
+  merge, so remote edits made while offline are never overwritten. Playlists merge three-way:
+  only one side changed → that side wins silently; both changed → manual/startup pulls,
+  retries and reconnects ask for a choice, and realtime pauses playlist sync with the status
+  "Playlist sync paused: confirm in Settings". With no base yet, identical payloads establish
+  one silently and differing payloads ask. An empty remote list only asks when the server
+  copy changed since the base. The "Confirm playlist overwrite" dialog appears only for the
+  user's own Force Pull (which merges first) and offers Continue (take the server copy),
+  "Keep this device's playlists" (push local) or Cancel. Settings get the same protection.
 - Cancelling the Connect conflict dialog stops realtime and automatic pushes until the next
   Connect or app start.
 - Merge bases (`sync_app_state_base`) are keyed by the server URL plus a SHA-256 of the auth
   token (never the token itself), so a different account or reset server starts without a
-  base. Each domain stores a remote signature (last applied/pushed server payload) and a local
+  base; a legacy URL-only base is adopted once if the first snapshot still matches it, and
+  dropped otherwise. Each domain stores a remote signature (last applied/pushed server payload) and a local
   signature (local export after import or push); the import and base capture share one Room
   transaction. App-state merge base: the queue-content signature (current track, queue,
   shuffle, repeat). Startup
@@ -251,9 +255,11 @@ commit together. Observing UI data never initiates a provider fetch.
   before sync started, e.g. Android Auto). The startup pull never replaces playback that is
   already playing. Content another client changed still applies; explicit pulls and conflict
   resolution always apply the server.
-- WebSocket reconnect backs off 1–60 s with jitter and network availability gating.
-  App-state events first fetch `/v1/state/app-state`, with snapshot fallback. Other
-  namespace events never apply snapshot playback; playlist events use the three-way merge above.
+- WebSocket reconnect backs off 1–60 s with jitter and network availability gating; the
+  backoff resets only after a socket stays open for 30 s. App-state events first fetch
+  `/v1/state/app-state`, with snapshot fallback; an event whose version is lower than the
+  cursor (server rollback) fetches the full snapshot. Other namespace events never apply
+  snapshot playback; playlist events use the three-way merge above.
 - Imported normalization is persisted and applied; provider URL changes revalidate/refresh
   only the affected provider. Config summaries/errors reach Settings without rerunning startup.
 
@@ -603,16 +609,19 @@ DjController lazily through DefaultAppStartup after the visibility/playback gate
   with exact position) — never periodically. WS events fetch `GET /v1/state/app-state` when only
   `app_state` changed, falling back to `/v1/snapshot?since_version`.
 - Local custom-playlist edits (playlist, track and union-source tables) and normalization
-  changes push the `playlists` / `settings` namespaces (≥2 s coalescing, retried on failure and
-  on socket reconnect) while sync is confirmed, only when the local export differs from that
-  domain's local base; applied remote data is never echoed back. Playlists merge three-way
-  (see §5.5): with no base, identical payloads establish one and differing payloads ask; an
-  empty remote never silently deletes local playlists.
+  changes push the `playlists` / `settings` namespaces (≥2 s coalescing) while sync is
+  confirmed, only when the local export differs from that domain's local base; applied remote
+  data is never echoed back. Retries and socket-open checks fetch a full snapshot and merge
+  before pushing. Playlists merge three-way (see §5.5): with no base, identical payloads
+  establish one and differing payloads ask; an empty remote asks only if it changed since the
+  base; a realtime conflict pauses playlist sync with a persistent status instead of popping a
+  dialog. Whether local playlists exist is read from the export inside the merge transaction.
 - Realtime applies only the event's namespace and never snapshot playback for
-  playlist/settings/provider events. A slow initial Room emission is treated conservatively as
-  existing local playlists, not coroutine cancellation. Synced normalization is persisted as well
-  as applied to playback. Config import summaries/errors reach Settings' transfer status; changed
-  provider URLs are revalidated and catalog refreshed without restarting startup.
+  playlist/settings/provider events; an event older than the version cursor, and every socket
+  open, fetches the full snapshot so a server rollback is detected. Synced normalization is
+  persisted as well as applied to playback. Config import summaries/errors reach Settings'
+  transfer status; changed provider URLs are revalidated and catalog refreshed without
+  restarting startup.
 - Cancelling the Connect conflict dialog stops realtime and automatic pushes until the next
   Connect or app start.
 - Startup network work (catalog refresh, sync pull) is gated on the UI reaching STARTED
