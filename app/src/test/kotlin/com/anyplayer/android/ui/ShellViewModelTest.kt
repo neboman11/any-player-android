@@ -49,11 +49,10 @@ class ShellViewModelTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { holder.redirects.toList(late) }
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.spotifySettingsRequests.toList(late) }
         assertTrue(late.isEmpty())
-        // Recreation re-reads the same launch Intent: not republished.
+        // publish represents a newly delivered Intent, not Activity restoration. Restoration is
+        // covered with a fresh holder in SpotifyIntegrationTest, at the Activity boundary.
         holder.publish(callback)
-        assertTrue(late.isEmpty())
-        holder.publish("anyplayer://spotify-callback?code=new&state=new")
-        assertEquals(2, late.size)
+        assertEquals(listOf(callback, callback), late)
     }
 
     @Test fun newestCallbackIsRetainedAndAStaleClaimCannotTakeIt() = runTest(dispatcher) {

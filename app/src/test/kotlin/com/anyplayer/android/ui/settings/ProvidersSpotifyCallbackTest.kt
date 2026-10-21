@@ -60,18 +60,17 @@ class ProvidersSpotifyCallbackTest {
         completions.receive()
     }
 
-    @Test fun repeatedLaunchIntentIsIgnoredButANewCallbackIsHandled() = runTest(dispatcher) {
+    @Test fun newlyDeliveredCallbacksAreHandledEvenWhenTheirUrisMatch() = runTest(dispatcher) {
         val vm = providers()
         runCurrent()
         holder.publish(CALLBACK)
         completions.receive()
         vm.connected()
+        // Restoration must be filtered by MainActivity, not an in-memory URI comparison.
         holder.publish(CALLBACK)
-        advanceUntilIdle()
-        assertFalse(vm.state.value.busy)
-        assertTrue(completions.tryReceive().isFailure)
-        holder.publish("anyplayer://spotify-callback?code=new&state=new")
         completions.receive()
+        vm.state.first { !it.busy }
+        assertTrue(completions.tryReceive().isFailure)
     }
 
     private companion object {
