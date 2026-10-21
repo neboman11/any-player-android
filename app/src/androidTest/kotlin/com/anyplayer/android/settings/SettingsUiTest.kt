@@ -12,7 +12,6 @@ import com.anyplayer.android.data.playlists.PlaylistRepository
 import com.anyplayer.android.data.settings.*
 import com.anyplayer.android.data.store.SecurePrefs
 import com.anyplayer.android.data.sync.SyncEngine
-import com.anyplayer.android.data.transfer.ConfigFiles
 import com.anyplayer.android.dj.*
 import com.anyplayer.android.playback.PlaybackEngine
 import com.anyplayer.android.sync.FakeSyncServer
@@ -51,7 +50,6 @@ class SettingsUiTest {
     @Inject lateinit var djSettings: DjSettingsStore
     @Inject lateinit var secure: SecurePrefs
     @Inject lateinit var playlists: PlaylistRepository
-    @Inject lateinit var config: ConfigFiles
     @Inject lateinit var dj: Provider<DjController>
     private lateinit var server: FakeSyncServer
     private var activity: ActivityScenario<MainActivity>? = null
@@ -251,6 +249,34 @@ class SettingsUiTest {
         awaitUntil { !playerPrefs().getBoolean("normalizationEnabled", true) }
     }
 
+    @Test fun localNormalizationChangePushesSettingsOverRealtime() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncPlaylists = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        assertEquals(false, server.namespaces.getValue("settings").jsonObject.getValue("audio_normalization_enabled").jsonPrimitive.boolean)
+        click("Normalize Audio Across Providers")
+        awaitUntil(6_000, "settings PUT enabling normalization; settings=${server.namespaces["settings"]}") {
+            server.namespaces["settings"]?.jsonObject?.get("audio_normalization_enabled")?.jsonPrimitive?.boolean == true
+        }
+    }
+
+    @Test fun localPlaylistCreationPushesOverRealtime() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("field_new_standard_playlist_name").performTextInput("New phone playlist")
+        compose.onNodeWithTag("create_standard_playlist_button").performClick()
+        status("New phone playlist")
+        awaitUntil(6_000, "playlist PUT containing New phone playlist; wire=${server.server.log.map { it.method + it.path }}") {
+            server.namespaces["playlists"].toString().contains("New phone playlist")
+        }
+    }
+
     @Test fun aiDjTogglesPersistAcrossRecreationAndGenerationModes() = runBlocking {
         openSettings()
         compose.onNodeWithTag("settings_tab_AI_DJ").performClick()
@@ -368,11 +394,19 @@ class SettingsUiTest {
 
     private fun playerPrefs() = Device.context.getSharedPreferences("player_settings", Context.MODE_PRIVATE)
 
-    private suspend fun seedServerPlaylist(name: String) {
-        val playlist = playlists.create(name, PlaylistType.STANDARD)
-        server.namespaces["playlists"] = config.exportPlaylistsJson().jsonArray.let { entries ->
-            JsonArray(entries.filter { it.jsonObject.getValue("playlist").jsonObject.getValue("id").jsonPrimitive.content == playlist.id })
+    /** Server-only playlist: built directly as sync JSON so seeding never mutates (and auto-pushes) local Room. */
+    private fun seedServerPlaylist(name: String) {
+        val now = System.currentTimeMillis() / 1_000
+        server.namespaces["playlists"] = buildJsonArray {
+            addJsonObject {
+                putJsonObject("playlist") {
+                    put("id", java.util.UUID.randomUUID().toString()); put("name", name)
+                    put("created_at", now); put("updated_at", now); put("track_count", 0)
+                    put("playlist_type", "standard"); put("is_distinct", false)
+                }
+                putJsonArray("tracks") {}
+                putJsonArray("union_sources") {}
+            }
         }
-        playlists.delete(playlist.id)
     }
 }

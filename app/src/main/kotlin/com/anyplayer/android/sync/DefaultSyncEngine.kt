@@ -41,7 +41,7 @@ class DefaultSyncEngine internal constructor(
     private val now: () -> Long,
     private val jitter: (Long) -> Long,
     private val imports: SyncImports,
-    private val base: AppStateBaseStore,
+    private val base: SyncBaseStore,
 ) : SyncEngine {
     @Inject constructor(
         engine: PlaybackEngine,
@@ -52,7 +52,7 @@ class DefaultSyncEngine internal constructor(
         client: SyncClient,
         network: SyncNetwork,
         imports: SyncImports,
-        base: AppStateBaseStore,
+        base: SyncBaseStore,
     ) : this(engine, settings, playerSettings, playlists, config, client, network,
         CoroutineScope(SupervisorJob() + Dispatchers.IO), Dispatchers.Main.immediate,
         { System.nanoTime() / 1_000_000 }, { jitterBase -> Random.nextLong((jitterBase * 3 / 4).coerceAtLeast(1), jitterBase + 1) },
@@ -77,9 +77,14 @@ class DefaultSyncEngine internal constructor(
     private var conflictPreferences: SyncPreferences? = null
     @Volatile private var confirmedPreferences: SyncPreferences? = null
 
+    private val playlistPush = DomainPush(SyncBase.PLAYLISTS, "playlists", { it.syncPlaylists }, requireBase = true,
+        { config.exportPlaylistsJson() }, ::playlistsSignature)
+    private val settingsPush = DomainPush(SyncBase.SETTINGS, "settings", { it.syncSettings }, requireBase = false,
+        { playerSettings.awaitLoaded().let { settingsJson(it.normalizationEnabled, it.normalizationStrict) } }, ::settingsSignature)
+
     override fun start() {
         if (!started.compareAndSet(false, true)) return
-        observeEngine()
+        observeLocalChanges()
         scope.launch {
             engine.awaitRestored()
             settings.awaitLoaded()
@@ -95,7 +100,7 @@ class DefaultSyncEngine internal constructor(
         // Explicit connection owns initial conflict resolution; a later startup must not pull over it.
         started.set(true)
         confirmedPreferences = null
-        observeEngine()
+        observeLocalChanges()
         scope.launch {
             engine.awaitRestored()
             settings.awaitLoaded()
@@ -119,7 +124,7 @@ class DefaultSyncEngine internal constructor(
     }
 
     override fun pull(confirmPlaylistOverwrite: Boolean) {
-        observeEngine()
+        observeLocalChanges()
         scope.launch { engine.awaitRestored(); action { pullNow(it, confirmPlaylistOverwrite, startup = false) } }
     }
 
@@ -197,7 +202,7 @@ class DefaultSyncEngine internal constructor(
     private suspend fun reconcileAppState(data: JsonObject, preferences: SyncPreferences, preserveEmpty: Boolean, merge: Boolean, startup: Boolean) {
         val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
         if (merge) {
-            val agreed = base.get(target)
+            val agreed = base.get(SyncBase.APP_STATE, target)
             val local = localSignature()
             val localNewer = agreed != null && remoteSignature(data) == agreed && local != agreed
             if ((startup && engine.player.value.playRequested) || localNewer) {
@@ -205,7 +210,7 @@ class DefaultSyncEngine internal constructor(
                 return
             }
         }
-        if (applyAppState(data, preserveEmpty)) base.set(target, localSignature())
+        if (applyAppState(data, preserveEmpty)) base.set(SyncBase.APP_STATE, target, localSignature())
     }
 
     private fun localSignature(): String {
@@ -256,6 +261,7 @@ class DefaultSyncEngine internal constructor(
         merge: Boolean = false,
         startup: Boolean = false,
     ): Boolean {
+        val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
         if (!appStateOnly && preferences.syncSettings) {
             val data = snapshot["settings"] as? JsonObject ?: JsonObject(emptyMap())
             val local = playerSettings.awaitLoaded()
@@ -266,6 +272,7 @@ class DefaultSyncEngine internal constructor(
                 suppressUntil = now() + ECHO_WINDOW_MS
                 engine.setNormalization(enabled, strict)
             }
+            settingsPush.record(target, settingsJson(enabled, strict))
         }
         if (preferences.syncAppState && applyPlayback) {
             (snapshot["app_state"] as? JsonObject)?.let { reconcileAppState(it, preferences, preserveEmpty, merge, startup) }
@@ -274,7 +281,10 @@ class DefaultSyncEngine internal constructor(
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
             if (preferences.syncPlaylists && !confirm &&
                 (withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true)) {
-                if (!realtime) status("Sync cancelled: playlist overwrite requires confirmation.")
+                if (!realtime) {
+                    playlistPush.awaitingConfirmation = true
+                    status("Sync cancelled: playlist overwrite requires confirmation.")
+                }
                 applied = realtime
             } else {
                 val file = buildJsonObject {
@@ -283,6 +293,7 @@ class DefaultSyncEngine internal constructor(
                     put("custom_playlists", if (preferences.syncPlaylists) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
                 }
                 applied = imports.apply(file, if (preferences.syncPlaylists) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
+                if (applied && preferences.syncPlaylists) playlistPush.record(target, config.exportPlaylistsJson())
             }
         }
         // Versions belong to the entire snapshot, not just the app-state domain.
@@ -290,9 +301,14 @@ class DefaultSyncEngine internal constructor(
         return applied
     }
 
-    private fun observeEngine() {
+    private fun observeLocalChanges() {
         if (!observing.compareAndSet(false, true)) return
         scope.launch {
+            launch { playlistPush.consume() }
+            launch { settingsPush.consume() }
+            // Room re-emits on every playlist, track or union-source write; the base filters non-changes.
+            launch { playlists.customPlaylists.collect { playlistPush.request() } }
+            launch { playerSettings.settings.map { settingsJson(it.normalizationEnabled, it.normalizationStrict) }.distinctUntilChanged().collect { settingsPush.request() } }
             engine.awaitRestored()
             if (engine.queue.value.entries.isNotEmpty()) observedQueue = true
             launch { engine.queue.collect { if (it.entries.isNotEmpty()) observedQueue = true } }
@@ -334,7 +350,7 @@ class DefaultSyncEngine internal constructor(
         val success = client.push(preferences, "app-state", settings.clientId(), payload.toJson())
         // Even failed attempts are throttled: never burst on a failing server.
         lastAppPushAt = now()
-        if (success) base.set(normalizeSyncServerBaseUrl(preferences.serverTarget), payload.signature())
+        if (success) base.set(SyncBase.APP_STATE, normalizeSyncServerBaseUrl(preferences.serverTarget), payload.signature())
         return success
     }
 
@@ -342,14 +358,8 @@ class DefaultSyncEngine internal constructor(
         val id = settings.clientId()
         val pushes = buildList {
             if (preferences.syncAppState) add(async { pushAppState(preferences) })
-            if (preferences.syncSettings) add(async {
-                val values = playerSettings.awaitLoaded()
-                client.push(preferences, "settings", id, buildJsonObject {
-                    put("audio_normalization_enabled", values.normalizationEnabled)
-                    put("audio_normalization_strict_mode", values.normalizationStrict)
-                })
-            })
-            if (preferences.syncPlaylists) add(async { domainPush { client.push(preferences, "playlists", id, config.exportPlaylistsJson()) } })
+            if (preferences.syncSettings) add(async { domainPush { settingsPush.push(preferences) } })
+            if (preferences.syncPlaylists) add(async { domainPush { playlistPush.push(preferences) } })
             if (preferences.syncProviderConfiguration) add(async { domainPush { client.push(preferences, "provider-configuration", id, config.exportProviderConfigJson()) } })
         }
         pushes.awaitAll().all { it }
@@ -358,6 +368,69 @@ class DefaultSyncEngine internal constructor(
     private suspend fun domainPush(block: suspend () -> Boolean): Boolean = try { block() } catch (e: Exception) {
         if (e is CancellationException) throw e
         false
+    }
+
+    private fun canPushDomains() = confirmedPreferences != null && !state.value.conflictPending
+
+    /**
+     * Playlists or settings. While sync is confirmed, local changes are pushed at least
+     * [MIN_PUSH_INTERVAL_MS] apart (failed attempts included), and only when the local export differs
+     * from the merge base, so a remote copy just applied is never echoed back.
+     */
+    private inner class DomainPush(
+        val domain: SyncBase,
+        val namespace: String,
+        val selected: (SyncPreferences) -> Boolean,
+        /** Without a base only Connect or a confirmed pull may decide which side wins. */
+        val requireBase: Boolean,
+        val export: suspend () -> JsonElement,
+        val signature: (JsonElement) -> String,
+    ) {
+        val requests = Channel<Unit>(Channel.CONFLATED)
+        /** A pull is waiting for the user to confirm a playlist overwrite; pushing would bypass that choice. */
+        @Volatile var awaitingConfirmation = false
+        private var lastPushAt = Long.MIN_VALUE
+
+        fun request() { if (canPushDomains()) requests.trySend(Unit) }
+
+        suspend fun consume() {
+            for (ignored in requests) {
+                throttle()
+                // Consume changes coalesced during the throttle delay; export the latest state once.
+                while (requests.tryReceive().isSuccess) Unit
+                operation.withLock {
+                    val preferences = realtimePreferences() ?: return@withLock
+                    val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
+                    if (!canPushDomains() || !selected(preferences) || target.isEmpty() || awaitingConfirmation) return@withLock
+                    val agreed = base.get(domain, target)
+                    if (agreed == null && requireBase) return@withLock
+                    domainPush {
+                        val data = export()
+                        signature(data) == agreed || push(preferences, data)
+                    }
+                }
+            }
+        }
+
+        suspend fun push(preferences: SyncPreferences, data: JsonElement? = null): Boolean {
+            throttle()
+            val payload = data ?: export()
+            val success = client.push(preferences, namespace, settings.clientId(), payload)
+            // Even failed attempts are throttled: never burst on a failing server.
+            lastPushAt = now()
+            if (success) record(normalizeSyncServerBaseUrl(preferences.serverTarget), payload)
+            return success
+        }
+
+        /** [data] is now what this device and [target] agree on. */
+        suspend fun record(target: String, data: JsonElement) {
+            base.set(domain, target, signature(data))
+            awaitingConfirmation = false
+        }
+
+        private suspend fun throttle() {
+            if (lastPushAt != Long.MIN_VALUE) delay((MIN_PUSH_INTERVAL_MS - (now() - lastPushAt)).coerceAtLeast(0))
+        }
     }
 
     private fun beginRealtime() {

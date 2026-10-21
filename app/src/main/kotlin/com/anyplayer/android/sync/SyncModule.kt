@@ -11,5 +11,5 @@ import dagger.hilt.components.SingletonComponent
 abstract class SyncModule {
     @Binds abstract fun syncEngine(implementation: DefaultSyncEngine): SyncEngine
     @Binds abstract fun syncNetwork(implementation: AndroidSyncNetwork): SyncNetwork
-    @Binds abstract fun appStateBase(implementation: SharedPreferencesAppStateBaseStore): AppStateBaseStore
+    @Binds abstract fun syncBase(implementation: SharedPreferencesSyncBaseStore): SyncBaseStore
 }

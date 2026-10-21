@@ -45,7 +45,7 @@ class DefaultSyncEngineTest {
         val config = FakeConfig()
         val network = MutableStateFlow(online)
         val backoffs = mutableListOf<Long>()
-        val base = FakeAppStateBase()
+        val base = FakeSyncBase()
         val importStatus = SyncImportStatus()
         val imports = SyncImports(config, com.anyplayer.android.ui.settings.FakeConnections(),
             com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
@@ -335,7 +335,7 @@ class DefaultSyncEngineTest {
     @Test fun `startup pushes playback changed since the last sync instead of rewinding to the unchanged server copy`() = runTest {
         val f = Fixture(this)
         // The server still holds what this device last pushed; playback moved on while it was unreachable.
-        f.base.values.value = mapOf(f.target to appStateSignature(song, listOf(song), true, "all"))
+        f.base.values.value = mapOf((SyncBase.APP_STATE to f.target) to appStateSignature(song, listOf(song), true, "all"))
         f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
         server.enqueue(remote(appState()))
         server.enqueue(MockResponse().setBody("{}"))
@@ -350,13 +350,13 @@ class DefaultSyncEngineTest {
 
     @Test fun `startup applies server state another client changed even when local playback changed too`() = runTest {
         val f = Fixture(this)
-        f.base.values.value = mapOf(f.target to appStateSignature(secondSong, listOf(secondSong), false, "off"))
+        f.base.values.value = mapOf((SyncBase.APP_STATE to f.target) to appStateSignature(secondSong, listOf(secondSong), false, "off"))
         f.engine.setQueue(listOf(song, secondSong), startIndex = 1, origin = ChangeOrigin.RESTORE)
         server.enqueue(remote(appState()))
         f.sync.start()
         f.sync.state.first { it.status == "Sync pull complete." }
         assertEquals(song, f.engine.queue.value.current?.track)
-        assertEquals(appStateSignature(song, listOf(song), true, "all"), f.base.values.value[f.target])
+        assertEquals(appStateSignature(song, listOf(song), true, "all"), f.base.values.value[SyncBase.APP_STATE to f.target])
     }
 
     @Test fun `startup never replaces playback already running locally`() = runTest {
@@ -378,7 +378,7 @@ class DefaultSyncEngineTest {
         server.enqueue(MockResponse().setBody("{}"))
         f.engine.setQueue(listOf(song)); runCurrent()
         request()
-        f.base.values.first { it[f.target] != null }
+        f.base.values.first { it[SyncBase.APP_STATE to f.target] != null }
         advanceTimeBy(2_001); runCurrent()
         // Server unreachable: the next change is not stored remotely.
         server.enqueue(MockResponse().setResponseCode(503))
@@ -503,5 +503,90 @@ class DefaultSyncEngineTest {
         assertEquals("paused", payload.string("state"))
         advanceTimeBy(120_000); runCurrent()
         assertEquals(3, server.requestCount)
+    }
+
+    private fun playlistsJson(name: String) = buildJsonArray {
+        addJsonObject {
+            putJsonObject("playlist") {
+                put("id", "p1"); put("name", name); put("created_at", 1); put("updated_at", 1)
+                put("track_count", 0); put("playlist_type", "standard")
+            }
+            putJsonArray("tracks") {}
+            putJsonArray("union_sources") {}
+        }
+    }
+    private fun playlistSnapshot(playlists: JsonElement, version: Long = 1) =
+        MockResponse().setBody(buildJsonObject { put("version", version); put("playlists", playlists) }.toString())
+    private fun playlistPreferences() = preferences().copy(syncAppState = false, syncPlaylists = true)
+    /** Local playlists now export as [name]; a new list value stands in for Room's re-emission after the write. */
+    private fun Fixture.editLocalPlaylists(name: String) {
+        config.playlists = playlistsJson(name)
+        playlists.customPlaylists.value = listOf(localPlaylist.copy(name = name))
+    }
+    private suspend fun Fixture.connectToEmptyServer() {
+        server.enqueue(MockResponse().setBody("{\"version\":1}"))
+        server.enqueue(MockResponse().setBody("{}"))
+        sync.connect()
+        sync.state.first { it.status == "Connected. Pushed local data to server." }
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("/v1/state/playlists", request().path)
+    }
+
+    @Test fun `local playlist edits push coalesced at least two seconds after the previous push`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Phone")
+        f.connectToEmptyServer()
+        runCurrent()
+        val pushes = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                pushes.trySend(request.path + " " + request.body.readUtf8())
+                return MockResponse().setBody("{}")
+            }
+        }
+        f.editLocalPlaylists("One"); runCurrent()
+        f.editLocalPlaylists("Two"); runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals("Throttled behind the Connect push", 2, server.requestCount)
+        advanceTimeBy(1_001); runCurrent()
+        val (path, body) = pushes.receive().split(" ", limit = 2)
+        assertEquals("/v1/state/playlists", path)
+        assertEquals(playlistsJson("Two"), json(body)["data"])
+        f.base.values.first { it[SyncBase.PLAYLISTS to f.target] == playlistsSignature(playlistsJson("Two")) }
+        // Room re-emits without an export change: the base filters it.
+        f.playlists.customPlaylists.value = listOf(localPlaylist.copy(name = "Re-emitted"))
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `realtime playlist import is never echoed back`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.connectToEmptyServer()
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop"), version = 2))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+        assertEquals("/v1/snapshot?since_version=0", request().path)
+        assertEquals(MergePolicy.REPLACE_ALL, f.config.imports.single().second)
+        f.playlists.customPlaylists.value = listOf(localPlaylist.copy(name = "Desktop"))
+        runCurrent(); advanceTimeBy(120_000); runCurrent()
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `local normalization changes push the settings namespace and applied remote settings are not echoed`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"settings\":{\"audio_normalization_enabled\":true}}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request()
+        assertTrue(f.playerSettings.settings.value.normalizationEnabled)
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("Applied remote settings are not pushed back", 1, server.requestCount)
+        f.playerSettings.update { it.copy(aiDjEnabled = true) }
+        runCurrent(); advanceTimeBy(10_000); runCurrent()
+        assertEquals("Settings outside the namespace never push", 1, server.requestCount)
+        server.enqueue(MockResponse().setBody("{}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = false) }; runCurrent()
+        val push = request()
+        assertEquals("/v1/state/settings", push.path)
+        assertEquals(settingsJson(false, false), json(push.body.readUtf8())["data"])
     }
 }
