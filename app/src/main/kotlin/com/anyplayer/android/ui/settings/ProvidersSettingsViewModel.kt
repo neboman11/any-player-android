@@ -50,6 +50,7 @@ class ProvidersSettingsViewModel @Inject constructor(
     val state = mutableState.asStateFlow()
     private val edited = mutableSetOf<SourceType>()
     private val pageSizeWrites = Mutex()
+    private var spotifyResultId: Long? = null
     init {
         viewModelScope.launch { auth.profiles.collect { profiles -> mutableState.update { old ->
             old.copy(profiles = profiles,
@@ -69,8 +70,11 @@ class ProvidersSettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             spotifyLogin.state.collect { result ->
-                if (result.feedback.isNotEmpty()) mutableState.update {
-                    it.copy(busy = result.busy, feedback = result.feedback, revealSpotifyResult = true)
+                if (result.feedback.isNotEmpty() && !result.acknowledged) {
+                    spotifyResultId = result.id
+                    mutableState.update {
+                        it.copy(busy = result.busy, feedback = result.feedback, revealSpotifyResult = true)
+                    }
                 }
             }
         }
@@ -142,7 +146,10 @@ class ProvidersSettingsViewModel @Inject constructor(
     }
     fun authLaunchHandled() { mutableState.update { it.copy(authUrl = null) } }
     fun authLaunchFailed(message: String) { mutableState.update { it.copy(authUrl = null, feedback = "Spotify connection failed: $message") } }
-    fun spotifyResultRevealed() { mutableState.update { it.copy(revealSpotifyResult = false) } }
+    fun spotifyResultRevealed() {
+        spotifyResultId?.let(spotifyLogin::acknowledge)
+        mutableState.update { it.copy(revealSpotifyResult = false) }
+    }
     private suspend fun completeSpotify(uri: String) {
         // The callback is handled even while a browser-launch action is finishing.
         spotifyLogin.publish(busy = true, feedback = "Finishing Spotify login...")

@@ -38,6 +38,53 @@ class ProvidersSpotifyCallbackTest {
         assertEquals("Spotify connected successfully.", vm.state.value.feedback)
     }
 
+    @Test fun revealedSuccessDoesNotReplayWhenSettingsIsReopened() = runTest(dispatcher) {
+        val old = providers()
+        runCurrent()
+        holder.publish(CALLBACK)
+        old.connected()
+        old.spotifyResultRevealed()
+        old.viewModelScope.cancel()
+
+        val reopened = providers()
+        runCurrent()
+        assertFalse(reopened.state.value.revealSpotifyResult)
+        assertEquals("", reopened.state.value.feedback)
+        assertFalse(reopened.state.value.busy)
+    }
+
+    @Test fun revealedFailureDoesNotReplayWhenSettingsIsReopened() = runTest(dispatcher) {
+        auth.onCompleteSpotify = { error("exchange rejected") }
+        val old = providers()
+        runCurrent()
+        holder.publish(CALLBACK)
+        old.state.first { it.feedback == "Spotify login failed: exchange rejected" }
+        old.spotifyResultRevealed()
+        old.viewModelScope.cancel()
+
+        val reopened = providers()
+        runCurrent()
+        assertFalse(reopened.state.value.revealSpotifyResult)
+        assertEquals("", reopened.state.value.feedback)
+    }
+
+    @Test fun revealingProgressDoesNotAcknowledgeLaterSuccess() = runTest(dispatcher) {
+        val release = CompletableDeferred<Unit>()
+        val started = Channel<Unit>(Channel.UNLIMITED)
+        auth.onCompleteSpotify = { started.send(Unit); release.await(); completions.send(Unit) }
+        val old = providers()
+        runCurrent()
+        holder.publish(CALLBACK)
+        started.receive()
+        old.state.first { it.feedback == "Finishing Spotify login..." }
+        old.spotifyResultRevealed()
+        old.viewModelScope.cancel()
+        release.complete(Unit)
+
+        val reopened = providers()
+        assertTrue(reopened.connected().revealSpotifyResult)
+    }
+
     @Test fun callbackIsHandledOnceAcrossLiveAndLaterViewModels() = runTest(dispatcher) {
         // A saved Settings back-stack entry keeps its ViewModel collecting while a new one is created.
         val live = listOf(providers(), providers())

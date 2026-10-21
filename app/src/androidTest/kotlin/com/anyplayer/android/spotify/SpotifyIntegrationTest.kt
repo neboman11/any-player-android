@@ -131,6 +131,24 @@ class SpotifyIntegrationTest {
         assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
     }
 
+    @Test fun revealedLoginDoesNotSwitchTabsOrReplayAfterSettingsIsPopped() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        callback("code=accepted-code&state=${pending.state}")
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        // Pop the destination so returning creates a new Providers ViewModel.
+        app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        compose.onNodeWithTag("settings_tab_GENERAL").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").performClick()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        compose.onAllNodesWithText("Spotify connected successfully.").assertCountEquals(0)
+        compose.onAllNodesWithText("Spotify login failed:", substring = true).assertCountEquals(0)
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+    }
+
     @Test fun callbackFromNowPlayingOpensSettingsOnProvidersTabWithConnection() = runBlocking {
         val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
             SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
