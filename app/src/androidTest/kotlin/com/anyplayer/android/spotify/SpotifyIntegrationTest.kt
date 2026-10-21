@@ -31,8 +31,10 @@ import com.anyplayer.android.testing.SpotifyHosts
 import com.anyplayer.android.testing.TestServer
 import com.anyplayer.android.ui.settings.SpotifyDevicePickerState
 import com.anyplayer.android.ui.shell.AnyPlayerShell
+import com.anyplayer.android.ui.shell.SpotifyRedirectHolder
 import com.anyplayer.android.ui.theme.AnyPlayerTheme
 import dagger.hilt.android.testing.HiltAndroidRule
+import dagger.hilt.android.testing.BindValue
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.security.MessageDigest
 import java.util.Base64
@@ -60,6 +62,7 @@ class SpotifyIntegrationTest {
     @Inject lateinit var sessions: SpotifyAuthSessionStore
     @Inject lateinit var engineProvider: Provider<PlaybackEngine>
     @Inject lateinit var startup: AppStartup
+    @BindValue @JvmField var redirectHolder = SpotifyRedirectHolder()
 
     private lateinit var server: TestServer
     private lateinit var spotify: FakeSpotify
@@ -197,6 +200,26 @@ class SpotifyIntegrationTest {
         compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
         compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
         assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
+        assertNull(sessions.read())
+    }
+
+    @Test fun restoredColdCallbackDoesNotRepublishIntoFreshProcessHolder() = runBlocking {
+        val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
+            SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
+        sessions.save(pending)
+        val uri = "${SpotifyAuthFlow.REDIRECT_URI}?code=cold-code&state=${pending.state}"
+        app = ActivityScenario.launch(Intent(Device.context, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW).setData(Uri.parse(uri)))
+        visible("Spotify connected successfully.")
+        // Replace process-memory dedupe before restoring the callback launch Intent. Retained
+        // ViewModels preserve the visible result; the recreated Activity gets a fresh holder.
+        redirectHolder = SpotifyRedirectHolder()
+        app!!.recreate()
+        app!!.onActivity { assertSame(redirectHolder, it.spotifyRedirects) }
+        assertFalse("Restoration must not publish the spent launch callback", redirectHolder.consume(uri))
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
         assertNull(sessions.read())
     }
 
