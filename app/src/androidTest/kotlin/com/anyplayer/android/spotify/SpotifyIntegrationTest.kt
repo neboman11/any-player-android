@@ -30,6 +30,7 @@ import com.anyplayer.android.testing.Device.onMain
 import com.anyplayer.android.testing.SpotifyHosts
 import com.anyplayer.android.testing.TestServer
 import com.anyplayer.android.ui.settings.SpotifyDevicePickerState
+import com.anyplayer.android.ui.settings.SpotifyLoginStatus
 import com.anyplayer.android.ui.shell.AnyPlayerShell
 import com.anyplayer.android.ui.shell.SpotifyRedirectHolder
 import com.anyplayer.android.ui.theme.AnyPlayerTheme
@@ -43,6 +44,8 @@ import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -63,6 +66,7 @@ class SpotifyIntegrationTest {
     @Inject lateinit var sessions: SpotifyAuthSessionStore
     @Inject lateinit var engineProvider: Provider<PlaybackEngine>
     @Inject lateinit var startup: AppStartup
+    @Inject lateinit var spotifyLogin: SpotifyLoginStatus
     @BindValue @JvmField var redirectHolder = SpotifyRedirectHolder()
 
     private lateinit var server: TestServer
@@ -128,6 +132,47 @@ class SpotifyIntegrationTest {
         assertEquals(pending.clientId, form["client_id"])
         assertEquals(SpotifyAuthFlow.REDIRECT_URI, form["redirect_uri"])
         assertNull(sessions.read())
+        assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+    }
+
+    @Test fun revealedLoginDoesNotSwitchTabsOrReplayAfterSettingsIsPopped() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        callback("code=accepted-code&state=${pending.state}")
+        visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+        // Pop the destination so returning creates a new Providers ViewModel.
+        app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        compose.onNodeWithTag("settings_tab_GENERAL").assertIsSelected()
+        compose.onNodeWithTag("settings_tab_PROVIDERS").performClick()
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        compose.onAllNodesWithText("Spotify connected successfully.").assertCountEquals(0)
+        compose.onAllNodesWithText("Spotify login failed:", substring = true).assertCountEquals(0)
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+    }
+
+    @Test fun duplicateCallbackViaNewIntentPreservesSuccessfulLoginOutcome() = runBlocking {
+        openApp()
+        val pending = beginLink()
+        val query = "code=accepted-code&state=${pending.state}"
+        callback(query)
+        visible("Spotify connected successfully.")
+        compose.waitForIdle()
+        val outcome = spotifyLogin.state.value
+        assertFalse(outcome.busy)
+        assertNull(sessions.read())
+
+        callback(query)
+        // A duplicate must not publish a new outcome. Wait for any terminal update rather
+        // than asserting immediately while the onNewIntent collector may still be running.
+        withTimeoutOrNull(2_000) { spotifyLogin.state.first { it.id > outcome.id && !it.busy } }
+        visible("Spotify connected successfully.")
+        assertEquals(outcome, spotifyLogin.state.value)
+        compose.onAllNodesWithText("No pending Spotify auth session", substring = true).assertCountEquals(0)
+        compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+        assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
         assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
     }
 

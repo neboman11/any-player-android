@@ -83,6 +83,11 @@ internal class FakeConnections : ConnectionStore {
         }
     }
 }
+internal class FakeSpotifySessions(private var pending: PendingSpotifyAuthSession? = null) : SpotifyAuthSessionStore {
+    override suspend fun read() = pending
+    override suspend fun save(session: PendingSpotifyAuthSession) { pending = session }
+    override suspend fun clear() { pending = null }
+}
 internal class FakeAuth : AuthRepository {
     override val profiles = MutableStateFlow<Map<SourceType, ProviderConnectionProfile>>(emptyMap())
     var failure: String? = null
