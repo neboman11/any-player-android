@@ -274,12 +274,19 @@ class DefaultSyncEngine internal constructor(
             val local = playerSettings.awaitLoaded()
             val enabled = data.boolean("audio_normalization_enabled") ?: data.boolean("audioNormalizationEnabled") ?: local.normalizationEnabled
             val strict = data.boolean("audio_normalization_strict_mode") ?: data.boolean("audioNormalizationStrictMode") ?: local.normalizationStrict
-            playerSettings.update { it.copy(normalizationEnabled = enabled, normalizationStrict = strict) }
-            withContext(applyDispatcher) {
-                suppressUntil = now() + ECHO_WINDOW_MS
-                engine.setNormalization(enabled, strict)
+            val agreed = base.get(SyncBase.SETTINGS, target)
+            val localData = settingsJson(local.normalizationEnabled, local.normalizationStrict)
+            if (startup && agreed != null && settingsSignature(data) == agreed.remote &&
+                settingsSignature(localData) != agreed.local) {
+                settingsPush.push(preferences, localData)
+            } else {
+                playerSettings.update { it.copy(normalizationEnabled = enabled, normalizationStrict = strict) }
+                withContext(applyDispatcher) {
+                    suppressUntil = now() + ECHO_WINDOW_MS
+                    engine.setNormalization(enabled, strict)
+                }
+                settingsPush.record(target, data, settingsJson(enabled, strict))
             }
-            settingsPush.record(target, data, settingsJson(enabled, strict))
         }
         if (preferences.syncAppState && applyPlayback) {
             (snapshot["app_state"] as? JsonObject)?.let { reconcileAppState(it, preferences, preserveEmpty, merge, startup) }
@@ -430,6 +437,9 @@ class DefaultSyncEngine internal constructor(
         /** A pull is waiting for the user to confirm a playlist overwrite; pushing would bypass that choice. */
         @Volatile var awaitingConfirmation = false
         private var lastPushAt = Long.MIN_VALUE
+        private var retryJob: Job? = null
+        private var retryDelay = MIN_PUSH_INTERVAL_MS
+        private var pendingTarget: String? = null
 
         fun request() { if (canPushDomains()) requests.trySend(Unit) }
 
@@ -443,7 +453,7 @@ class DefaultSyncEngine internal constructor(
                     val target = syncBaseTarget(preferences)
                     if (!canPushDomains() || !selected(preferences) || target.isEmpty() || awaitingConfirmation) return@withLock
                     val agreed = base.get(domain, target)
-                    if (agreed == null && requireBase) return@withLock
+                    if (agreed == null && requireBase && pendingTarget != target) return@withLock
                     domainPush {
                         val data = export()
                         signature(data) == agreed?.local || push(preferences, data)
@@ -455,10 +465,25 @@ class DefaultSyncEngine internal constructor(
         suspend fun push(preferences: SyncPreferences, data: JsonElement? = null): Boolean {
             throttle()
             val payload = data ?: export()
-            val success = client.push(preferences, namespace, settings.clientId(), payload)
+            pendingTarget = syncBaseTarget(preferences)
+            val success = domainPush { client.push(preferences, namespace, settings.clientId(), payload) }
             // Even failed attempts are throttled: never burst on a failing server.
             lastPushAt = now()
-            if (success) record(syncBaseTarget(preferences), payload)
+            if (success) {
+                record(syncBaseTarget(preferences), payload)
+                retryJob?.cancel()
+                retryJob = null
+                retryDelay = MIN_PUSH_INTERVAL_MS
+                pendingTarget = null
+            } else if (retryJob == null) {
+                val backoff = retryDelay
+                retryDelay = (retryDelay * 2).coerceAtMost(60_000)
+                retryJob = scope.launch {
+                    delay(backoff)
+                    retryJob = null
+                    request()
+                }
+            }
             return success
         }
 
@@ -496,6 +521,8 @@ class DefaultSyncEngine internal constructor(
                         SocketMessage.Open -> {
                             backoff = 1_000L
                             mutableState.update { it.copy(realtimeConnected = true) }
+                            playlistPush.request()
+                            settingsPush.request()
                         }
                         is SocketMessage.Update -> operation.withLock { receiveUpdate(preferences, message.event) }
                     }

@@ -114,6 +114,16 @@ class DefaultSyncEngineTest {
         runCurrent()
     }
     private suspend fun request() = withContext(Dispatchers.IO) { server.takeRequest(5, TimeUnit.SECONDS) ?: error("Expected sync request") }
+    /** Let real OkHttp responses settle while advancing only the retry clock, never creating edits. */
+    private suspend fun TestScope.awaitRequestCount(count: Int) = withContext(Dispatchers.Default) {
+        withTimeout(5_000) {
+            while (server.requestCount < count) {
+                testScheduler.advanceTimeBy(2_001)
+                testScheduler.runCurrent()
+                delay(10)
+            }
+        }
+    }
     private fun json(text: String) = AppJson.parseToJsonElement(text).jsonObject
     private fun appState(position: Long = 3_000, queue: List<Track> = listOf(song)): JsonObject = buildJsonObject {
         put("state", "playing"); put("volume", 50); put("shuffle", true); put("repeat_mode", "all"); put("position", position)
@@ -783,6 +793,72 @@ class DefaultSyncEngineTest {
         assertEquals(playlistsJson("Phone edit"), f.config.playlists)
         assertEquals("/v1/snapshot", request().path)
         assertEquals(playlistsJson("Phone edit"), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `failed playlist push retries without another edit`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Base")
+        f.connectToEmptyServer()
+        runCurrent()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.editLocalPlaylists("Offline edit")
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals("/v1/state/playlists", request().path)
+        awaitRequestCount(4)
+        assertEquals("Failed playlist push must be retried", 4, server.requestCount)
+        assertEquals(playlistsJson("Offline edit"), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `failed settings push retries without another normalization change`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        server.enqueue(MockResponse().setBody("{\"settings\":{\"audio_normalization_enabled\":false,\"audio_normalization_strict_mode\":false}}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request(); runCurrent()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }
+        runCurrent()
+        assertEquals("/v1/state/settings", request().path)
+        awaitRequestCount(3)
+        assertEquals("Failed settings push must be retried", 3, server.requestCount)
+        assertEquals(settingsJson(true, false), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `startup settings merge preserves and pushes offline local normalization change`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        f.base.set(SyncBase.SETTINGS, f.target, settingsSignature(settingsJson(false, false)))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }
+        server.enqueue(MockResponse().setBody("{\"settings\":{\"audio_normalization_enabled\":false,\"audio_normalization_strict_mode\":false}}"))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        assertTrue("Unpushed settings survive startup", f.playerSettings.settings.value.normalizationEnabled)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(settingsJson(true, false), json(request().body.readUtf8())["data"])
+    }
+
+    @Test fun `socket open checks both domains for pending changes`() = runTest {
+        val f = Fixture(this, playlistPreferences().copy(syncSettings = true))
+        f.syncedPlaylists("Base", "Base")
+        f.base.set(SyncBase.SETTINGS, f.target, settingsSignature(settingsJson(false, false)))
+        server.enqueue(MockResponse().setBody(buildJsonObject {
+            put("playlists", playlistsJson("Base")); put("settings", settingsJson(false, false))
+        }.toString()))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request(); runCurrent()
+        // No Room signal: reconnect must independently check the current export.
+        f.config.playlists = playlistsJson("Pending at reconnect")
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.network.value = true
+        f.sync.state.first { it.realtimeConnected }
+        assertEquals("/v1/ws", request().path)
+        runCurrent()
+        assertEquals("/v1/state/playlists", request().path)
+        f.network.value = false; runCurrent()
     }
 
     @Test fun `playlist signature ignores exporter formatting but not content`() {
