@@ -745,6 +745,43 @@ class DefaultSyncEngineTest {
         assertEquals(playlistsJson("Phone"), f.config.playlists)
     }
 
+    @Test fun `cancel clears overwrite confirmation without disabling confirmed realtime`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists("Phone", "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Phone")))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request()
+        server.enqueue(playlistSnapshot(JsonArray(emptyList()), version = 2))
+        f.sync.pull(false)
+        f.sync.state.first { it.playlistConfirmationRequired }
+        f.sync.dismissConflict()
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertTrue("Cancel must not silently resume destructive pushes", f.sync.state.value.playlistSyncPaused)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        request()
+        f.network.value = true; runCurrent()
+        assertEquals("/v1/ws", request().path)
+        f.network.value = false; runCurrent()
+    }
+
+    @Test fun `keep local playlist choice pushes only playlists and resumes sync`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists("Phone", "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Phone")))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request()
+        server.enqueue(playlistSnapshot(JsonArray(emptyList()), version = 2))
+        f.sync.pull(false)
+        f.sync.state.first { it.playlistConfirmationRequired }; request()
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.resolveConflict(true); runCurrent()
+        val push = withContext(Dispatchers.IO) { server.takeRequest(2, TimeUnit.SECONDS) }
+        assertEquals("/v1/state/playlists", push?.path)
+        f.sync.state.first { !it.inProgress }
+        assertEquals(playlistsJson("Phone"), json(push!!.body.readUtf8())["data"])
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertFalse(f.sync.state.value.playlistSyncPaused)
+        assertTrue(f.config.imports.isEmpty())
+    }
+
     @Test fun `unchanged empty server accepts first offline playlist without confirmation`() = runTest {
         val f = Fixture(this, playlistPreferences())
         f.base.set(SyncBase.PLAYLISTS, f.target, playlistsSignature(JsonArray(emptyList())))

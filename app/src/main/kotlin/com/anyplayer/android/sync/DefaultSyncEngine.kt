@@ -82,6 +82,7 @@ class DefaultSyncEngine internal constructor(
         private set
     private var versionTarget: Pair<String, String>? = null
     private var conflictPreferences: SyncPreferences? = null
+    private var playlistConfirmationPreferences: SyncPreferences? = null
     @Volatile private var confirmedPreferences: SyncPreferences? = null
     @Volatile private var pendingStartup: SyncPreferences? = null
     private var legacyBasesChecked = false
@@ -147,10 +148,16 @@ class DefaultSyncEngine internal constructor(
 
     override fun resolveConflict(useLocal: Boolean) {
         scope.launch {
-            val selected = conflictPreferences ?: return@launch
+            val playlistOnly = !state.value.conflictPending && playlistPush.awaitingConfirmation
+            val selected = (if (playlistOnly) playlistConfirmationPreferences else conflictPreferences) ?: return@launch
             action { preferences ->
                 if (target(selected) != target(preferences)) {
                     dismissConflict()
+                    return@action
+                }
+                if (playlistOnly) {
+                    if (useLocal) status(if (playlistPush.push(preferences)) "Pushed local data to server." else "Some local data failed to push to server.")
+                    else pullNow(preferences, confirm = true, startup = false)
                     return@action
                 }
                 conflictPreferences = null
@@ -163,6 +170,10 @@ class DefaultSyncEngine internal constructor(
 
     /** Cancel undoes Connect: no automatic push or remote apply until the next Connect or app start. */
     override fun dismissConflict() {
+        if (!state.value.conflictPending && playlistPush.awaitingConfirmation) {
+            mutableState.update { it.copy(playlistConfirmationRequired = false, status = "Playlist sync paused: confirm in Settings") }
+            return
+        }
         synchronized(realtimeLock) {
             pendingStartup = null
             confirmedPreferences = null
@@ -327,6 +338,7 @@ class DefaultSyncEngine internal constructor(
                     decision = if (preferences.syncPlaylists && !confirm) mergePlaylists(snapshot, target, realtime) else PlaylistMerge.APPLY_REMOTE
                     if (decision == PlaylistMerge.CONFIRM) {
                         playlistPush.awaitingConfirmation = true
+                        playlistConfirmationPreferences = preferences
                         mutableState.update { it.copy(playlistConfirmationRequired = true, playlistSyncPaused = true) }
                         status(if (realtime) "Playlist sync paused: confirm in Settings" else "Sync cancelled: playlist overwrite requires confirmation.")
                     } else {

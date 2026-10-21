@@ -248,6 +248,39 @@ class SettingsUiTest {
     }
 
 
+    @Test fun realtimeResetWaitsForOwnPullAndKeepDeviceRestoresServer() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Keep phone after reset", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val socket = server.awaitSocket()
+        server.namespaces["playlists"] = JsonArray(emptyList())
+        server.publishFromOtherClient(socket, "playlists")
+        awaitUntil { sync.get().state.value.playlistSyncPaused }
+        status("Playlist sync paused: confirm in Settings")
+        absent("Confirm playlist overwrite")
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        absent("Confirm playlist overwrite")
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        click("Cancel")
+        awaitUntil { !sync.get().state.value.playlistConfirmationRequired }
+        assertTrue(sync.get().state.value.playlistSyncPaused)
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        compose.onNodeWithTag("tab_SETTINGS").performClick()
+        absent("Confirm playlist overwrite")
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        click("Keep this device's playlists")
+        status("Pushed local data to server.")
+        absent("Confirm playlist overwrite")
+        assertEquals(listOf("Keep phone after reset"), playlists.customPlaylists.first().map { it.name })
+        assertTrue(server.namespaces["playlists"].toString().contains("Keep phone after reset"))
+        assertFalse(sync.get().state.value.playlistSyncPaused)
+    }
+
     @Test fun unreachableServerReportsExactStatusAndKeepsLocalPlaylist() = runBlocking {
         playlists.create("Offline safe", PlaylistType.STANDARD)
         server.goOffline()

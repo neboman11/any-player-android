@@ -83,6 +83,26 @@ class SettingsViewModelsTest {
         runCurrent(); vm.setDomain("playlists", false)
         assertFalse(settings.writes.receive().syncPlaylists)
     }
+    @Test fun backgroundPlaylistConflictDoesNotOpenDialogOnSettingsVisits() = runTest(dispatcher) {
+        val sync = FakeSync().apply { state.value = state.value.copy(playlistConfirmationRequired = true) }
+        val first = general(sync = sync); runCurrent()
+        assertFalse("Opening Settings is not permission to overwrite", first.state.value.confirmOverwrite)
+        first.viewModelScope.cancel()
+        val second = general(sync = sync); runCurrent()
+        assertFalse(second.state.value.confirmOverwrite)
+    }
+
+    @Test fun keepDeviceChoiceDismissesPullDialog() = runTest(dispatcher) {
+        val sync = FakeSync(); val vm = general(sync = sync)
+        runCurrent(); vm.requestPull()
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent()
+        assertTrue(vm.state.value.confirmOverwrite)
+        vm.resolveConflict(true); runCurrent()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals("Keep must not issue a destructive pull", listOf(false), sync.pulls)
+    }
+
     @Test fun manualPlaylistPullRunsMergeBeforeAskingForConfirmation() = runTest(dispatcher) {
         val sync = FakeSync(); val vm = general(sync = sync)
         runCurrent(); vm.requestPull()

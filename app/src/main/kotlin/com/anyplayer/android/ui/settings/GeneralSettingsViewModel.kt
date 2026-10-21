@@ -51,6 +51,7 @@ class GeneralSettingsViewModel @Inject constructor(
     private var targetDirty = false
     private var tokenDirty = false
     private val commits = Mutex()
+    private var pullPending = false
 
     init {
         viewModelScope.launch {
@@ -63,8 +64,9 @@ class GeneralSettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             syncEngine.state.collect { sync ->
+                if (pullPending && state.value.sync.inProgress && !sync.inProgress && !sync.playlistConfirmationRequired) pullPending = false
                 mutableState.update { it.copy(sync = sync,
-                    confirmOverwrite = it.confirmOverwrite || (sync.playlistConfirmationRequired && !it.sync.playlistConfirmationRequired)) }
+                    confirmOverwrite = pullPending && sync.playlistConfirmationRequired) }
             }
         }
         viewModelScope.launch { playerSettings.settings.collect { settings -> mutableState.update { it.copy(normalization = settings.normalizationEnabled) } } }
@@ -123,14 +125,22 @@ class GeneralSettingsViewModel @Inject constructor(
         }
     }
     fun connect() { viewModelScope.launch { if (persistFields()) syncEngine.connect() } }
-    fun requestPull() = pullAfterCommit(false)
-    fun confirmPull() { mutableState.update { it.copy(confirmOverwrite = false) }; pullAfterCommit(true) }
-    fun cancelPull() { mutableState.update { it.copy(confirmOverwrite = false) } }
+    fun requestPull() { pullPending = true; pullAfterCommit(false) }
+    fun confirmPull() { pullPending = false; mutableState.update { it.copy(confirmOverwrite = false) }; pullAfterCommit(true) }
+    fun cancelPull() {
+        pullPending = false
+        mutableState.update { it.copy(confirmOverwrite = false) }
+        syncEngine.dismissConflict()
+    }
     private fun pullAfterCommit(overwrite: Boolean) {
         if (!targetDirty && !tokenDirty) syncEngine.pull(overwrite)
         else viewModelScope.launch { if (persistFields()) syncEngine.pull(overwrite) }
     }
-    fun resolveConflict(useLocal: Boolean) = syncEngine.resolveConflict(useLocal)
+    fun resolveConflict(useLocal: Boolean) {
+        pullPending = false
+        mutableState.update { it.copy(confirmOverwrite = false) }
+        syncEngine.resolveConflict(useLocal)
+    }
     fun cancelConflict() = syncEngine.dismissConflict()
     fun setNormalization(enabled: Boolean) {
         engine.setNormalization(enabled)

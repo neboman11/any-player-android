@@ -43,7 +43,10 @@ internal fun GeneralSettingsTab(viewModel: GeneralSettingsViewModel) {
         title = { Text("Confirm playlist overwrite") },
         text = { Text("Syncing playlists replaces local playlists with server state and may delete local-only playlists. Continue?") },
         confirmButton = { TextButton(onClick = viewModel::confirmPull) { Text("Continue") } },
-        dismissButton = { TextButton(onClick = viewModel::cancelPull) { Text("Cancel") } })
+        dismissButton = { Column {
+            TextButton(onClick = { viewModel.resolveConflict(true) }) { Text("Keep this device's playlists") }
+            TextButton(onClick = viewModel::cancelPull) { Text("Cancel") }
+        } })
     if (state.sync.conflictPending) AlertDialog(onDismissRequest = viewModel::cancelConflict,
         title = { Text("Sync server already has data") },
         text = { Text("This server already has synced data for at least one enabled domain. Keep this device's data (overwrites the server) or take the server's data (overwrites this device)?") },
