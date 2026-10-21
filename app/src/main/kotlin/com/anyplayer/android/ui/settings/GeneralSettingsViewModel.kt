@@ -61,7 +61,12 @@ class GeneralSettingsViewModel @Inject constructor(
                     authToken = if (tokenDirty) it.authToken else prefs.authToken) }
             }
         }
-        viewModelScope.launch { syncEngine.state.collect { sync -> mutableState.update { it.copy(sync = sync) } } }
+        viewModelScope.launch {
+            syncEngine.state.collect { sync ->
+                mutableState.update { it.copy(sync = sync,
+                    confirmOverwrite = it.confirmOverwrite || (sync.playlistConfirmationRequired && !it.sync.playlistConfirmationRequired)) }
+            }
+        }
         viewModelScope.launch { playerSettings.settings.collect { settings -> mutableState.update { it.copy(normalization = settings.normalizationEnabled) } } }
         viewModelScope.launch {
             syncImports.message.filterNotNull().collect { message -> mutableState.update { it.copy(transferStatus = message) } }
@@ -118,10 +123,7 @@ class GeneralSettingsViewModel @Inject constructor(
         }
     }
     fun connect() { viewModelScope.launch { if (persistFields()) syncEngine.connect() } }
-    fun requestPull() {
-        if (state.value.preferences.syncPlaylists) mutableState.update { it.copy(confirmOverwrite = true) }
-        else pullAfterCommit(false)
-    }
+    fun requestPull() = pullAfterCommit(false)
     fun confirmPull() { mutableState.update { it.copy(confirmOverwrite = false) }; pullAfterCommit(true) }
     fun cancelPull() { mutableState.update { it.copy(confirmOverwrite = false) } }
     private fun pullAfterCommit(overwrite: Boolean) {

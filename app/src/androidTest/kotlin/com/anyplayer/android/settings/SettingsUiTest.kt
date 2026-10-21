@@ -197,16 +197,33 @@ class SettingsUiTest {
         click("Cancel")
         absent("Confirm playlist overwrite")
         assertEquals(listOf(local.id), playlists.customPlaylists.first().map { it.id })
-        assertTrue(server.server.requestsTo("/v1/snapshot").isEmpty())
+        assertEquals(1, server.server.requestsTo("/v1/snapshot").size)
         click("Force Pull from Server")
+        status("Confirm playlist overwrite")
         click("Continue")
         status("Sync pull complete.")
         assertEquals(listOf("Replacement"), playlists.customPlaylists.first().map { it.name })
-        // Ordered absence check: had Cancel started a pull, Continue's pull would be the second snapshot.
-        assertEquals(1, server.server.requestsTo("/v1/snapshot").size)
+        // Each attempt checks the merge; only Continue performs the final, forced pull.
+        assertEquals(3, server.server.requestsTo("/v1/snapshot").size)
         compose.onNodeWithTag("tab_PLAYLISTS").performClick()
         status("Replacement")
         absent("Local only")
+    }
+
+    @Test fun manualPullPreservesLocalOnlyEditsWithoutOverwriteDialog() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Agreed phone", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val before = server.server.requestsTo("/v1/snapshot").size
+        playlists.create("Unpushed phone edit", PlaylistType.STANDARD)
+        click("Force Pull from Server")
+        status("Sync pull complete.")
+        absent("Confirm playlist overwrite")
+        assertEquals(setOf("Agreed phone", "Unpushed phone edit"), playlists.customPlaylists.first().map { it.name }.toSet())
+        assertTrue(server.server.requestsTo("/v1/snapshot").size > before)
+        assertTrue(server.namespaces["playlists"].toString().contains("Unpushed phone edit"))
     }
     @Test fun resetServerPullKeepsLocalPlaylistsAndAsksForConfirmation() = runBlocking {
         syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }

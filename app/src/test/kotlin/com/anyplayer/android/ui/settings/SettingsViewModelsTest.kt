@@ -81,13 +81,30 @@ class SettingsViewModelsTest {
         runCurrent(); vm.setDomain("playlists", false)
         assertFalse(settings.writes.receive().syncPlaylists)
     }
-    @Test fun playlistOverwriteRequiresConfirmationAndCancelDoesNotPull() = runTest(dispatcher) {
+    @Test fun manualPlaylistPullRunsMergeBeforeAskingForConfirmation() = runTest(dispatcher) {
         val sync = FakeSync(); val vm = general(sync = sync)
         runCurrent(); vm.requestPull()
-        assertTrue(vm.state.value.confirmOverwrite); assertTrue(sync.pulls.isEmpty())
-        vm.cancelPull(); assertFalse(vm.state.value.confirmOverwrite); assertTrue(sync.pulls.isEmpty())
-        vm.requestPull(); vm.confirmPull()
-        assertEquals(listOf(true), sync.pulls)
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false), sync.pulls)
+        vm.cancelPull()
+        assertEquals(listOf(false), sync.pulls)
+    }
+    @Test fun playlistDialogOnlyFollowsEngineConflictAndContinueForcesOverwrite() = runTest(dispatcher) {
+        val sync = FakeSync(); val vm = general(sync = sync)
+        runCurrent(); vm.requestPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent()
+        assertTrue(vm.state.value.confirmOverwrite)
+        vm.cancelPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false), sync.pulls)
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = false)
+        runCurrent(); vm.requestPull()
+        sync.state.value = sync.state.value.copy(playlistConfirmationRequired = true)
+        runCurrent(); vm.confirmPull()
+        assertFalse(vm.state.value.confirmOverwrite)
+        assertEquals(listOf(false, false, true), sync.pulls)
     }
     @Test fun disabledPlaylistDomainPullsWithoutConfirmation() = runTest(dispatcher) {
         val settings = FakeSyncSettings().apply { preferences.value = SyncPreferences(syncPlaylists = false) }

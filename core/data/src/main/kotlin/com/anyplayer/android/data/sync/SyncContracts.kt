@@ -8,6 +8,8 @@ data class SyncUiState(
     val inProgress: Boolean = false,
     /** Connect found data on the server: user must choose which side to keep. */
     val conflictPending: Boolean = false,
+    /** A non-forced pull found playlist changes that require an explicit overwrite decision. */
+    val playlistConfirmationRequired: Boolean = false,
     val realtimeConnected: Boolean = false,
 )
 

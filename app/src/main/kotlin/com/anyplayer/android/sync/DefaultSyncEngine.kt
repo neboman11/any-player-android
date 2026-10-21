@@ -125,6 +125,7 @@ class DefaultSyncEngine internal constructor(
 
     override fun pull(confirmPlaylistOverwrite: Boolean) {
         observeLocalChanges()
+        mutableState.update { it.copy(playlistConfirmationRequired = false) }
         scope.launch { engine.awaitRestored(); action { pullNow(it, confirmPlaylistOverwrite, startup = false) } }
     }
 
@@ -287,8 +288,9 @@ class DefaultSyncEngine internal constructor(
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
             val merge = if (preferences.syncPlaylists && !confirm) mergePlaylists(snapshot, target, realtime) else PlaylistMerge.APPLY_REMOTE
             if (merge == PlaylistMerge.CONFIRM) {
+                playlistPush.awaitingConfirmation = true
+                mutableState.update { it.copy(playlistConfirmationRequired = true) }
                 if (!realtime) {
-                    playlistPush.awaitingConfirmation = true
                     status("Sync cancelled: playlist overwrite requires confirmation.")
                 }
                 applied = realtime
@@ -464,6 +466,7 @@ class DefaultSyncEngine internal constructor(
         suspend fun record(target: String, data: JsonElement) {
             base.set(domain, target, signature(data))
             awaitingConfirmation = false
+            if (domain == SyncBase.PLAYLISTS) mutableState.update { it.copy(playlistConfirmationRequired = false) }
         }
 
         private suspend fun throttle() {
