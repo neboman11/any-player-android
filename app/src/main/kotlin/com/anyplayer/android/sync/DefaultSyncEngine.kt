@@ -348,12 +348,12 @@ class DefaultSyncEngine internal constructor(
      * local playlists, or while an earlier pull still awaits that confirmation.
      */
     private suspend fun mergePlaylists(snapshot: JsonObject, target: String, realtime: Boolean): PlaylistMerge {
-        val localPlaylists = withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true
+        val local = config.exportPlaylistsJson()
+        val localPlaylists = (local as? JsonArray)?.isNotEmpty() == true
         if (localPlaylists && (snapshot["playlists"] as? JsonArray).isNullOrEmpty()) return PlaylistMerge.CONFIRM
         val agreed = base.get(SyncBase.PLAYLISTS, target)
         if (agreed == null) {
             val remote = snapshot["playlists"] ?: JsonArray(emptyList())
-            val local = config.exportPlaylistsJson()
             if (playlistsSignature(local) == playlistsSignature(remote)) {
                 playlistPush.record(target, remote, local)
                 return PlaylistMerge.UNCHANGED
@@ -361,7 +361,7 @@ class DefaultSyncEngine internal constructor(
             return if (localPlaylists) PlaylistMerge.CONFIRM else PlaylistMerge.APPLY_REMOTE
         }
         if (playlistPush.awaitingConfirmation) return PlaylistMerge.CONFIRM
-        val localChanged = playlistsSignature(config.exportPlaylistsJson()) != agreed.local
+        val localChanged = playlistsSignature(local) != agreed.local
         val remoteChanged = playlistsSignature(snapshot["playlists"]) != agreed.remote
         return when {
             !remoteChanged -> if (localChanged) PlaylistMerge.PUSH_LOCAL else PlaylistMerge.UNCHANGED

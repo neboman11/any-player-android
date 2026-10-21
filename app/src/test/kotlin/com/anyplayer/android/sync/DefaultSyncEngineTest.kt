@@ -61,24 +61,18 @@ class DefaultSyncEngineTest {
             sync.state.first { it.status == "Sync pull complete." }
         }
     }
-    @Test fun `slow Room emission conservatively skips playlists without disabling realtime`() = runTest {
+    @Test fun `playlist merge never collects Room Flow inside its transaction`() = runTest {
         val slow = object : com.anyplayer.android.data.playlists.PlaylistRepository by unused() {
             override val customPlaylists = flow<List<CustomPlaylist>> { awaitCancellation() }
         }
-        val f = Fixture(this, preferences().copy(syncPlaylists = true), online = true, playlistSource = slow)
-        val opened = CompletableDeferred<Unit>()
+        val f = Fixture(this, preferences().copy(syncPlaylists = true), playlistSource = slow)
         server.enqueue(MockResponse().setBody("{\"version\":1,\"playlists\":[]}"))
-        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) { opened.complete(Unit) }
-        }))
         f.sync.start()
-        opened.await()
-        assertEquals("Sync cancelled: playlist overwrite requires confirmation.", f.sync.state.value.status)
-        assertTrue(f.config.imports.isEmpty())
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertEquals("Sync pull complete.", f.sync.state.value.status)
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertEquals(0L, testScheduler.currentTime)
         assertEquals("/v1/snapshot", request().path)
-        assertEquals("/v1/ws", request().path)
-        f.network.value = false
-        runCurrent()
     }
 
     @Test fun `editing persisted target cannot redirect automatic pushes without Connect`() = runTest {
