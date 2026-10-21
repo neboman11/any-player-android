@@ -89,7 +89,6 @@ class DefaultSyncEngine internal constructor(
             engine.awaitRestored()
             settings.awaitLoaded()
             action(startup = true) {
-                confirmedPreferences = it
                 pullNow(it, confirm = false, startup = true)
             }
             beginRealtime()
@@ -107,16 +106,20 @@ class DefaultSyncEngine internal constructor(
             // Do not race conflict detection with an existing socket or queued automatic pushes.
             realtimeJob?.cancelAndJoin()
             action { preferences ->
-                confirmedPreferences = preferences
                 val snapshot = client.snapshot(preferences)
-                if (snapshot == null) status("Sync server unavailable.")
-                else if (hasServerData(snapshot, preferences)) {
-                    conflictPreferences = preferences
-                    mutableState.update { it.copy(conflictPending = true, status = "Server already has synced data - choose which side to keep.") }
+                if (snapshot == null) {
+                    confirmedPreferences = null
+                    status("Sync server unavailable.")
                 } else {
-                    conflictPreferences = null
-                    mutableState.update { it.copy(conflictPending = false) }
-                    status(if (pushLocal(preferences)) "Connected. Pushed local data to server." else "Connected, but some local data failed to push.")
+                    confirmedPreferences = preferences
+                    if (hasServerData(snapshot, preferences)) {
+                        conflictPreferences = preferences
+                        mutableState.update { it.copy(conflictPending = true, status = "Server already has synced data - choose which side to keep.") }
+                    } else {
+                        conflictPreferences = null
+                        mutableState.update { it.copy(conflictPending = false) }
+                        status(if (pushLocal(preferences)) "Connected. Pushed local data to server." else "Connected, but some local data failed to push.")
+                    }
                 }
             }
             beginRealtime()
@@ -185,6 +188,7 @@ class DefaultSyncEngine internal constructor(
             status(if (startup) "Sync server unavailable. Continued with local state." else "Sync server unavailable.")
             return
         }
+        if (startup) confirmedPreferences = preferences
         val afterQueue = engine.queue.value
         val unchanged = beforeRevision == revisions.get() &&
             beforeQueue.contentVersion == afterQueue.contentVersion &&

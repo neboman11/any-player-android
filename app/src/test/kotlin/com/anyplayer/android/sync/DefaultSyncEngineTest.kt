@@ -861,6 +861,33 @@ class DefaultSyncEngineTest {
         f.network.value = false; runCurrent()
     }
 
+    @Test fun `unavailable Connect does not confirm realtime or automatic settings pushes`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true), online = true)
+        server.enqueue(MockResponse().setResponseCode(503))
+        f.sync.connect()
+        f.sync.state.first { it.status == "Sync server unavailable." }
+        request()
+        server.enqueue(MockResponse().setBody("{}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }
+        runCurrent(); advanceTimeBy(120_000); runCurrent()
+        assertNull("Unchecked target must remain disconnected", withContext(Dispatchers.IO) { server.takeRequest(200, TimeUnit.MILLISECONDS) })
+        assertEquals("No websocket or PUT may follow an unchecked snapshot", 1, server.requestCount)
+        assertFalse(f.sync.state.value.realtimeConnected)
+    }
+
+    @Test fun `invalid snapshot Connect never auto pushes over unchecked server data`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        server.enqueue(MockResponse().setBody("not JSON"))
+        f.sync.connect()
+        f.sync.state.first { it.status == "Sync server unavailable." }
+        request()
+        server.enqueue(MockResponse().setBody("{}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }
+        runCurrent(); advanceTimeBy(120_000); runCurrent()
+        assertNull("Snapshot parse failure must not authorize settings PUT", withContext(Dispatchers.IO) { server.takeRequest(200, TimeUnit.MILLISECONDS) })
+        assertEquals(1, server.requestCount)
+    }
+
     @Test fun `playlist signature ignores exporter formatting but not content`() {
         val phone = json("""{"p":[
             {"playlist":{"id":"a","name":"A","description":null,"created_at":1,"updated_at":2,"track_count":2,"playlist_type":"standard","is_distinct":false},
