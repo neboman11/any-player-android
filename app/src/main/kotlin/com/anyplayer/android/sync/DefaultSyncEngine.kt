@@ -312,8 +312,14 @@ class DefaultSyncEngine internal constructor(
             val strict = data.boolean("audio_normalization_strict_mode") ?: data.boolean("audioNormalizationStrictMode") ?: local.normalizationStrict
             val agreed = base.get(SyncBase.SETTINGS, target)
             val localData = settingsJson(local.normalizationEnabled, local.normalizationStrict)
-            if (startup && agreed != null && settingsSignature(data) == agreed.remote &&
-                settingsSignature(localData) != agreed.local) {
+            val localSignature = settingsSignature(localData)
+            val remoteSignature = settingsSignature(data)
+            val localChanged = agreed != null && localSignature != agreed.local
+            val remoteChanged = agreed != null && remoteSignature != agreed.remote
+            if (merge && localChanged && remoteChanged && localSignature != remoteSignature) {
+                conflictPreferences = preferences
+                mutableState.update { it.copy(conflictPending = true, status = "Server already has synced data - choose which side to keep.") }
+            } else if (merge && localChanged && !remoteChanged) {
                 settingsPush.push(preferences, localData)
             } else {
                 playerSettings.update { it.copy(normalizationEnabled = enabled, normalizationStrict = strict) }
@@ -509,6 +515,7 @@ class DefaultSyncEngine internal constructor(
         private var retryJob: Job? = null
         private var retryDelay = MIN_PUSH_INTERVAL_MS
         private var pendingTarget: String? = null
+        private var reconcileBeforePush = false
 
         fun request() { if (canPushDomains()) requests.trySend(Unit) }
 
@@ -523,6 +530,18 @@ class DefaultSyncEngine internal constructor(
                     if (!canPushDomains() || !selected(preferences) || target.isEmpty() || awaitingConfirmation) return@withLock
                     val agreed = base.get(domain, target)
                     if (agreed == null && requireBase && pendingTarget != target) return@withLock
+                    if (reconcileBeforePush) {
+                        val snapshot = client.snapshot(preferences)
+                        if (snapshot == null) {
+                            scheduleRetry()
+                        } else {
+                            reconcileBeforePush = false
+                            val domains = preferences.copy(syncAppState = false, syncProviderConfiguration = false,
+                                syncPlaylists = domain == SyncBase.PLAYLISTS, syncSettings = domain == SyncBase.SETTINGS)
+                            applySnapshot(snapshot, domains, confirm = false, applyPlayback = false, merge = true)
+                        }
+                        return@withLock
+                    }
                     domainPush {
                         val data = export()
                         signature(data) == agreed?.local || push(preferences, data)
@@ -544,22 +563,29 @@ class DefaultSyncEngine internal constructor(
                 retryJob = null
                 retryDelay = MIN_PUSH_INTERVAL_MS
                 pendingTarget = null
-            } else if (retryJob == null) {
-                val backoff = retryDelay
-                retryDelay = (retryDelay * 2).coerceAtMost(60_000)
-                retryJob = scope.launch {
-                    delay(backoff)
-                    retryJob = null
-                    request()
-                }
+            } else {
+                reconcileBeforePush = true
+                scheduleRetry()
             }
             return success
+        }
+
+        private fun scheduleRetry() {
+            if (retryJob != null) return
+            val backoff = retryDelay
+            retryDelay = (retryDelay * 2).coerceAtMost(60_000)
+            retryJob = scope.launch {
+                delay(backoff)
+                retryJob = null
+                request()
+            }
         }
 
         /** Remote wire data and its locally applied representation may differ after a lossy import. */
         suspend fun record(target: String, data: JsonElement, local: JsonElement = data) {
             base.set(domain, target, signature(data), signature(local))
             awaitingConfirmation = false
+            reconcileBeforePush = false
             if (domain == SyncBase.PLAYLISTS) mutableState.update { it.copy(playlistConfirmationRequired = false, playlistSyncPaused = false) }
         }
 
@@ -598,10 +624,9 @@ class DefaultSyncEngine internal constructor(
                         SocketMessage.Open -> {
                             openedAt = now()
                             operation.withLock {
-                                if (!state.value.conflictPending) client.snapshot(preferences)?.let { snapshot ->
-                                    if (snapshot.number("version")?.let { it < lastSyncVersion } == true) {
-                                        applySnapshot(snapshot, realtimePreferences() ?: preferences, confirm = false, merge = true)
-                                    }
+                                if (!state.value.conflictPending) {
+                                    val snapshot = client.snapshot(preferences) ?: throw java.io.IOException("Sync server unavailable.")
+                                    applySnapshot(snapshot, realtimePreferences() ?: preferences, confirm = false, merge = true)
                                 }
                             }
                             mutableState.update { it.copy(realtimeConnected = true) }

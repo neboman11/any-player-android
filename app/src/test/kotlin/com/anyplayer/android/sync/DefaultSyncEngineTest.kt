@@ -95,17 +95,20 @@ class DefaultSyncEngineTest {
         })
         server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         server.enqueue(response())
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         f.sync.start()
         repeat(2) {
             val socket = connected.receive()
             f.sync.state.first { it.realtimeConnected }
             advanceTimeBy(30_001); runCurrent()
             server.enqueue(response())
+            server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
             socket.close(1000, "drop")
             f.sync.state.first { !it.realtimeConnected }
             runCurrent()
         }
         connected.receive()
+        f.sync.state.first { it.realtimeConnected }
         assertEquals(listOf(1_000L, 1_000L), f.backoffs)
         f.network.value = false
         runCurrent()
@@ -119,16 +122,19 @@ class DefaultSyncEngineTest {
         })
         server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         server.enqueue(response())
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         f.sync.start()
         repeat(3) {
             val socket = connected.receive()
             f.sync.state.first { it.realtimeConnected }
             server.enqueue(response())
+            server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
             socket.close(1000, "immediate drop")
             f.sync.state.first { !it.realtimeConnected }
             runCurrent()
         }
         connected.receive()
+        f.sync.state.first { it.realtimeConnected }
         assertEquals(listOf(1_000L, 2_000L, 4_000L), f.backoffs)
         f.network.value = false; runCurrent()
     }
@@ -251,7 +257,7 @@ class DefaultSyncEngineTest {
     @Test fun `playlist overwrite requires confirmation and skips provider import too`() = runTest {
         val prefs = preferences().copy(syncAppState = false, syncPlaylists = true, syncProviderConfiguration = true)
         val f = Fixture(this, prefs)
-        f.playlists.customPlaylists.value = listOf(localPlaylist)
+        f.editLocalPlaylists("Local")
         server.enqueue(MockResponse().setBody("{\"version\":7,\"playlists\":[],\"provider_configuration\":{}}"))
         f.sync.pull(false)
         f.sync.state.first { it.status == "Sync cancelled: playlist overwrite requires confirmation." }
@@ -303,7 +309,7 @@ class DefaultSyncEngineTest {
         for (namespace in listOf("playlists", "settings", "provider_configuration")) {
             val prefs = preferences().copy(syncPlaylists = true, syncProviderConfiguration = true, syncSettings = true)
             val f = Fixture(this, prefs)
-            f.playlists.customPlaylists.value = listOf(localPlaylist)
+            f.editLocalPlaylists("Local")
             server.enqueue(MockResponse().setBody(buildJsonObject {
                 put("version", 2); put("app_state", appState())
                 put("settings", json("{\"audio_normalization_enabled\":true}"))
@@ -436,8 +442,10 @@ class DefaultSyncEngineTest {
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { socketReady.complete(webSocket) }
         }))
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         f.sync.start()
         val socket = socketReady.await()
+        f.sync.state.first { it.realtimeConnected }
         server.enqueue(MockResponse().setBody(buildJsonObject { put("version", 2); put("data", appState()) }.toString()))
         socket.send("not json")
         socket.send("{\"event_type\":\"hello\",\"namespace\":\"app_state\",\"version\":2}")
@@ -447,13 +455,14 @@ class DefaultSyncEngineTest {
         f.engine.queue.first { it.current?.track == song }
         assertEquals("/v1/snapshot", request().path)
         assertEquals("/v1/ws", request().path)
+        assertEquals("/v1/snapshot", request().path)
         assertEquals("/v1/state/app-state", request().path)
-        assertEquals(3, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun `remote conflict resolution confirms playlist overwrite`() = runTest {
         val f = Fixture(this, preferences().copy(syncPlaylists = true))
-        f.playlists.customPlaylists.value = listOf(localPlaylist)
+        f.editLocalPlaylists("Local")
         val remote = buildJsonObject { put("version", 4); put("app_state", appState()); put("playlists", JsonArray(emptyList())) }.toString()
         server.enqueue(MockResponse().setBody(remote))
         f.sync.connect()
@@ -490,21 +499,27 @@ class DefaultSyncEngineTest {
             override fun onOpen(webSocket: WebSocket, response: Response) { connected.trySend(webSocket) }
         })
         server.enqueue(socketResponse())
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         f.network.value = true
         connected.receive()
+        f.sync.state.first { it.realtimeConnected }
         assertEquals("/v1/ws", request().path)
+        assertEquals("/v1/snapshot", request().path)
         f.settings.update { it.copy(authToken = "replacement") }
         runCurrent()
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
         server.enqueue(MockResponse().setBody("{\"version\":2,\"app_state\":{}}"))
         server.enqueue(socketResponse())
+        server.enqueue(MockResponse().setBody("{\"version\":2,\"app_state\":{}}"))
         f.sync.connect()
         connected.receive()
+        f.sync.state.first { it.realtimeConnected }
         assertEquals("/v1/snapshot", request().path)
         assertEquals("Bearer replacement", request().getHeader("Authorization"))
+        assertEquals("/v1/snapshot", request().path)
         f.network.value = false; runCurrent()
         advanceTimeBy(120_000); runCurrent()
-        assertEquals(4, server.requestCount)
+        assertEquals(6, server.requestCount)
     }
 
     @Test fun `discrete changes coalesce at least two seconds apart without periodic pushes`() = runTest {
@@ -942,18 +957,67 @@ class DefaultSyncEngineTest {
         assertEquals(playlistsJson("Phone edit"), json(request().body.readUtf8())["data"])
     }
 
+    @Test fun `retry reconciles missed remote playlist edits before pushing`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.editLocalPlaylists("Base"); f.connectToEmptyServer(); runCurrent()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop while offline"), version = 3))
+        f.editLocalPlaylists("Phone while offline"); advanceTimeBy(2_001); runCurrent()
+        assertEquals("/v1/state/playlists", request().path)
+        awaitRequestCount(4)
+        assertEquals("Retry must reconcile, not overwrite unseen server edits", "/v1/snapshot", request().path)
+        f.sync.state.first { it.playlistConfirmationRequired }
+        assertEquals(playlistsJson("Phone while offline"), f.config.playlists)
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test fun `socket Open reconciles both changed playlists instead of overwriting remote`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists("Base", "Base")
+        server.enqueue(playlistSnapshot(playlistsJson("Base")))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request()
+        f.config.playlists = playlistsJson("Phone while offline")
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop while offline"), version = 3))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.network.value = true
+        f.sync.state.first { it.realtimeConnected }
+        assertTrue("Reconnect must preserve both edits for user decision", f.sync.state.value.playlistConfirmationRequired)
+        assertEquals(playlistsJson("Phone while offline"), f.config.playlists)
+        assertEquals("/v1/ws", request().path)
+        assertEquals("/v1/snapshot", request().path)
+        f.network.value = false; runCurrent()
+    }
+
+    @Test fun `settings retry confirms both changed settings instead of replacing either side`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"settings\":${settingsJson(false, false)}}"))
+        f.sync.start(); f.sync.state.first { it.status == "Sync pull complete." }; request(); runCurrent()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(MockResponse().setBody("{\"version\":3,\"settings\":${settingsJson(false, true)}}"))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }; runCurrent()
+        assertEquals("/v1/state/settings", request().path)
+        awaitRequestCount(3)
+        assertEquals("/v1/snapshot", request().path)
+        f.sync.state.first { it.conflictPending }
+        assertTrue(f.playerSettings.settings.value.normalizationEnabled)
+        assertFalse(f.playerSettings.settings.value.normalizationStrict)
+    }
+
     @Test fun `failed playlist push retries without another edit`() = runTest {
         val f = Fixture(this, playlistPreferences())
         f.editLocalPlaylists("Base")
         f.connectToEmptyServer()
         runCurrent()
         server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(playlistSnapshot(playlistsJson("Base")))
         server.enqueue(MockResponse().setBody("{}"))
         f.editLocalPlaylists("Offline edit")
         advanceTimeBy(2_001); runCurrent()
         assertEquals("/v1/state/playlists", request().path)
-        awaitRequestCount(4)
-        assertEquals("Failed playlist push must be retried", 4, server.requestCount)
+        awaitRequestCount(5)
+        assertEquals("Retry must reconcile first", "/v1/snapshot", request().path)
+        assertEquals("Failed playlist push must be retried", 5, server.requestCount)
         assertEquals(playlistsJson("Offline edit"), json(request().body.readUtf8())["data"])
     }
 
@@ -964,12 +1028,14 @@ class DefaultSyncEngineTest {
         f.sync.state.first { it.status == "Sync pull complete." }
         request(); runCurrent()
         server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(MockResponse().setBody("{\"settings\":${settingsJson(false, false)}}"))
         server.enqueue(MockResponse().setBody("{}"))
         f.playerSettings.update { it.copy(normalizationEnabled = true) }
         runCurrent()
         assertEquals("/v1/state/settings", request().path)
-        awaitRequestCount(3)
-        assertEquals("Failed settings push must be retried", 3, server.requestCount)
+        awaitRequestCount(4)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("Failed settings push must be retried", 4, server.requestCount)
         assertEquals(settingsJson(true, false), json(request().body.readUtf8())["data"])
     }
 
@@ -999,10 +1065,12 @@ class DefaultSyncEngineTest {
         // No Room signal: reconnect must independently check the current export.
         f.config.playlists = playlistsJson("Pending at reconnect")
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.enqueue(MockResponse().setBody("{\"playlists\":${playlistsJson("Base")},\"settings\":${settingsJson(false, false)}}"))
         server.enqueue(MockResponse().setBody("{}"))
         f.network.value = true
         f.sync.state.first { it.realtimeConnected }
         assertEquals("/v1/ws", request().path)
+        assertEquals("/v1/snapshot", request().path)
         runCurrent()
         assertEquals("/v1/state/playlists", request().path)
         f.network.value = false; runCurrent()
@@ -1016,6 +1084,7 @@ class DefaultSyncEngineTest {
         assertEquals("/v1/snapshot", request().path)
         server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
         f.network.value = true
         runCurrent()
         val snapshot = withContext(Dispatchers.IO) { server.takeRequest(2, TimeUnit.SECONDS) }
