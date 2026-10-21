@@ -1,0 +1,64 @@
+name: Android setup
+description: JDK, Android SDK packages and local.properties for Gradle builds.
+
+inputs:
+  java-version:
+    description: Temurin JDK version.
+    required: true
+  spotify-client-id:
+    description: Spotify client id baked into the build; a placeholder is used when empty.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+        cache: gradle
+
+    - name: Verify Java toolchain
+      shell: bash
+      run: java -version
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v4
+      with:
+        packages: 'platform-tools'
+
+    - name: Install Android SDK packages
+      # Composite `bash` adds pipefail; `yes` dies of SIGPIPE once sdkmanager exits, so match the
+      # workflow default (`bash -e`) the step ran under before it moved here.
+      shell: bash --noprofile --norc -e {0}
+      run: |
+        SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+        if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
+          echo "Resolved Android SDK root is invalid: '$SDK_ROOT'"
+          exit 1
+        fi
+        yes | sdkmanager --sdk_root="$SDK_ROOT" \
+          "platforms;android-35" \
+          "build-tools;35.0.0"
+        echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+        echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+
+    - name: Generate local.properties
+      shell: bash
+      env:
+        # Without the secret (e.g. fork PRs) the APK builds but can't sign in to Spotify.
+        SPOTIFY_CLIENT_ID: ${{ inputs.spotify-client-id }}
+      run: |
+        SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+        if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
+          echo "Resolved Android SDK root is invalid: '$SDK_ROOT'"
+          exit 1
+        fi
+        echo "sdk.dir=$SDK_ROOT" > local.properties
+        echo "spotifyClientId=${SPOTIFY_CLIENT_ID:-ci-placeholder-client-id}" >> local.properties
+
+    - name: Grant execute permission
+      shell: bash
+      run: chmod +x gradlew

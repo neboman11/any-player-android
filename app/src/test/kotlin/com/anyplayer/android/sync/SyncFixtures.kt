@@ -58,6 +58,12 @@ internal class FakeSyncSettings(initial: SyncPreferences) : SyncSettingsStore {
     override suspend fun clientId() = "this-client"
 }
 
+internal class FakeAppStateBase : AppStateBaseStore {
+    val values = MutableStateFlow<Map<String, String>>(emptyMap())
+    override suspend fun get(target: String) = values.value[target]
+    override suspend fun set(target: String, signature: String) { values.value += target to signature }
+}
+
 internal class FakePlayerSettings : PlayerSettingsStore {
     override val settings = MutableStateFlow(PlayerSettings())
     override suspend fun awaitLoaded() = settings.value

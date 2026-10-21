@@ -41,6 +41,7 @@ class DefaultSyncEngine internal constructor(
     private val now: () -> Long,
     private val jitter: (Long) -> Long,
     private val imports: SyncImports,
+    private val base: AppStateBaseStore,
 ) : SyncEngine {
     @Inject constructor(
         engine: PlaybackEngine,
@@ -51,9 +52,11 @@ class DefaultSyncEngine internal constructor(
         client: SyncClient,
         network: SyncNetwork,
         imports: SyncImports,
+        base: AppStateBaseStore,
     ) : this(engine, settings, playerSettings, playlists, config, client, network,
         CoroutineScope(SupervisorJob() + Dispatchers.IO), Dispatchers.Main.immediate,
-        { System.nanoTime() / 1_000_000 }, { base -> Random.nextLong((base * 3 / 4).coerceAtLeast(1), base + 1) }, imports)
+        { System.nanoTime() / 1_000_000 }, { jitterBase -> Random.nextLong((jitterBase * 3 / 4).coerceAtLeast(1), jitterBase + 1) },
+        imports, base)
 
     private val mutableState = MutableStateFlow(SyncUiState())
     override val state: StateFlow<SyncUiState> = mutableState.asStateFlow()
@@ -173,24 +176,50 @@ class DefaultSyncEngine internal constructor(
         val unchanged = beforeRevision == revisions.get() &&
             beforeQueue.contentVersion == afterQueue.contentVersion &&
             beforeQueue.current?.uid == afterQueue.current?.uid && beforeQueue.shuffle == afterQueue.shuffle
-        val applied = applySnapshot(snapshot, preferences, confirm, preserveEmpty = startup, applyPlayback = !startup || unchanged)
+        val applied = applySnapshot(snapshot, preferences, confirm, preserveEmpty = startup, applyPlayback = !startup || unchanged,
+            merge = startup, startup = startup)
         if (applied) status(if (!preferences.anyDomain()) "Sync completed with no selected domains." else "Sync pull complete.")
     }
 
-    /** All playback commands execute together on Main, preserving the legacy ordering. */
-    internal suspend fun applyAppState(data: JsonObject, preserveEmpty: Boolean = false) = withContext(Dispatchers.IO) {
-        fun decodeTrack(element: JsonElement?): Track? = try {
-            element?.let { AppJson.decodeFromJsonElement(Track.serializer(), it) }
-        } catch (_: Exception) { null }
+    /**
+     * Startup and realtime pulls merge against the last state this device exchanged with the server: local
+     * playback changed while the server was unreachable, or before sync started (e.g. under Android Auto),
+     * is pushed instead of being rewound to a server copy no other client changed. Live local playback is
+     * never replaced by the startup pull. Explicit pulls and conflict resolution always apply the server.
+     */
+    private suspend fun reconcileAppState(data: JsonObject, preferences: SyncPreferences, preserveEmpty: Boolean, merge: Boolean, startup: Boolean) {
+        val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
+        if (merge) {
+            val agreed = base.get(target)
+            val local = localSignature()
+            val localNewer = agreed != null && remoteSignature(data) == agreed && local != agreed
+            if ((startup && engine.player.value.playRequested) || localNewer) {
+                if (local != agreed) pushAppState(preferences)
+                return
+            }
+        }
+        if (applyAppState(data, preserveEmpty)) base.set(target, localSignature())
+    }
+
+    private fun localSignature(): String {
+        val q = engine.queue.value
+        return appStateSignature(q.current?.track, q.entries.map { it.track }, q.shuffle, q.repeat.name.lowercase())
+    }
+
+    private fun remoteSignature(data: JsonObject) = appStateSignature(decodeTrack(data["current_track"]),
+        (data["queue"] as? JsonArray)?.mapNotNull(::decodeTrack).orEmpty(), data.boolean("shuffle"), remoteRepeat(data).name.lowercase())
+
+    /** All playback commands execute together on Main, preserving the legacy ordering. False when nothing was applied. */
+    internal suspend fun applyAppState(data: JsonObject, preserveEmpty: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         val current = decodeTrack(data["current_track"])
         val remoteQueue = (data["queue"] as? JsonArray)?.mapNotNull(::decodeTrack).orEmpty()
-        if (preserveEmpty && current == null && remoteQueue.isEmpty()) return@withContext
+        if (preserveEmpty && current == null && remoteQueue.isEmpty()) return@withContext false
         suppressUntil = now() + ECHO_WINDOW_MS
         val tracks = if (current != null && remoteQueue.none { sameTrack(it, current) }) listOf(current) + remoteQueue else remoteQueue
         withContext(applyDispatcher) {
             data.number("volume")?.let { engine.setVolume(it.toInt(), ChangeOrigin.SYNC) }
             data.boolean("shuffle")?.takeIf { it != engine.queue.value.shuffle }?.let { engine.setShuffle(it, ChangeOrigin.SYNC) }
-            engine.setRepeat(when (data.string("repeat_mode")) { "one" -> RepeatMode.ONE; "all" -> RepeatMode.ALL; else -> RepeatMode.OFF }, ChangeOrigin.SYNC)
+            engine.setRepeat(remoteRepeat(data), ChangeOrigin.SYNC)
             val local = engine.queue.value
             if (current != null) {
                 if (tracks != local.entries.map { it.track } || local.current?.track != current) {
@@ -206,6 +235,7 @@ class DefaultSyncEngine internal constructor(
             }
             suppressUntil = now() + ECHO_WINDOW_MS
         }
+        true
     }
 
     private suspend fun applySnapshot(
@@ -216,6 +246,8 @@ class DefaultSyncEngine internal constructor(
         applyPlayback: Boolean = true,
         appStateOnly: Boolean = false,
         realtime: Boolean = false,
+        merge: Boolean = false,
+        startup: Boolean = false,
     ): Boolean {
         if (!appStateOnly && preferences.syncSettings) {
             val data = snapshot["settings"] as? JsonObject ?: JsonObject(emptyMap())
@@ -229,7 +261,7 @@ class DefaultSyncEngine internal constructor(
             }
         }
         if (preferences.syncAppState && applyPlayback) {
-            (snapshot["app_state"] as? JsonObject)?.let { applyAppState(it, preserveEmpty) }
+            (snapshot["app_state"] as? JsonObject)?.let { reconcileAppState(it, preferences, preserveEmpty, merge, startup) }
         }
         var applied = true
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
@@ -291,10 +323,11 @@ class DefaultSyncEngine internal constructor(
         if (!canPush()) return true
         if (lastAppPushAt != Long.MIN_VALUE) delay((MIN_PUSH_INTERVAL_MS - (now() - lastAppPushAt)).coerceAtLeast(0))
         if (!canPush()) return true
-        val data = withContext(applyDispatcher) { AppStateSyncPayload.capture(engine) }.toJson()
-        val success = client.push(preferences, "app-state", settings.clientId(), data)
+        val payload = withContext(applyDispatcher) { AppStateSyncPayload.capture(engine) }
+        val success = client.push(preferences, "app-state", settings.clientId(), payload.toJson())
         // Even failed attempts are throttled: never burst on a failing server.
         lastAppPushAt = now()
+        if (success) base.set(normalizeSyncServerBaseUrl(preferences.serverTarget), payload.signature())
         return success
     }
 
@@ -361,7 +394,7 @@ class DefaultSyncEngine internal constructor(
         when (event.namespace) {
             "app_state" -> if (current.syncAppState) {
                 val snapshot = client.appState(preferences) ?: client.snapshot(preferences, lastSyncVersion) ?: return
-                applySnapshot(snapshot, current, confirm = false, appStateOnly = true)
+                applySnapshot(snapshot, current, confirm = false, appStateOnly = true, merge = true)
             }
             "playlists", "provider_configuration", "settings" -> {
                 val selected = when (event.namespace) { "playlists" -> current.syncPlaylists; "settings" -> current.syncSettings; else -> current.syncProviderConfiguration }
@@ -388,11 +421,16 @@ class DefaultSyncEngine internal constructor(
                 (preferences.syncProviderConfiguration && (snapshot["provider_configuration"] as? JsonObject)?.isNotEmpty() == true) ||
                 (preferences.syncSettings && (snapshot["settings"] as? JsonObject)?.isNotEmpty() == true)
         }
-        private fun sameTrack(a: Track, b: Track) = a.id == b.id && a.source == b.source
     }
 }
 
 private fun SyncPreferences.anyDomain() = syncAppState || syncPlaylists || syncSettings || syncProviderConfiguration
+
+private fun decodeTrack(element: JsonElement?): Track? = try {
+    element?.let { AppJson.decodeFromJsonElement(Track.serializer(), it) }
+} catch (_: Exception) { null }
+
+private fun remoteRepeat(data: JsonObject) = when (data.string("repeat_mode")) { "one" -> RepeatMode.ONE; "all" -> RepeatMode.ALL; else -> RepeatMode.OFF }
 
 /** Legacy payload: queue is insertion order, not shuffled play order. Defaults omit null/empty data. */
 internal data class AppStateSyncPayload(
@@ -411,6 +449,7 @@ internal data class AppStateSyncPayload(
         currentTrack?.let { put("current_track", AppJson.encodeToJsonElement(Track.serializer(), it)) }
         if (queue.isNotEmpty()) put("queue", JsonArray(queue.map { AppJson.encodeToJsonElement(Track.serializer(), it) }))
     }
+    fun signature() = appStateSignature(currentTrack, queue, shuffle, repeatMode)
     companion object {
         fun capture(engine: PlaybackEngine): AppStateSyncPayload {
             val queue = engine.queue.value

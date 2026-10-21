@@ -221,6 +221,13 @@ commit together. Observing UI data never initiates a provider fetch.
   position) coalesce with a 2 s minimum interval. There are **no periodic position pushes**.
 - Startup pull applies playback only if local playback did not change during fetch.
   Applied snapshot versions always advance. Playlist overwrite requires confirmation.
+- App-state merge base: the queue-content signature (current track, queue, shuffle, repeat)
+  last pushed to or applied from the target is persisted (`sync_app_state_base`). Startup
+  and realtime pulls push local state instead of applying when the server still holds that
+  base but local content differs (playback moved on while the server was unreachable or
+  before sync started, e.g. Android Auto). The startup pull never replaces playback that is
+  already playing. Content another client changed still applies; explicit pulls and conflict
+  resolution always apply the server.
 - WebSocket reconnect backs off 1–60 s with jitter and network availability gating.
   App-state events first fetch `/v1/state/app-state`, with snapshot fallback. Other
   namespace events never apply snapshot playback and skip unconfirmed playlist overwrites.
@@ -429,8 +436,14 @@ All module JVM suites: `:core:model:test`, `:core:data:testDebugUnitTest`,
 They cover queue/planning/schedule/wire parity, provider paging/auth/transfer, backend and
 engine reconciliation, DJ lifecycle/artifacts/passages, sync/startup and ViewModel state.
 Instrumented `:core:data:connectedDebugAndroidTest` covers migration 1→2→3, legacy DB
-opening, normalized caches and repository/transfer transactions. CI assembles the debug
-APK, runs all module unit tests and `:app:lintDebug`, and uploads the APK.
+opening, normalized caches and repository/transfer transactions. Instrumented
+`:app:connectedDebugAndroidTest` (Hilt test app, orchestrator with cleared data per test)
+drives the media session through a `MediaController` as Android Auto would, plays silent
+WAVs through ExoPlayer and syncs against an in-process server: late sync start under live
+playback, an offline drive answered by a stale republish, and a new process after an
+offline drive must keep the car's position and push it. CI assembles the debug
+APK, runs all module unit tests and `:app:lintDebug`, uploads the APK, and runs
+`:app:connectedDebugAndroidTest` on an API 35 `google_apis` x86_64 emulator in a parallel job.
 
 Device validation includes same-signature in-place upgrade, local mock-provider streaming,
 queue/transport/notification/session controls, paused process restore and Auto projection.
@@ -551,7 +564,8 @@ DjController lazily through DefaultAppStartup after the visibility/playback gate
   never redirects automatic pushes or realtime; they retain the last start/Connect account.
 - Push only after a non-empty queue has been observed post-restore; never push SYNC/RESTORE-origin
   changes; keep the 3.5 s post-apply suppression as a backstop; keep "apply startup pull only if
-  local playback didn't change during the fetch".
+  local playback didn't change during the fetch"; never rewind local content to a server copy
+  that still equals the persisted merge base.
 - Push on discrete events only (track/content/state/shuffle/repeat/volume change, pause and seek
   with exact position) — never periodically. WS events fetch `GET /v1/state/app-state` when only
   `app_state` changed, falling back to `/v1/snapshot?since_version`.
