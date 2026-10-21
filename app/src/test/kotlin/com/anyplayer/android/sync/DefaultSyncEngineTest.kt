@@ -871,6 +871,38 @@ class DefaultSyncEngineTest {
         f.network.value = false; runCurrent()
     }
 
+    @Test fun `offline startup retries snapshot when online then opens realtime`() = runTest {
+        val f = Fixture(this)
+        server.enqueue(MockResponse().setResponseCode(503))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync server unavailable. Continued with local state." }
+        assertEquals("/v1/snapshot", request().path)
+        server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        f.network.value = true
+        runCurrent()
+        val snapshot = withContext(Dispatchers.IO) { server.takeRequest(2, TimeUnit.SECONDS) }
+        assertEquals("Online transition must retry the pending startup", "/v1/snapshot", snapshot?.path)
+        assertEquals("/v1/ws", request().path)
+        f.network.value = false; runCurrent()
+    }
+
+    @Test fun `failed Connect resumes prior confirmed target instead of disabling sync`() = runTest {
+        val f = Fixture(this)
+        f.start(); request(); runCurrent()
+        f.settings.update { it.copy(serverTarget = server.url("/new").toString(), authToken = "new") }
+        server.enqueue(MockResponse().setResponseCode(503))
+        f.sync.connect()
+        f.sync.state.first { it.status == "Sync server unavailable." }
+        assertEquals("/new/v1/snapshot", request().path)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        f.network.value = true; runCurrent()
+        val socket = withContext(Dispatchers.IO) { server.takeRequest(2, TimeUnit.SECONDS) }
+        assertEquals("/v1/ws", socket?.path)
+        assertEquals("Bearer secret", socket?.getHeader("Authorization"))
+        f.network.value = false; runCurrent()
+    }
+
     @Test fun `unavailable Connect does not confirm realtime or automatic settings pushes`() = runTest {
         val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true), online = true)
         server.enqueue(MockResponse().setResponseCode(503))

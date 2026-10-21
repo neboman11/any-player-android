@@ -83,6 +83,7 @@ class DefaultSyncEngine internal constructor(
     private var versionTarget: Pair<String, String>? = null
     private var conflictPreferences: SyncPreferences? = null
     @Volatile private var confirmedPreferences: SyncPreferences? = null
+    @Volatile private var pendingStartup: SyncPreferences? = null
 
     private val playlistPush = DomainPush(SyncBase.PLAYLISTS, "playlists", { it.syncPlaylists }, requireBase = true,
         { config.exportPlaylistsJson() }, ::playlistsSignature)
@@ -96,6 +97,7 @@ class DefaultSyncEngine internal constructor(
             engine.awaitRestored()
             settings.awaitLoaded()
             action(startup = true) {
+                pendingStartup = it
                 pullNow(it, confirm = false, startup = true)
             }
             beginRealtime()
@@ -105,6 +107,8 @@ class DefaultSyncEngine internal constructor(
     override fun connect() {
         // Explicit connection owns initial conflict resolution; a later startup must not pull over it.
         started.set(true)
+        val previous = confirmedPreferences
+        pendingStartup = null
         confirmedPreferences = null
         observeLocalChanges()
         scope.launch {
@@ -129,6 +133,7 @@ class DefaultSyncEngine internal constructor(
                     }
                 }
             }
+            if (confirmedPreferences == null) confirmedPreferences = previous
             beginRealtime()
         }
     }
@@ -158,6 +163,7 @@ class DefaultSyncEngine internal constructor(
     /** Cancel undoes Connect: no automatic push or remote apply until the next Connect or app start. */
     override fun dismissConflict() {
         synchronized(realtimeLock) {
+            pendingStartup = null
             confirmedPreferences = null
             realtimeJob?.cancel()
         }
@@ -165,10 +171,10 @@ class DefaultSyncEngine internal constructor(
         mutableState.update { it.copy(conflictPending = false, status = "Sync connect cancelled.") }
     }
 
-    private suspend fun action(startup: Boolean = false, block: suspend (SyncPreferences) -> Unit) = operation.withLock {
+    private suspend fun action(startup: Boolean = false, selected: SyncPreferences? = null, block: suspend (SyncPreferences) -> Unit) = operation.withLock {
         mutableState.update { it.copy(inProgress = true) }
         try {
-            val preferences = settings.awaitLoaded()
+            val preferences = selected ?: settings.awaitLoaded()
             resetVersionIfNeeded(preferences)
             if (normalizeSyncServerBaseUrl(preferences.serverTarget).isEmpty()) status("Sync server target is not set.")
             else block(preferences)
@@ -195,7 +201,10 @@ class DefaultSyncEngine internal constructor(
             status(if (startup) "Sync server unavailable. Continued with local state." else "Sync server unavailable.")
             return
         }
-        if (startup) confirmedPreferences = preferences
+        if (startup) {
+            confirmedPreferences = preferences
+            pendingStartup = null
+        }
         val afterQueue = engine.queue.value
         val unchanged = beforeRevision == revisions.get() &&
             beforeQueue.contentVersion == afterQueue.contentVersion &&
@@ -526,11 +535,18 @@ class DefaultSyncEngine internal constructor(
     private fun beginRealtime() {
         synchronized(realtimeLock) {
             realtimeJob?.cancel()
-            val confirmed = confirmedPreferences ?: return
+            val initial = confirmedPreferences ?: pendingStartup ?: return
             realtimeJob = scope.launch {
                 network.available.collectLatest { online ->
                     if (!online) { mutableState.update { it.copy(realtimeConnected = false) }; return@collectLatest }
-                    reconnect(confirmed)
+                    var backoff = MIN_PUSH_INTERVAL_MS
+                    while (pendingStartup != null) {
+                        action(startup = true, selected = initial) { pullNow(it, confirm = false, startup = true) }
+                        if (pendingStartup == null) break
+                        delay(jitter(backoff))
+                        backoff = (backoff * 2).coerceAtMost(60_000)
+                    }
+                    confirmedPreferences?.let { reconnect(it) }
                 }
             }
         }
