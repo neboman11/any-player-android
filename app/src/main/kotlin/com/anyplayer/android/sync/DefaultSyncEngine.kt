@@ -350,8 +350,9 @@ class DefaultSyncEngine internal constructor(
     private suspend fun mergePlaylists(snapshot: JsonObject, target: String, realtime: Boolean): PlaylistMerge {
         val local = config.exportPlaylistsJson()
         val localPlaylists = (local as? JsonArray)?.isNotEmpty() == true
-        if (localPlaylists && (snapshot["playlists"] as? JsonArray).isNullOrEmpty()) return PlaylistMerge.CONFIRM
         val agreed = base.get(SyncBase.PLAYLISTS, target)
+        if (localPlaylists && (snapshot["playlists"] as? JsonArray).isNullOrEmpty() &&
+            (agreed == null || playlistsSignature(snapshot["playlists"]) != agreed.remote)) return PlaylistMerge.CONFIRM
         if (agreed == null) {
             val remote = snapshot["playlists"] ?: JsonArray(emptyList())
             if (playlistsSignature(local) == playlistsSignature(remote)) {

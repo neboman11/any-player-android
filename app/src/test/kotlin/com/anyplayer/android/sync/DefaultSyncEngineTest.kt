@@ -703,6 +703,20 @@ class DefaultSyncEngineTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test fun `unchanged empty server accepts first offline playlist without confirmation`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.base.set(SyncBase.PLAYLISTS, f.target, playlistsSignature(JsonArray(emptyList())))
+        f.editLocalPlaylists("First offline playlist")
+        server.enqueue(playlistSnapshot(JsonArray(emptyList())))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertEquals("Sync pull complete.", f.sync.state.value.status)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(playlistsJson("First offline playlist"), json(request().body.readUtf8())["data"])
+    }
+
     @Test fun `reset server never silently deletes agreed local playlists`() = runTest {
         val f = Fixture(this, playlistPreferences())
         f.syncedPlaylists(base = "Phone", local = "Phone")
