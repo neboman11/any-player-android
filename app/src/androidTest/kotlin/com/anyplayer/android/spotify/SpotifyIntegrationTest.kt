@@ -24,12 +24,12 @@ import com.anyplayer.android.data.auth.StoredConnection
 import com.anyplayer.android.data.sync.AppStartup
 import com.anyplayer.android.playback.PlaybackEngine
 import com.anyplayer.android.playback.spotify.SharedPrefsSpotifyDevicePreferenceStore
-import com.anyplayer.android.playback.spotify.SpotifyDevices
 import com.anyplayer.android.testing.Device
 import com.anyplayer.android.testing.Device.awaitUntil
 import com.anyplayer.android.testing.Device.onMain
 import com.anyplayer.android.testing.SpotifyHosts
 import com.anyplayer.android.testing.TestServer
+import com.anyplayer.android.ui.settings.SpotifyDevicePickerState
 import com.anyplayer.android.ui.shell.AnyPlayerShell
 import com.anyplayer.android.ui.theme.AnyPlayerTheme
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -60,7 +60,6 @@ class SpotifyIntegrationTest {
     @Inject lateinit var sessions: SpotifyAuthSessionStore
     @Inject lateinit var engineProvider: Provider<PlaybackEngine>
     @Inject lateinit var startup: AppStartup
-    @Inject lateinit var devices: SpotifyDevices
 
     private lateinit var server: TestServer
     private lateinit var spotify: FakeSpotify
@@ -134,7 +133,6 @@ class SpotifyIntegrationTest {
         val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
             SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
         sessions.save(pending)
-        server.route("GET", "${FakeSpotify.PLAYER}/devices") { okhttp3.mockwebserver.MockResponse().setResponseCode(503) }
         // Cold callbacks race NavHost creation (reported product bug). Deliver after the
         // app's default navigation graph exists, without ever opening Settings beforehand.
         openApp()
@@ -236,25 +234,32 @@ class SpotifyIntegrationTest {
 
     @Test fun deviceSelectionPersistsAndTargetsLaterPlayback() = runBlocking {
         seedConnection()
-        // Picker UI currently crashes while reading HTTP bodies on Main; exercise its real
-        // SpotifyDevices contract on IO, without suppressing StrictMode or replacing the API.
-        val listed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { devices.available() }
-        assertEquals(listOf("Studio", "Kitchen"), listed.map { it.name })
-        val kitchen = listed.single { it.id == "speaker" }
-        devices.setPreferred(kitchen)
-        assertEquals("speaker", SharedPrefsSpotifyDevicePreferenceStore(Device.context).awaitLoaded()?.id)
         openApp()
+        providers()
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains(SpotifyDevicePickerState.AUTOMATIC)
+        compose.onNodeWithTag("spotify_device_picker").performClick()
+        visible("Studio (Computer)")
+        visible("Kitchen (Speaker)")
+        // Restricted devices cannot be controlled and are not offered.
+        compose.onAllNodesWithText("Restricted TV", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("Kitchen (Speaker)").performClick()
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains("Kitchen (Speaker)")
+        awaitUntil(message = "preferred device persisted") {
+            runBlocking { SharedPrefsSpotifyDevicePreferenceStore(Device.context).awaitLoaded()?.id } == "speaker"
+        }
         play(spotify.songs)
         val request = server.awaitRequest { it.path == "${FakeSpotify.PLAYER}/play" && it.body.contains("uris") }
         assertEquals("speaker", request.query("device_id"))
         awaitPlaying()
     }
 
-    @Test fun emptyConnectDeviceListIsReturnedWithoutInventingADevice() = runBlocking {
+    @Test fun emptyDevicePickerExplainsHowToFindDevices() = runBlocking<Unit> {
         seedConnection()
         spotify.devices = emptyList()
-        val listed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { devices.available() }
-        assertTrue(listed.isEmpty())
+        openApp()
+        providers()
+        visible("No Spotify devices online. Open Spotify on a device, then Refresh.")
+        compose.onNodeWithTag("spotify_device_picker").assertTextContains(SpotifyDevicePickerState.AUTOMATIC)
         assertEquals(1, server.requestsTo("${FakeSpotify.PLAYER}/devices", "GET").size)
     }
 
@@ -421,9 +426,6 @@ class SpotifyIntegrationTest {
     }
 
     private suspend fun beginLink(): PendingSpotifyAuthSession {
-        // Isolate login from the separately reported picker main-thread body-read bug.
-        // Spotify device discovery may be unavailable while account linking still succeeds.
-        server.route("GET", "${FakeSpotify.PLAYER}/devices") { okhttp3.mockwebserver.MockResponse().setResponseCode(503) }
         providers()
         compose.onNodeWithText("Link Spotify Account").performClick()
         compose.waitUntil(30_000) { browserUris.isNotEmpty() }

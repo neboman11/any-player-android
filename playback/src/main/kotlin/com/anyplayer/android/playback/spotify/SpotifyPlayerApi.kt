@@ -9,6 +9,8 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -174,17 +176,19 @@ class OkHttpSpotifyPlayerApi internal constructor(
     private fun Map<String, String>.onDevice(deviceId: String?): Map<String, String> =
         if (deviceId.isNullOrBlank()) this else this + ("device_id" to deviceId)
 
-    private suspend fun getJson(path: String, action: String): JsonObject? =
+    /** Request and response I/O run on IO whatever the caller's dispatcher (UI callers launch on Main). */
+    private suspend fun getJson(path: String, action: String): JsonObject? = withContext(Dispatchers.IO) {
         authorized(action) { token ->
             Request.Builder().url(url(path, emptyMap())).headers(token).get().build()
         }.use { response ->
-            if (!response.isSuccessful || response.code == 204) return null
+            if (!response.isSuccessful || response.code == 204) return@withContext null
             val body = response.body?.string().orEmpty()
-            if (body.isBlank()) return null
+            if (body.isBlank()) return@withContext null
             runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
         }
+    }
 
-    private suspend fun write(action: String, method: String, path: String, query: Map<String, String>, json: String?) {
+    private suspend fun write(action: String, method: String, path: String, query: Map<String, String>, json: String?) = withContext(Dispatchers.IO) {
         authorized(action) { token ->
             Request.Builder()
                 .url(url(path, query))
@@ -192,7 +196,7 @@ class OkHttpSpotifyPlayerApi internal constructor(
                 .method(method, (json ?: "").toRequestBody(JSON))
                 .build()
         }.use { response ->
-            if (response.isSuccessful) return
+            if (response.isSuccessful) return@withContext
             // Spotify explains rejections as {"error":{"status":403,"message":"Player command failed: …"}}.
             val reason = runCatching {
                 ((Json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)?.get("error") as? JsonObject)
