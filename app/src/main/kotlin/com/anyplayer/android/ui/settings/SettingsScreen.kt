@@ -33,6 +33,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val dj: AiDjSettingsViewModel = hiltViewModel()
     var selectedTab by rememberSaveable { mutableStateOf("GENERAL") }
     SpotifyAuthLauncher(providers)
+    SpotifyResultReveal(providers) { general.commitFields(); selectedTab = "PROVIDERS" }
     DisposableEffect(general) { onDispose { general.commitFields() } }
     Column(modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = listOf("GENERAL", "PROVIDERS", "AI_DJ").indexOf(selectedTab)) {
@@ -59,6 +60,19 @@ internal fun SpotifyAuthLauncher(viewModel: ProvidersSettingsViewModel) {
         state.authUrl?.let { url ->
             try { handler.openUri(url); viewModel.authLaunchHandled() }
             catch (e: Exception) { viewModel.authLaunchFailed(e.message ?: "Unable to open browser") }
+        }
+    }
+}
+
+/** A Spotify callback opens the Providers tab, where its result is shown; acknowledged once revealed. */
+@Composable
+internal fun SpotifyResultReveal(viewModel: ProvidersSettingsViewModel, reveal: () -> Unit) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val currentReveal by rememberUpdatedState(reveal)
+    LaunchedEffect(state.revealSpotifyResult) {
+        if (state.revealSpotifyResult) {
+            currentReveal()
+            viewModel.spotifyResultRevealed()
         }
     }
 }

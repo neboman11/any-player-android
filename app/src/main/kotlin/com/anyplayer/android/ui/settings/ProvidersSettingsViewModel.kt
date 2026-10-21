@@ -28,6 +28,8 @@ data class ProvidersSettingsState(
     val busy: Boolean = false,
     val feedback: String = "",
     val authUrl: String? = null,
+    /** A Spotify callback is being handled; Settings switches to the Providers tab, where its result shows. */
+    val revealSpotifyResult: Boolean = false,
 )
 
 @HiltViewModel
@@ -121,9 +123,10 @@ class ProvidersSettingsViewModel @Inject constructor(
     }
     fun authLaunchHandled() { mutableState.update { it.copy(authUrl = null) } }
     fun authLaunchFailed(message: String) { mutableState.update { it.copy(authUrl = null, feedback = "Spotify connection failed: $message") } }
+    fun spotifyResultRevealed() { mutableState.update { it.copy(revealSpotifyResult = false) } }
     private suspend fun completeSpotify(uri: String) {
         // The callback is handled even while a browser-launch action is finishing.
-        mutableState.update { it.copy(busy = true, feedback = "Finishing Spotify login...") }
+        mutableState.update { it.copy(busy = true, feedback = "Finishing Spotify login...", revealSpotifyResult = true) }
         try {
             withContext(Dispatchers.IO) {
                 auth.completeSpotifyAuth(uri)

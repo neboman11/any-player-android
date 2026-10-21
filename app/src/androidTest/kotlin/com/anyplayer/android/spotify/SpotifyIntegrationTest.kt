@@ -127,9 +127,7 @@ class SpotifyIntegrationTest {
         assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
     }
 
-    // The callback lands on Settings → General (reported UX issue); the connection is only visible
-    // after the user switches to Providers, so this test does not assert which settings tab opens.
-    @Test fun callbackFromNowPlayingOpensSettingsAndProvidersTabShowsConnection() = runBlocking {
+    @Test fun callbackFromNowPlayingOpensSettingsOnProvidersTabWithConnection() = runBlocking {
         val pending = PendingSpotifyAuthSession("cold-state", "cold-verifier".repeat(5),
             SpotifyTestClientId.DEFAULT, SpotifyAuthFlow.REDIRECT_URI)
         sessions.save(pending)
@@ -137,8 +135,8 @@ class SpotifyIntegrationTest {
         // app's default navigation graph exists, without ever opening Settings beforehand.
         openApp()
         callback("code=cold-code&state=${pending.state}")
-        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsDisplayed().performClick()
         visible("Spotify connected successfully.")
+        compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
         compose.onNodeWithTag("tab_SETTINGS").assertIsSelected()
         compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
         assertEquals("cold-code", FakeSpotify.form(server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").single().body)["code"])
