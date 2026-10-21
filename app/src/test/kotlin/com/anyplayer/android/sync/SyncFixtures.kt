@@ -76,6 +76,7 @@ internal class FakeSyncBase : SyncBaseStore {
         localValues.keys.removeAll { it.second == target }
         versions.remove(target)
     }
+    override suspend fun legacyTargets() = values.value.keys.map { it.second }.filterNot { '#' in it }.toSet()
 }
 
 internal class FakePlayerSettings : PlayerSettingsStore {

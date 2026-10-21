@@ -20,7 +20,7 @@ import kotlinx.serialization.json.*
  * and so that applying a remote copy is never echoed back as a local change.
  */
 enum class SyncBase(internal val keyPrefix: String) {
-    /** [appStateSignature]. Legacy URL-only bases are deliberately not reused. */
+    /** [appStateSignature]. URL-only bases need snapshot verification before adoption. */
     APP_STATE(""),
     /** [playlistsSignature] of the exported playlists JSON. */
     PLAYLISTS("playlists_"),
@@ -37,6 +37,7 @@ interface SyncBaseStore {
     suspend fun version(target: String): Long?
     suspend fun recordVersion(target: String, version: Long)
     suspend fun clear(target: String)
+    suspend fun legacyTargets(): Set<String>
 }
 
 @Singleton
@@ -69,8 +70,12 @@ class SharedPreferencesSyncBaseStore @Inject constructor(@ApplicationContext pri
         }
         editor.apply()
     }
+    override suspend fun legacyTargets(): Set<String> = withContext(Dispatchers.IO) {
+        SyncBase.entries.mapNotNull { prefs.getString(it.keyPrefix + KEY_TARGET, null) }
+            .filterNot { '#' in it }.toSet()
+    }
     private companion object {
-        // Retain the file name, but URL-only legacy targets never match a credential-keyed target.
+        // Retain legacy storage so the first snapshot can verify and re-key old agreements.
         const val FILE = "sync_app_state_base"
         const val KEY_TARGET = "target"
         const val KEY_SIGNATURE = "signature"

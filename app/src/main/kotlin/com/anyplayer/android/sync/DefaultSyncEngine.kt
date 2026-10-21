@@ -84,6 +84,7 @@ class DefaultSyncEngine internal constructor(
     private var conflictPreferences: SyncPreferences? = null
     @Volatile private var confirmedPreferences: SyncPreferences? = null
     @Volatile private var pendingStartup: SyncPreferences? = null
+    private var legacyBasesChecked = false
 
     private val playlistPush = DomainPush(SyncBase.PLAYLISTS, "playlists", { it.syncPlaylists }, requireBase = true,
         { config.exportPlaylistsJson() }, ::playlistsSignature)
@@ -283,6 +284,10 @@ class DefaultSyncEngine internal constructor(
         startup: Boolean = false,
     ): Boolean {
         val target = syncBaseTarget(preferences)
+        if (!appStateOnly && !legacyBasesChecked) {
+            adoptLegacyBases(snapshot, preferences)
+            legacyBasesChecked = true
+        }
         snapshot.number("version")?.let { version ->
             if (base.version(target)?.let { version < it } == true) {
                 base.clear(target)
@@ -346,6 +351,25 @@ class DefaultSyncEngine internal constructor(
         lastSyncVersion = maxOf(lastSyncVersion, snapshot.number("version") ?: lastSyncVersion)
         snapshot.number("version")?.let { base.recordVersion(target, it) }
         return applied
+    }
+
+    private suspend fun adoptLegacyBases(snapshot: JsonObject, preferences: SyncPreferences) {
+        val url = normalizeSyncServerBaseUrl(preferences.serverTarget)
+        val target = syncBaseTarget(preferences)
+        val signatures = mapOf(
+            SyncBase.APP_STATE to remoteSignature(snapshot["app_state"] as? JsonObject ?: JsonObject(emptyMap())),
+            SyncBase.PLAYLISTS to playlistsSignature(snapshot["playlists"]),
+            SyncBase.SETTINGS to settingsSignature(snapshot["settings"] ?: JsonObject(emptyMap())),
+        )
+        for (legacy in base.legacyTargets()) {
+            if (legacy == url) for ((domain, signature) in signatures) {
+                val agreed = base.get(domain, legacy)
+                if (agreed?.remote == signature && base.get(domain, target) == null) {
+                    base.set(domain, target, agreed.remote, agreed.local)
+                }
+            }
+            base.clear(legacy)
+        }
     }
 
     private enum class PlaylistMerge { APPLY_REMOTE, PUSH_LOCAL, UNCHANGED, CONFIRM }

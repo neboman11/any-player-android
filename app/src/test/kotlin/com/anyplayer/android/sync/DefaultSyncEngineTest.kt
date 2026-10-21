@@ -791,6 +791,35 @@ class DefaultSyncEngineTest {
         assertEquals(playlistsJson("Phone"), f.config.playlists)
     }
 
+    @Test fun `matching legacy base preserves offline settings on first snapshot`() = runTest {
+        val f = Fixture(this, preferences().copy(syncAppState = false, syncSettings = true))
+        val legacy = server.url("/").toString().trimEnd('/')
+        f.base.set(SyncBase.SETTINGS, legacy, settingsSignature(settingsJson(false, false)))
+        f.playerSettings.update { it.copy(normalizationEnabled = true) }
+        server.enqueue(MockResponse().setBody("{\"settings\":${settingsJson(false, false)}}"))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertTrue(f.playerSettings.settings.value.normalizationEnabled)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(settingsJson(true, false), json(request().body.readUtf8())["data"])
+        assertNull(f.base.get(SyncBase.SETTINGS, legacy))
+    }
+
+    @Test fun `changed legacy remote drops old agreement rather than adopting it`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        val legacy = server.url("/").toString().trimEnd('/')
+        f.base.set(SyncBase.PLAYLISTS, legacy, playlistsSignature(playlistsJson("Old")))
+        f.editLocalPlaylists("Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Changed server")))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertTrue(f.sync.state.value.playlistConfirmationRequired)
+        assertNull("Mismatched legacy bases must be discarded once", f.base.get(SyncBase.PLAYLISTS, legacy))
+        assertNull(f.base.get(SyncBase.PLAYLISTS, f.target))
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
+    }
+
     private fun gappedPlaylists() = AppJson.parseToJsonElement("""[{
         "playlist":{"id":"p1","name":"Desktop","created_at":1,"updated_at":1,"track_count":1,"playlist_type":"standard"},
         "tracks":[{"id":1,"playlist_id":"p1","track_source":"custom","track_id":"t","position":9,"added_at":1,"title":"Track","artist":"Artist"}],
