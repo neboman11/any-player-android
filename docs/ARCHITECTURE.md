@@ -222,19 +222,30 @@ commit together. Observing UI data never initiates a provider fetch.
   and retain a 3.5 s post-apply echo guard. Discrete changes (including exact seek/pause
   position) coalesce with a 2 s minimum interval. There are **no periodic position pushes**.
 - Startup pull applies playback only if local playback did not change during fetch.
-  Applied snapshot versions always advance.
+  Snapshot versions advance; if the server's version goes backwards (reset/restore), the
+  merge bases and realtime version cursor are cleared.
+- Sync is confirmed (realtime and automatic pushes enabled) only after a successful snapshot
+  from start/Connect; an unreachable server or unreadable snapshot confirms nothing.
 - Playlists and settings: while sync is confirmed and the domain is selected, local
-  custom-playlist edits and normalization changes push their namespace (≥2 s coalescing)
-  whenever the local export differs from that domain's merge base; applied remote data is
-  never echoed back. Playlists merge three-way against their base on startup, realtime and
-  non-forced pulls: only one side changed → that side wins silently; both changed → startup
-  and manual pulls ask for overwrite confirmation, realtime pushes the local copy; no base yet
-  → overwrite still requires confirmation. Force Pull and conflict resolution always overwrite.
+  custom-playlist edits (playlist, track and union-source tables are observed) and
+  normalization changes push their namespace (≥2 s coalescing, retried with backoff on failure
+  and re-checked when the socket reconnects) whenever the local export differs from that
+  domain's local base; applied remote data is never echoed back. Playlists merge three-way on
+  startup, realtime and manual pulls: only one side changed → that side wins silently; both
+  changed → startup and manual pulls ask for overwrite confirmation, realtime pushes the local
+  copy. With no base yet, identical payloads establish one silently and differing payloads ask.
+  An empty or missing remote playlist list never deletes local playlists without
+  confirmation. Force Pull runs this merge first and shows "Confirm playlist overwrite" only
+  when it needs confirmation; conflict resolution always overwrites. Settings get the same
+  protection: an unpushed local normalization change is pushed rather than overwritten.
 - Cancelling the Connect conflict dialog stops realtime and automatic pushes until the next
   Connect or app start.
-- App-state merge base: the queue-content signature (current track, queue, shuffle, repeat)
-  last pushed to or applied from the target is persisted (`sync_app_state_base`, which also
-  holds the playlists and settings bases). Startup
+- Merge bases (`sync_app_state_base`) are keyed by the server URL plus a SHA-256 of the auth
+  token (never the token itself), so a different account or reset server starts without a
+  base. Each domain stores a remote signature (last applied/pushed server payload) and a local
+  signature (local export after import or push); the import and base capture share one Room
+  transaction. App-state merge base: the queue-content signature (current track, queue,
+  shuffle, repeat). Startup
   and realtime pulls push local state instead of applying when the server still holds that
   base but local content differs (playback moved on while the server was unreachable or
   before sync started, e.g. Android Auto). The startup pull never replaces playback that is
@@ -591,10 +602,12 @@ DjController lazily through DefaultAppStartup after the visibility/playback gate
 - Push on discrete events only (track/content/state/shuffle/repeat/volume change, pause and seek
   with exact position) — never periodically. WS events fetch `GET /v1/state/app-state` when only
   `app_state` changed, falling back to `/v1/snapshot?since_version`.
-- Local custom-playlist edits and normalization changes push the `playlists` / `settings`
-  namespaces (≥2 s coalescing) while sync is confirmed, only when the local export differs from
-  that domain's merge base; applied remote data is never echoed back. Playlists merge three-way
-  against their base (see §5.5); with no base yet, an overwrite still requires confirmation.
+- Local custom-playlist edits (playlist, track and union-source tables) and normalization
+  changes push the `playlists` / `settings` namespaces (≥2 s coalescing, retried on failure and
+  on socket reconnect) while sync is confirmed, only when the local export differs from that
+  domain's local base; applied remote data is never echoed back. Playlists merge three-way
+  (see §5.5): with no base, identical payloads establish one and differing payloads ask; an
+  empty remote never silently deletes local playlists.
 - Realtime applies only the event's namespace and never snapshot playback for
   playlist/settings/provider events. A slow initial Room emission is treated conservatively as
   existing local playlists, not coroutine cancellation. Synced normalization is persisted as well
