@@ -27,6 +27,9 @@ internal fun GeneralSettingsTab(viewModel: GeneralSettingsViewModel) {
     Button(onClick = viewModel::connect, enabled = !state.sync.inProgress) { Text("Connect") }
     OutlinedButton(onClick = viewModel::requestPull, enabled = !state.sync.inProgress) { Text("Force Pull from Server") }
     Text(state.sync.status)
+    if (state.sync.playlistSyncPaused && state.sync.status != "Playlist sync paused: confirm in Settings") {
+        Text("Playlist sync paused: confirm in Settings")
+    }
     state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     HorizontalDivider()
     Text("Playback", style = MaterialTheme.typography.titleMedium)

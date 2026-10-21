@@ -10,6 +10,8 @@ data class SyncUiState(
     val conflictPending: Boolean = false,
     /** A non-forced pull found playlist changes that require an explicit overwrite decision. */
     val playlistConfirmationRequired: Boolean = false,
+    /** Remains visible after dismissing the dialog; only an explicit choice resumes playlist pushes. */
+    val playlistSyncPaused: Boolean = false,
     val realtimeConnected: Boolean = false,
 )
 

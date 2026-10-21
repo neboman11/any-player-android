@@ -726,6 +726,25 @@ class DefaultSyncEngineTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test fun `realtime overwrite guard exposes persistent paused status until resolved`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists("Phone", "Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Phone")))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync pull complete." }; request()
+        server.enqueue(playlistSnapshot(JsonArray(emptyList()), version = 2))
+        f.sync.receiveUpdate(f.settings.preferences.value, SyncUpdate("playlists", 2, "other"))
+        assertEquals("Playlist sync paused: confirm in Settings", f.sync.state.value.status)
+        assertTrue(f.sync.state.value.playlistConfirmationRequired)
+        f.settings.update { it.copy(syncPlaylists = false) }
+        server.enqueue(MockResponse().setBody("{\"version\":3}"))
+        f.sync.pull(false)
+        f.sync.state.first { !it.inProgress }
+        runCurrent()
+        assertTrue("Pause remains visible after unrelated successful sync", f.sync.state.value.playlistSyncPaused)
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
+    }
+
     @Test fun `unchanged empty server accepts first offline playlist without confirmation`() = runTest {
         val f = Fixture(this, playlistPreferences())
         f.base.set(SyncBase.PLAYLISTS, f.target, playlistsSignature(JsonArray(emptyList())))
