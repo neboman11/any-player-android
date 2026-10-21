@@ -77,10 +77,16 @@ class DesktopFixtureGeneratorSyncTest {
             }
         }
         val playlists = playlistCases.map { (name, input) ->
-            buildJsonObject { put("name", name); put("input", parse(input) ?: JsonNull); put("expected", playlistsSignature(parse(input))) }
+            buildJsonObject {
+                put("name", name); put("input_text", input); put("input", parse(input) ?: JsonNull)
+                put("expected", playlistsSignature(parse(input)))
+            }
         }
         val settings = settingsCases.map { (name, input) ->
-            buildJsonObject { put("name", name); put("input", parse(input)!!); put("expected", settingsSignature(parse(input)!!)) }
+            buildJsonObject {
+                put("name", name); put("input_text", input); put("input", parse(input)!!)
+                put("expected", settingsSignature(parse(input)!!))
+            }
         }
         val targets = targetCases.map { (url, token) ->
             buildJsonObject {
