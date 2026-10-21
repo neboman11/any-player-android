@@ -196,15 +196,27 @@ class DefaultSyncEngineTest {
         assertFalse(DefaultSyncEngine.hasServerData(json("{\"app_state\":{\"current_track\":{},\"queue\":[]}}"), empty.copy(syncAppState = true)))
     }
 
-    @Test fun `connect detects conflict and dismiss preserves local state`() = runTest {
-        val f = Fixture(this)
+    @Test fun `dismissing the connect conflict preserves local state and stops realtime and automatic pushes`() = runTest {
+        val f = Fixture(this, online = true)
+        val opened = CompletableDeferred<Unit>()
         server.enqueue(MockResponse().setBody(buildJsonObject { put("version", 2); put("app_state", appState()) }.toString()))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.complete(Unit) }
+        }))
         f.sync.connect()
         f.sync.state.first { it.conflictPending }
         assertEquals("Server already has synced data - choose which side to keep.", f.sync.state.value.status)
+        opened.await()
+        f.sync.state.first { it.realtimeConnected }
         f.sync.dismissConflict()
         assertEquals("Sync connect cancelled.", f.sync.state.value.status)
         assertTrue(f.engine.queue.value.entries.isEmpty())
+        f.sync.state.first { !it.realtimeConnected }
+        f.engine.setQueue(listOf(song)); runCurrent()
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals("/v1/ws", request().path)
+        assertEquals("No reconnect or push after Cancel", 2, server.requestCount)
     }
 
     @Test fun `playlist overwrite requires confirmation and skips provider import too`() = runTest {

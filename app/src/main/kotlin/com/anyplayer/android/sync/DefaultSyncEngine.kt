@@ -65,7 +65,9 @@ class DefaultSyncEngine internal constructor(
     private val operation = Mutex()
     private val revisions = AtomicLong()
     private val pushRequests = Channel<Unit>(Channel.CONFLATED)
-    private var realtimeJob: Job? = null
+    // Guards realtimeJob against a concurrent Cancel (dismissConflict runs on the caller's thread).
+    private val realtimeLock = Any()
+    @Volatile private var realtimeJob: Job? = null
     @Volatile private var observedQueue = false
     @Volatile private var suppressUntil = Long.MIN_VALUE
     private var lastAppPushAt = Long.MIN_VALUE
@@ -137,7 +139,12 @@ class DefaultSyncEngine internal constructor(
         }
     }
 
+    /** Cancel undoes Connect: no automatic push or remote apply until the next Connect or app start. */
     override fun dismissConflict() {
+        synchronized(realtimeLock) {
+            confirmedPreferences = null
+            realtimeJob?.cancel()
+        }
         conflictPreferences = null
         mutableState.update { it.copy(conflictPending = false, status = "Sync connect cancelled.") }
     }
@@ -354,12 +361,14 @@ class DefaultSyncEngine internal constructor(
     }
 
     private fun beginRealtime() {
-        realtimeJob?.cancel()
-        val confirmed = confirmedPreferences ?: return
-        realtimeJob = scope.launch {
-            network.available.collectLatest { online ->
-                if (!online) { mutableState.update { it.copy(realtimeConnected = false) }; return@collectLatest }
-                reconnect(confirmed)
+        synchronized(realtimeLock) {
+            realtimeJob?.cancel()
+            val confirmed = confirmedPreferences ?: return
+            realtimeJob = scope.launch {
+                network.available.collectLatest { online ->
+                    if (!online) { mutableState.update { it.copy(realtimeConnected = false) }; return@collectLatest }
+                    reconnect(confirmed)
+                }
             }
         }
     }

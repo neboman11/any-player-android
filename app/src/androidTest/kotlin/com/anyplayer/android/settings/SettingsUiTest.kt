@@ -167,6 +167,29 @@ class SettingsUiTest {
         assertTrue(server.server.log.none { it.method == "PUT" })
     }
 
+    @Test fun cancellingConflictStopsRealtimeAndAutomaticPushes() = runBlocking {
+        playlists.create("Untouched phone", PlaylistType.STANDARD)
+        seedServerPlaylist("Untouched server")
+        val song = server.track(1, "Phone song")
+        engine.get().awaitRestored()
+        openSettings()
+        click("Connect")
+        status("Sync server already has data")
+        val socket = server.awaitSocket()
+        click("Cancel")
+        status("Sync connect cancelled.")
+        val snapshots = server.server.requestsTo("/v1/snapshot").size
+        onMain { engine.get().setQueue(listOf(song), autoPlay = false) }
+        playlists.create("After cancel", PlaylistType.STANDARD)
+        server.publishFromOtherClient(socket, "app_state")
+        server.publishFromOtherClient(socket, "playlists")
+        // Absence check: automatic pushes leave within the 2 s throttle and socket events fetch at once.
+        kotlinx.coroutines.delay(5_000)
+        assertEquals("No PUT after Cancel", emptyList<String>(), server.server.log.filter { it.method == "PUT" }.map { it.path })
+        assertEquals("No snapshot GET after Cancel", snapshots, server.server.requestsTo("/v1/snapshot").size)
+        assertTrue(server.server.requestsTo("/v1/state/app-state", "GET").isEmpty())
+    }
+
     @Test fun forcePullCancelPreservesThenContinueReplacesLocalPlaylists() = runBlocking {
         val local = playlists.create("Local only", PlaylistType.STANDARD)
         seedServerPlaylist("Replacement")
