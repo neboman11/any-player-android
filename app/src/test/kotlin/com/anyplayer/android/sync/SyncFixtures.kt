@@ -61,12 +61,19 @@ internal class FakeSyncSettings(initial: SyncPreferences) : SyncSettingsStore {
 internal class FakeSyncBase : SyncBaseStore {
     val values = MutableStateFlow<Map<Pair<SyncBase, String>, String>>(emptyMap())
     private val versions = mutableMapOf<String, Long>()
-    override suspend fun get(domain: SyncBase, target: String) = values.value[domain to target]
-    override suspend fun set(domain: SyncBase, target: String, signature: String) { values.value += (domain to target) to signature }
+    private val localValues = mutableMapOf<Pair<SyncBase, String>, String>()
+    override suspend fun get(domain: SyncBase, target: String) = values.value[domain to target]?.let {
+        SyncSignatures(it, localValues[domain to target] ?: it)
+    }
+    override suspend fun set(domain: SyncBase, target: String, signature: String, localSignature: String) {
+        localValues[domain to target] = localSignature
+        values.value += (domain to target) to signature
+    }
     override suspend fun version(target: String) = versions[target]
     override suspend fun recordVersion(target: String, version: Long) { versions[target] = version }
     override suspend fun clear(target: String) {
         values.value = values.value.filterKeys { it.second != target }
+        localValues.keys.removeAll { it.second == target }
         versions.remove(target)
     }
 }

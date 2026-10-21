@@ -748,6 +748,43 @@ class DefaultSyncEngineTest {
         assertEquals(playlistsJson("Phone"), f.config.playlists)
     }
 
+    private fun gappedPlaylists() = AppJson.parseToJsonElement("""[{
+        "playlist":{"id":"p1","name":"Desktop","created_at":1,"updated_at":1,"track_count":1,"playlist_type":"standard"},
+        "tracks":[{"id":1,"playlist_id":"p1","track_source":"custom","track_id":"t","position":9,"added_at":1,"title":"Track","artist":"Artist"}],
+        "union_sources":[]} ]""")
+
+    @Test fun `lossy playlist import does not reimport the unchanged remote`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        server.enqueue(playlistSnapshot(gappedPlaylists()))
+        f.sync.pull(true)
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request()
+        assertEquals(0, f.config.playlists.jsonArray.single().jsonObject["tracks"]!!.jsonArray.single().jsonObject["position"]!!.jsonPrimitive.int)
+        server.enqueue(playlistSnapshot(gappedPlaylists()))
+        f.sync.pull(false)
+        f.sync.state.first { it.inProgress }
+        f.sync.state.first { !it.inProgress }
+        assertEquals("An unchanged remote must not run REPLACE_ALL again", 1, f.config.imports.size)
+    }
+
+    @Test fun `local edit after lossy import pushes rather than reporting both sides changed`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        server.enqueue(playlistSnapshot(gappedPlaylists()))
+        f.sync.pull(true)
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request()
+        f.editLocalPlaylists("Phone edit")
+        server.enqueue(playlistSnapshot(gappedPlaylists()))
+        server.enqueue(MockResponse().setBody("{}"))
+        f.sync.start()
+        f.sync.state.first { it.inProgress }
+        f.sync.state.first { !it.inProgress }
+        assertFalse(f.sync.state.value.playlistConfirmationRequired)
+        assertEquals(playlistsJson("Phone edit"), f.config.playlists)
+        assertEquals("/v1/snapshot", request().path)
+        assertEquals(playlistsJson("Phone edit"), json(request().body.readUtf8())["data"])
+    }
+
     @Test fun `playlist signature ignores exporter formatting but not content`() {
         val phone = json("""{"p":[
             {"playlist":{"id":"a","name":"A","description":null,"created_at":1,"updated_at":2,"track_count":2,"playlist_type":"standard","is_distinct":false},

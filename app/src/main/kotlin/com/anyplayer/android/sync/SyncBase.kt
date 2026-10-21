@@ -28,10 +28,12 @@ enum class SyncBase(internal val keyPrefix: String) {
     SETTINGS("settings_"),
 }
 
+data class SyncSignatures(val remote: String, val local: String)
+
 interface SyncBaseStore {
     /** [target] includes the normalized server URL and a one-way hash of its normalized credential. */
-    suspend fun get(domain: SyncBase, target: String): String?
-    suspend fun set(domain: SyncBase, target: String, signature: String)
+    suspend fun get(domain: SyncBase, target: String): SyncSignatures?
+    suspend fun set(domain: SyncBase, target: String, signature: String, localSignature: String = signature)
     suspend fun version(target: String): Long?
     suspend fun recordVersion(target: String, version: Long)
     suspend fun clear(target: String)
@@ -40,11 +42,16 @@ interface SyncBaseStore {
 @Singleton
 class SharedPreferencesSyncBaseStore @Inject constructor(@ApplicationContext private val context: Context) : SyncBaseStore {
     private val prefs by lazy { context.getSharedPreferences(FILE, Context.MODE_PRIVATE) }
-    override suspend fun get(domain: SyncBase, target: String): String? = withContext(Dispatchers.IO) {
-        prefs.getString(domain.keyPrefix + KEY_SIGNATURE, null)?.takeIf { prefs.getString(domain.keyPrefix + KEY_TARGET, null) == target }
+    override suspend fun get(domain: SyncBase, target: String): SyncSignatures? = withContext(Dispatchers.IO) {
+        if (prefs.getString(domain.keyPrefix + KEY_TARGET, null) != target) return@withContext null
+        val remote = prefs.getString(domain.keyPrefix + KEY_SIGNATURE, null) ?: return@withContext null
+        val local = prefs.getString(domain.keyPrefix + KEY_LOCAL_SIGNATURE, null) ?: remote
+        SyncSignatures(remote, local)
     }
-    override suspend fun set(domain: SyncBase, target: String, signature: String) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(domain.keyPrefix + KEY_TARGET, target).putString(domain.keyPrefix + KEY_SIGNATURE, signature).apply()
+    override suspend fun set(domain: SyncBase, target: String, signature: String, localSignature: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(domain.keyPrefix + KEY_TARGET, target)
+            .putString(domain.keyPrefix + KEY_SIGNATURE, signature)
+            .putString(domain.keyPrefix + KEY_LOCAL_SIGNATURE, localSignature).apply()
     }
     override suspend fun version(target: String): Long? = withContext(Dispatchers.IO) {
         prefs.getLong("version_$target", -1).takeIf { it >= 0 }
@@ -57,6 +64,7 @@ class SharedPreferencesSyncBaseStore @Inject constructor(@ApplicationContext pri
         SyncBase.entries.forEach { domain ->
             if (prefs.getString(domain.keyPrefix + KEY_TARGET, null) == target) {
                 editor.remove(domain.keyPrefix + KEY_TARGET).remove(domain.keyPrefix + KEY_SIGNATURE)
+                    .remove(domain.keyPrefix + KEY_LOCAL_SIGNATURE)
             }
         }
         editor.apply()
@@ -66,6 +74,7 @@ class SharedPreferencesSyncBaseStore @Inject constructor(@ApplicationContext pri
         const val FILE = "sync_app_state_base"
         const val KEY_TARGET = "target"
         const val KEY_SIGNATURE = "signature"
+        const val KEY_LOCAL_SIGNATURE = "local_signature"
     }
 }
 

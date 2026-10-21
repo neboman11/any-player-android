@@ -205,13 +205,13 @@ class DefaultSyncEngine internal constructor(
         if (merge) {
             val agreed = base.get(SyncBase.APP_STATE, target)
             val local = localSignature()
-            val localNewer = agreed != null && remoteSignature(data) == agreed && local != agreed
+            val localNewer = agreed != null && remoteSignature(data) == agreed.remote && local != agreed.local
             if ((startup && engine.player.value.playRequested) || localNewer) {
-                if (local != agreed) pushAppState(preferences)
+                if (local != agreed?.local) pushAppState(preferences)
                 return
             }
         }
-        if (applyAppState(data, preserveEmpty)) base.set(SyncBase.APP_STATE, target, localSignature())
+        if (applyAppState(data, preserveEmpty)) base.set(SyncBase.APP_STATE, target, remoteSignature(data), localSignature())
     }
 
     private fun localSignature(): String {
@@ -279,7 +279,7 @@ class DefaultSyncEngine internal constructor(
                 suppressUntil = now() + ECHO_WINDOW_MS
                 engine.setNormalization(enabled, strict)
             }
-            settingsPush.record(target, settingsJson(enabled, strict))
+            settingsPush.record(target, data, settingsJson(enabled, strict))
         }
         if (preferences.syncAppState && applyPlayback) {
             (snapshot["app_state"] as? JsonObject)?.let { reconcileAppState(it, preferences, preserveEmpty, merge, startup) }
@@ -303,7 +303,7 @@ class DefaultSyncEngine internal constructor(
                         put("custom_playlists", if (replace) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
                     }
                     applied = imports.apply(file, if (replace) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
-                    if (applied && replace) playlistPush.record(target, config.exportPlaylistsJson())
+                    if (applied && replace) playlistPush.record(target, snapshot["playlists"] ?: JsonArray(emptyList()), config.exportPlaylistsJson())
                 }
                 if (merge == PlaylistMerge.PUSH_LOCAL) playlistPush.push(preferences)
             }
@@ -331,8 +331,8 @@ class DefaultSyncEngine internal constructor(
             return if (localPlaylists) PlaylistMerge.CONFIRM else PlaylistMerge.APPLY_REMOTE
         }
         if (playlistPush.awaitingConfirmation) return PlaylistMerge.CONFIRM
-        val localChanged = playlistsSignature(config.exportPlaylistsJson()) != agreed
-        val remoteChanged = playlistsSignature(snapshot["playlists"]) != agreed
+        val localChanged = playlistsSignature(config.exportPlaylistsJson()) != agreed.local
+        val remoteChanged = playlistsSignature(snapshot["playlists"]) != agreed.remote
         return when {
             !remoteChanged -> if (localChanged) PlaylistMerge.PUSH_LOCAL else PlaylistMerge.UNCHANGED
             !localChanged -> PlaylistMerge.APPLY_REMOTE
@@ -446,7 +446,7 @@ class DefaultSyncEngine internal constructor(
                     if (agreed == null && requireBase) return@withLock
                     domainPush {
                         val data = export()
-                        signature(data) == agreed || push(preferences, data)
+                        signature(data) == agreed?.local || push(preferences, data)
                     }
                 }
             }
@@ -462,9 +462,9 @@ class DefaultSyncEngine internal constructor(
             return success
         }
 
-        /** [data] is now what this device and [target] agree on. */
-        suspend fun record(target: String, data: JsonElement) {
-            base.set(domain, target, signature(data))
+        /** Remote wire data and its locally applied representation may differ after a lossy import. */
+        suspend fun record(target: String, data: JsonElement, local: JsonElement = data) {
+            base.set(domain, target, signature(data), signature(local))
             awaitingConfirmation = false
             if (domain == SyncBase.PLAYLISTS) mutableState.update { it.copy(playlistConfirmationRequired = false) }
         }
