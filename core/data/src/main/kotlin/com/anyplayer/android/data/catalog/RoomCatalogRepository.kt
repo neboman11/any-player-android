@@ -115,7 +115,10 @@ class RoomCatalogRepository @Inject constructor(
             async(Dispatchers.IO) {
                 try { Result.success(client.search(conn, query.trim(), type, 100)) }
                 catch (e: CancellationException) { throw e }
-                catch (e: Exception) { Result.failure(e) }
+                catch (e: Exception) {
+                    val label = provider.name.lowercase().replaceFirstChar { it.titlecase() }
+                    Result.failure(IllegalStateException("$label: ${e.message?.takeIf { it.isNotBlank() } ?: "Unknown error"}", e))
+                }
             }
         }.awaitAll()
         mergeSearchOutcomes(outcomes)
@@ -127,9 +130,15 @@ class RoomCatalogRepository @Inject constructor(
     }
 }
 
-/** Combines per-provider results; throws the first failure only when every searched provider failed. */
+/** Combines per-provider results; summarizes failures only when every searched provider failed. */
 internal fun mergeSearchOutcomes(outcomes: List<Result<SearchResult>>): SearchResult {
     val results = outcomes.mapNotNull { it.getOrNull() }
-    if (results.isEmpty()) outcomes.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+    if (results.isEmpty()) {
+        val failures = outcomes.mapNotNull { it.exceptionOrNull() }
+        if (failures.isNotEmpty()) {
+            val message = failures.joinToString("; ") { it.message?.takeIf { message -> message.isNotBlank() } ?: "Unknown error" }
+            throw IllegalStateException(message, failures.first())
+        }
+    }
     return SearchResult(results.flatMap { it.tracks }, results.flatMap { it.playlists })
 }

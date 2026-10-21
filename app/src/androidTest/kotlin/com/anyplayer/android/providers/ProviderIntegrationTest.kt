@@ -258,14 +258,14 @@ class ProviderIntegrationTest {
         search("Finale")
         compose.waitUntil(30_000) {
             compose.onAllNodesWithText("No results").fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithText("Search failed: HTTP 503").fetchSemanticsNodes().isNotEmpty()
+                compose.onAllNodesWithText("Search failed:", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
         assertTrue(searchRequests("Finale").isNotEmpty())
-        compose.onNodeWithText("Search failed: HTTP 503").assertExists()
+        compose.onNodeWithText("Search failed: Jellyfin: HTTP 503").assertExists()
         // A failing provider must not hide another provider's results.
         compose.onNodeWithText("all").performClick()
         waitText("Plex Finale", substring = true)
-        compose.onNodeWithText("Search failed: HTTP 503").assertDoesNotExist()
+        compose.onNodeWithText("Search failed: Jellyfin: HTTP 503").assertDoesNotExist()
     }
 
     @Test fun encryptedCredentialsReloadAndStartupRestoresBothProvidersWithoutSettings() = runBlocking {
