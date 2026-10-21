@@ -279,26 +279,55 @@ class DefaultSyncEngine internal constructor(
         }
         var applied = true
         if (!appStateOnly && (preferences.syncPlaylists || preferences.syncProviderConfiguration)) {
-            if (preferences.syncPlaylists && !confirm &&
-                (withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true)) {
+            val merge = if (preferences.syncPlaylists && !confirm) mergePlaylists(snapshot, target, realtime) else PlaylistMerge.APPLY_REMOTE
+            if (merge == PlaylistMerge.CONFIRM) {
                 if (!realtime) {
                     playlistPush.awaitingConfirmation = true
                     status("Sync cancelled: playlist overwrite requires confirmation.")
                 }
                 applied = realtime
             } else {
-                val file = buildJsonObject {
-                    put("export_version", 1)
-                    put("provider_configs", if (preferences.syncProviderConfiguration) snapshot["provider_configuration"] ?: JsonObject(emptyMap()) else JsonObject(emptyMap()))
-                    put("custom_playlists", if (preferences.syncPlaylists) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
+                val replace = preferences.syncPlaylists && merge == PlaylistMerge.APPLY_REMOTE
+                if (replace || preferences.syncProviderConfiguration) {
+                    val file = buildJsonObject {
+                        put("export_version", 1)
+                        put("provider_configs", if (preferences.syncProviderConfiguration) snapshot["provider_configuration"] ?: JsonObject(emptyMap()) else JsonObject(emptyMap()))
+                        put("custom_playlists", if (replace) snapshot["playlists"] ?: JsonArray(emptyList()) else JsonArray(emptyList()))
+                    }
+                    applied = imports.apply(file, if (replace) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
+                    if (applied && replace) playlistPush.record(target, config.exportPlaylistsJson())
                 }
-                applied = imports.apply(file, if (preferences.syncPlaylists) MergePolicy.REPLACE_ALL else MergePolicy.MERGE_KEEP_LOCAL)
-                if (applied && preferences.syncPlaylists) playlistPush.record(target, config.exportPlaylistsJson())
+                if (merge == PlaylistMerge.PUSH_LOCAL) playlistPush.push(preferences)
             }
         }
         // Versions belong to the entire snapshot, not just the app-state domain.
         lastSyncVersion = maxOf(lastSyncVersion, snapshot.number("version") ?: lastSyncVersion)
         return applied
+    }
+
+    private enum class PlaylistMerge { APPLY_REMOTE, PUSH_LOCAL, UNCHANGED, CONFIRM }
+
+    /**
+     * Three-way merge against the playlists base. When only one side changed since the base, that side
+     * wins silently. When both changed, realtime keeps this device's copy (it made the latest edit) while
+     * startup and manual pulls ask, as does any pull before the first sync with this target (no base) with
+     * local playlists, or while an earlier pull still awaits that confirmation.
+     */
+    private suspend fun mergePlaylists(snapshot: JsonObject, target: String, realtime: Boolean): PlaylistMerge {
+        val agreed = base.get(SyncBase.PLAYLISTS, target)
+        if (agreed == null) {
+            val localPlaylists = withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true
+            return if (localPlaylists) PlaylistMerge.CONFIRM else PlaylistMerge.APPLY_REMOTE
+        }
+        if (playlistPush.awaitingConfirmation) return PlaylistMerge.CONFIRM
+        val localChanged = playlistsSignature(config.exportPlaylistsJson()) != agreed
+        val remoteChanged = playlistsSignature(snapshot["playlists"]) != agreed
+        return when {
+            !remoteChanged -> if (localChanged) PlaylistMerge.PUSH_LOCAL else PlaylistMerge.UNCHANGED
+            !localChanged -> PlaylistMerge.APPLY_REMOTE
+            realtime -> PlaylistMerge.PUSH_LOCAL
+            else -> PlaylistMerge.CONFIRM
+        }
     }
 
     private fun observeLocalChanges() {

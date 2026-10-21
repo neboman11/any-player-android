@@ -277,6 +277,24 @@ class SettingsUiTest {
         }
     }
 
+    @Test fun otherClientCanReplaceAnExistingLocalPlaylist() = runBlocking {
+        playlists.create("Old phone playlist", PlaylistType.STANDARD)
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        val socket = server.awaitSocket()
+        server.namespaces["playlists"] = AppJson.parseToJsonElement(
+            server.namespaces.getValue("playlists").toString().replace("Old phone playlist", "Desktop edited playlist"))
+        val before = server.server.requestsTo("/v1/snapshot").size
+        server.publishFromOtherClient(socket, "playlists")
+        awaitUntil { server.server.requestsTo("/v1/snapshot").size > before }
+        awaitUntil { runBlocking { playlists.customPlaylists.first().map { it.name } == listOf("Desktop edited playlist") } }
+        compose.onNodeWithTag("tab_PLAYLISTS").performClick()
+        status("Desktop edited playlist")
+        absent("Old phone playlist")
+    }
+
     @Test fun aiDjTogglesPersistAcrossRecreationAndGenerationModes() = runBlocking {
         openSettings()
         compose.onNodeWithTag("settings_tab_AI_DJ").performClick()
