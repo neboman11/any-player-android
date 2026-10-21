@@ -39,6 +39,7 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.runBlocking
@@ -174,6 +175,31 @@ class SpotifyIntegrationTest {
         compose.onAllNodesWithText("No pending Spotify auth session", substring = true).assertCountEquals(0)
         assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
         assertNull(sessions.read())
+    }
+
+    @Test fun leavingSettingsDuringTokenExchangeStillCompletesAndRevealsResultOnReturn() = runBlocking {
+        val release = CountDownLatch(1)
+        spotify.tokenResponseGate = release
+        try {
+            openApp()
+            val pending = beginLink()
+            callback("code=delayed-code&state=${pending.state}")
+            server.awaitRequest { it.path == FakeSpotify.TOKEN_PATH }
+            visible("Finishing Spotify login...")
+            // Back pops Settings rather than saving its ViewModel in the bottom-tab back stack.
+            app!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("tab_NOW_PLAYING").assertIsSelected()
+            release.countDown()
+            compose.onNodeWithTag("tab_SETTINGS").performClick()
+            visible("Spotify connected successfully.")
+            compose.onNodeWithTag("settings_tab_PROVIDERS").assertIsSelected()
+            compose.onNodeWithTag("Spotify_connected", useUnmergedTree = true).assertExists()
+            assertEquals("linked-access", connections.awaitLoaded()[SourceType.SPOTIFY]?.token)
+            assertNull(sessions.read())
+            assertEquals(1, server.requestsTo(FakeSpotify.TOKEN_PATH, "POST").size)
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test fun freeAccountLinksButExplainsWhyProviderIsIgnored() = runBlocking {

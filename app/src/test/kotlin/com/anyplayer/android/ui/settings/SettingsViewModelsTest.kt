@@ -22,7 +22,8 @@ class SettingsViewModelsTest {
         syncImports: com.anyplayer.android.sync.SyncImportStatus = com.anyplayer.android.sync.SyncImportStatus()): GeneralSettingsViewModel =
         GeneralSettingsViewModel(settings, FakePlayerSettings(), sync, engine, transfer, transfer, FakeDocuments(), syncImports).also { viewModels += it }
     private fun providers(auth: FakeAuth, catalog: FakeCatalog): ProvidersSettingsViewModel = ProvidersSettingsViewModel(auth, FakeConnections(), catalog,
-        object : SpotifyRedirectSource { override val redirects = MutableSharedFlow<String>(); override fun consume(uri: String) = true }).also { viewModels += it }
+        object : SpotifyRedirectSource { override val redirects = MutableSharedFlow<String>(); override fun consume(uri: String) = true },
+        SpotifyLoginStatus()).also { viewModels += it }
 
     @Test fun syncFieldsPersistOnlyOnCommit() = runTest(dispatcher) {
         val settings = FakeSyncSettings()
@@ -62,7 +63,8 @@ class SettingsViewModelsTest {
         val auth = FakeAuth().apply { onCompleteSpotify = { completion.await() } }
         val callbacks = MutableSharedFlow<String>()
         val vm = ProvidersSettingsViewModel(auth, FakeConnections(), FakeCatalog(),
-            object : SpotifyRedirectSource { override val redirects = callbacks; override fun consume(uri: String) = true }).also { viewModels += it }
+            object : SpotifyRedirectSource { override val redirects = callbacks; override fun consume(uri: String) = true },
+            SpotifyLoginStatus()).also { viewModels += it }
         runCurrent()
         callbacks.emit("anyplayer://spotify-callback?code=code")
         vm.state.first { it.feedback == "Finishing Spotify login..." }

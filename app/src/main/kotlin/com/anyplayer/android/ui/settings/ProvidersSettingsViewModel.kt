@@ -11,6 +11,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,6 +44,7 @@ class ProvidersSettingsViewModel @Inject constructor(
     private val connections: ConnectionStore,
     private val catalog: CatalogRepository,
     private val redirects: SpotifyRedirectSource,
+    private val spotifyLogin: SpotifyLoginStatus,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ProvidersSettingsState())
     val state = mutableState.asStateFlow()
@@ -65,8 +67,19 @@ class ProvidersSettingsViewModel @Inject constructor(
                 mutableState.update { it.copy(jellyfin = fields(SourceType.JELLYFIN, it.jellyfin), plex = fields(SourceType.PLEX, it.plex)) }
             }
         }
-        // A saved Settings back-stack entry keeps collecting; whichever ViewModel claims a callback handles it.
-        viewModelScope.launch { redirects.redirects.collect { if (redirects.consume(it)) completeSpotify(it) } }
+        viewModelScope.launch {
+            spotifyLogin.state.collect { result ->
+                if (result.feedback.isNotEmpty()) mutableState.update {
+                    it.copy(busy = result.busy, feedback = result.feedback, revealSpotifyResult = true)
+                }
+            }
+        }
+        // Once claimed, exchange, persistence and outcome publication must outlive this destination.
+        viewModelScope.launch {
+            redirects.redirects.collect { uri ->
+                if (redirects.consume(uri)) withContext(NonCancellable) { completeSpotify(uri) }
+            }
+        }
     }
     fun edit(source: SourceType, transform: (ProviderFields) -> ProviderFields) {
         edited += source
@@ -132,19 +145,17 @@ class ProvidersSettingsViewModel @Inject constructor(
     fun spotifyResultRevealed() { mutableState.update { it.copy(revealSpotifyResult = false) } }
     private suspend fun completeSpotify(uri: String) {
         // The callback is handled even while a browser-launch action is finishing.
-        mutableState.update { it.copy(busy = true, feedback = "Finishing Spotify login...", revealSpotifyResult = true) }
+        spotifyLogin.publish(busy = true, feedback = "Finishing Spotify login...")
         try {
             withContext(Dispatchers.IO) {
                 auth.completeSpotifyAuth(uri)
                 catalog.clearCache()
                 catalog.refreshPlaylists()
             }
-            mutableState.update { it.copy(feedback = "Spotify connected successfully.") }
+            spotifyLogin.publish(busy = false, feedback = "Spotify connected successfully.")
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            mutableState.update { it.copy(feedback = "Spotify login failed: ${e.message ?: "Unknown error"}") }
-        } finally {
-            mutableState.update { it.copy(busy = false) }
+            spotifyLogin.publish(busy = false, feedback = "Spotify login failed: ${e.message ?: "Unknown error"}")
         }
     }
     private fun action(start: String, failure: String, block: suspend () -> String) {

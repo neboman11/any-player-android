@@ -6,6 +6,8 @@ import com.anyplayer.android.core.model.Track
 import com.anyplayer.android.testing.Recorded
 import com.anyplayer.android.testing.TestServer
 import java.net.URLDecoder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import okhttp3.mockwebserver.MockResponse
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,6 +21,7 @@ class FakeSpotify(val server: TestServer) {
         Device("restricted", "Restricted TV", "TV", restricted = true),
     )
     @Volatile var rejectedToken: String? = null
+    @Volatile var tokenResponseGate: CountDownLatch? = null
     val songs = (1..3).map { track(it) }
 
     private var refreshCount = 0
@@ -35,6 +38,7 @@ class FakeSpotify(val server: TestServer) {
     init {
         server.route("POST", TOKEN_PATH) { request ->
             val form = form(request.body)
+            check(tokenResponseGate?.await(30, TimeUnit.SECONDS) != false) { "Token response was not released" }
             synchronized(this) {
                 val token = if (form["grant_type"] == "refresh_token") "refreshed-${++refreshCount}" else "linked-access"
                 json(JSONObject().put("access_token", token).put("refresh_token", "rotated-refresh")
