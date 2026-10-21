@@ -1,5 +1,8 @@
 package com.anyplayer.android.settings
 
+import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.content.Context
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -8,6 +11,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.anyplayer.android.MainActivity
 import com.anyplayer.android.core.model.*
+import com.anyplayer.android.data.db.AppDatabase
 import com.anyplayer.android.data.playlists.PlaylistRepository
 import com.anyplayer.android.data.settings.*
 import com.anyplayer.android.data.store.SecurePrefs
@@ -50,6 +54,7 @@ class SettingsUiTest {
     @Inject lateinit var djSettings: DjSettingsStore
     @Inject lateinit var secure: SecurePrefs
     @Inject lateinit var playlists: PlaylistRepository
+    @Inject lateinit var database: AppDatabase
     @Inject lateinit var dj: Provider<DjController>
     private lateinit var server: FakeSyncServer
     private var activity: ActivityScenario<MainActivity>? = null
@@ -308,6 +313,57 @@ class SettingsUiTest {
         status("New phone playlist")
         awaitUntil(6_000, "playlist PUT containing New phone playlist; wire=${server.server.log.map { it.method + it.path }}") {
             server.namespaces["playlists"].toString().contains("New phone playlist")
+        }
+    }
+
+    @Test fun trackOnlyWritePushesWithoutTouchingParentPlaylist() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        val playlist = playlists.create("Tracks", PlaylistType.STANDARD)
+        playlists.addTrack(playlist.id, server.track(1, "Before edit"))
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        awaitUntil { sync.get().state.value.realtimeConnected }
+        // Drain initial subscription/socket-open checks behind the 2 s push throttle before the isolated child write.
+        kotlinx.coroutines.delay(2_500)
+        val dao = database.customPlaylistDao()
+        val parent = dao.get(playlist.id)
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                database.openHelper.writableDatabase.execSQL("UPDATE playlist_tracks SET title = ? WHERE playlistId = ?", arrayOf("Track-only edit", playlist.id))
+            }
+        }
+        assertEquals(parent, dao.get(playlist.id))
+        awaitUntil(6_000, "track-only write must reach sync server") {
+            server.namespaces["playlists"].toString().contains("Track-only edit")
+        }
+    }
+
+    @Test fun sourceOnlyWritePushesWithoutTouchingParentPlaylist() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        val first = playlists.create("First", PlaylistType.STANDARD)
+        val second = playlists.create("Second", PlaylistType.STANDARD)
+        val union = playlists.create("Union", PlaylistType.UNION)
+        playlists.replaceUnionSources(union.id, listOf(SourceType.CUSTOM to first.id))
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.awaitSocket()
+        awaitUntil { sync.get().state.value.realtimeConnected }
+        // Drain initial subscription/socket-open checks behind the 2 s push throttle before the isolated child write.
+        kotlinx.coroutines.delay(2_500)
+        val dao = database.customPlaylistDao()
+        val parent = dao.get(union.id)
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                database.openHelper.writableDatabase.execSQL("UPDATE union_playlist_sources SET sourcePlaylistId = ? WHERE unionPlaylistId = ?", arrayOf(second.id, union.id))
+            }
+        }
+        assertEquals(parent, dao.get(union.id))
+        awaitUntil(6_000, "source-only write must reach sync server") {
+            server.namespaces["playlists"]?.jsonArray?.first { it.jsonObject["playlist"]?.jsonObject?.get("id")?.jsonPrimitive?.content == union.id }
+                ?.jsonObject?.get("union_sources")?.jsonArray?.single()?.jsonObject?.get("source_playlist_id")?.jsonPrimitive?.content == second.id
         }
     }
 

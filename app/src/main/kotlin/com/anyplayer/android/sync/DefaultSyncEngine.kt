@@ -46,6 +46,7 @@ class DefaultSyncEngine internal constructor(
     private val imports: SyncImports,
     private val base: SyncBaseStore,
     private val playlistTransaction: suspend (suspend () -> Unit) -> Unit,
+    private val playlistChanges: Flow<*>,
 ) : SyncEngine {
     @Inject constructor(
         engine: PlaybackEngine,
@@ -61,7 +62,8 @@ class DefaultSyncEngine internal constructor(
     ) : this(engine, settings, playerSettings, playlists, config, client, network,
         CoroutineScope(SupervisorJob() + Dispatchers.IO), Dispatchers.Main.immediate,
         { System.nanoTime() / 1_000_000 }, { jitterBase -> Random.nextLong((jitterBase * 3 / 4).coerceAtLeast(1), jitterBase + 1) },
-        imports, base, { block -> database.withTransaction { block() } })
+        imports, base, { block -> database.withTransaction { block() } },
+        database.invalidationTracker.createFlow("custom_playlists", "playlist_tracks", "union_playlist_sources"))
 
     private val mutableState = MutableStateFlow(SyncUiState())
     override val state: StateFlow<SyncUiState> = mutableState.asStateFlow()
@@ -374,8 +376,8 @@ class DefaultSyncEngine internal constructor(
         scope.launch {
             launch { playlistPush.consume() }
             launch { settingsPush.consume() }
-            // Room re-emits on every playlist, track or union-source write; the base filters non-changes.
-            launch { playlists.customPlaylists.collect { playlistPush.request() } }
+            // Watch child tables directly: a track/source write need not also touch its parent.
+            launch { playlistChanges.collect { playlistPush.request() } }
             launch { playerSettings.settings.map { settingsJson(it.normalizationEnabled, it.normalizationStrict) }.distinctUntilChanged().collect { settingsPush.request() } }
             engine.awaitRestored()
             if (engine.queue.value.entries.isNotEmpty()) observedQueue = true

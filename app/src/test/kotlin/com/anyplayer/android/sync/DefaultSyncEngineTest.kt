@@ -52,7 +52,8 @@ class DefaultSyncEngineTest {
             com.anyplayer.android.ui.settings.FakeAuth(), com.anyplayer.android.ui.settings.FakeCatalog(), importStatus)
         val sync = DefaultSyncEngine(engine, settings, playerSettings, playlistSource ?: playlists, config, SyncClient(http),
             object : SyncNetwork { override val available = network }, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler),
-            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base, { block -> config.transaction.withLock { block() } })
+            { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base,
+            { block -> config.transaction.withLock { block() } }, (playlistSource ?: playlists).customPlaylists)
         val target = syncBaseTarget(preferences)
         suspend fun start() {
             server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
