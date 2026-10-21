@@ -52,7 +52,7 @@ class DefaultSyncEngineTest {
         val sync = DefaultSyncEngine(engine, settings, playerSettings, playlistSource ?: playlists, config, SyncClient(http),
             object : SyncNetwork { override val available = network }, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler),
             { scope.testScheduler.currentTime }, { backoffs += it; it }, imports, base)
-        val target = server.url("/").toString().trimEnd('/')
+        val target = syncBaseTarget(preferences)
         suspend fun start() {
             server.enqueue(MockResponse().setBody("{\"version\":1,\"app_state\":{}}"))
             sync.start()
@@ -695,6 +695,57 @@ class DefaultSyncEngineTest {
         assertTrue(f.config.imports.isEmpty())
         assertNull(f.playlistBase())
         assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `reset server never silently deletes agreed local playlists`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Phone", local = "Phone")
+        server.enqueue(playlistSnapshot(JsonArray(emptyList())))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertEquals("Sync cancelled: playlist overwrite requires confirmation.", f.sync.state.value.status)
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
+        assertTrue(f.config.imports.isEmpty())
+    }
+
+    @Test fun `changing account on same server cannot reuse previous playlist base`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        f.syncedPlaylists(base = "Phone", local = "Phone")
+        f.settings.update { it.copy(authToken = "other") }
+        server.enqueue(playlistSnapshot(playlistsJson("Other account")))
+        f.sync.start()
+        f.sync.state.first { !it.inProgress && it.status != "Sync idle" }
+        assertEquals("Sync cancelled: playlist overwrite requires confirmation.", f.sync.state.value.status)
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
+    }
+
+    @Test fun `a backwards server version invalidates the playlist merge base`() = runTest {
+        val f = Fixture(this, playlistPreferences())
+        server.enqueue(playlistSnapshot(playlistsJson("Phone"), version = 12))
+        f.sync.pull(true)
+        f.sync.state.first { it.status == "Sync pull complete." }
+        request()
+        f.playlists.customPlaylists.value = listOf(localPlaylist)
+        server.enqueue(playlistSnapshot(playlistsJson("Restored backup"), version = 2))
+        f.sync.pull(false)
+        f.sync.state.first { it.status == "Sync cancelled: playlist overwrite requires confirmation." }
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
+        assertEquals("Future events belong to the restored server's version sequence", 2L, f.sync.lastSyncVersion)
+    }
+
+    @Test fun `sync base target hashes normalized credentials and rejects URL only legacy bases`() = runTest {
+        val prefs = playlistPreferences()
+        val f = Fixture(this, prefs)
+        val key = syncBaseTarget(prefs)
+        assertFalse(key.contains("secret"))
+        assertEquals(key, syncBaseTarget(prefs.copy(authToken = "secret", serverTarget = prefs.serverTarget.trimEnd('/'))))
+        assertNotEquals(key, syncBaseTarget(prefs.copy(authToken = "other")))
+        f.base.set(SyncBase.PLAYLISTS, server.url("/").toString().trimEnd('/'), playlistsSignature(playlistsJson("Phone")))
+        f.editLocalPlaylists("Phone")
+        server.enqueue(playlistSnapshot(playlistsJson("Desktop")))
+        f.sync.start()
+        f.sync.state.first { it.status == "Sync cancelled: playlist overwrite requires confirmation." }
+        assertEquals(playlistsJson("Phone"), f.config.playlists)
     }
 
     @Test fun `playlist signature ignores exporter formatting but not content`() {

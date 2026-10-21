@@ -200,7 +200,7 @@ class DefaultSyncEngine internal constructor(
      * never replaced by the startup pull. Explicit pulls and conflict resolution always apply the server.
      */
     private suspend fun reconcileAppState(data: JsonObject, preferences: SyncPreferences, preserveEmpty: Boolean, merge: Boolean, startup: Boolean) {
-        val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
+        val target = syncBaseTarget(preferences)
         if (merge) {
             val agreed = base.get(SyncBase.APP_STATE, target)
             val local = localSignature()
@@ -261,7 +261,13 @@ class DefaultSyncEngine internal constructor(
         merge: Boolean = false,
         startup: Boolean = false,
     ): Boolean {
-        val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
+        val target = syncBaseTarget(preferences)
+        snapshot.number("version")?.let { version ->
+            if (base.version(target)?.let { version < it } == true) {
+                base.clear(target)
+                lastSyncVersion = 0
+            }
+        }
         if (!appStateOnly && preferences.syncSettings) {
             val data = snapshot["settings"] as? JsonObject ?: JsonObject(emptyMap())
             val local = playerSettings.awaitLoaded()
@@ -302,6 +308,7 @@ class DefaultSyncEngine internal constructor(
         }
         // Versions belong to the entire snapshot, not just the app-state domain.
         lastSyncVersion = maxOf(lastSyncVersion, snapshot.number("version") ?: lastSyncVersion)
+        snapshot.number("version")?.let { base.recordVersion(target, it) }
         return applied
     }
 
@@ -314,9 +321,11 @@ class DefaultSyncEngine internal constructor(
      * local playlists, or while an earlier pull still awaits that confirmation.
      */
     private suspend fun mergePlaylists(snapshot: JsonObject, target: String, realtime: Boolean): PlaylistMerge {
+        val localPlaylists = withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true
+        if (localPlaylists && (snapshot["playlists"] as? JsonArray).isNullOrEmpty()) return PlaylistMerge.CONFIRM
         val agreed = base.get(SyncBase.PLAYLISTS, target)
         if (agreed == null) {
-            val localPlaylists = withTimeoutOrNull(5_000) { playlists.customPlaylists.first().isNotEmpty() } ?: true
+            // Absence of a credential-keyed base is an explicit first-sync decision.
             return if (localPlaylists) PlaylistMerge.CONFIRM else PlaylistMerge.APPLY_REMOTE
         }
         if (playlistPush.awaitingConfirmation) return PlaylistMerge.CONFIRM
@@ -379,7 +388,7 @@ class DefaultSyncEngine internal constructor(
         val success = client.push(preferences, "app-state", settings.clientId(), payload.toJson())
         // Even failed attempts are throttled: never burst on a failing server.
         lastAppPushAt = now()
-        if (success) base.set(SyncBase.APP_STATE, normalizeSyncServerBaseUrl(preferences.serverTarget), payload.signature())
+        if (success) base.set(SyncBase.APP_STATE, syncBaseTarget(preferences), payload.signature())
         return success
     }
 
@@ -429,7 +438,7 @@ class DefaultSyncEngine internal constructor(
                 while (requests.tryReceive().isSuccess) Unit
                 operation.withLock {
                     val preferences = realtimePreferences() ?: return@withLock
-                    val target = normalizeSyncServerBaseUrl(preferences.serverTarget)
+                    val target = syncBaseTarget(preferences)
                     if (!canPushDomains() || !selected(preferences) || target.isEmpty() || awaitingConfirmation) return@withLock
                     val agreed = base.get(domain, target)
                     if (agreed == null && requireBase) return@withLock
@@ -447,7 +456,7 @@ class DefaultSyncEngine internal constructor(
             val success = client.push(preferences, namespace, settings.clientId(), payload)
             // Even failed attempts are throttled: never burst on a failing server.
             lastPushAt = now()
-            if (success) record(normalizeSyncServerBaseUrl(preferences.serverTarget), payload)
+            if (success) record(syncBaseTarget(preferences), payload)
             return success
         }
 

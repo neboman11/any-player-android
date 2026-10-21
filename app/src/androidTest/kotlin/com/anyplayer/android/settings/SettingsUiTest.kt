@@ -208,6 +208,23 @@ class SettingsUiTest {
         status("Replacement")
         absent("Local only")
     }
+    @Test fun resetServerPullKeepsLocalPlaylistsAndAsksForConfirmation() = runBlocking {
+        syncSettings.update { it.copy(syncAppState = false, syncProviderConfiguration = false, syncSettings = false) }
+        playlists.create("Keep after reset", PlaylistType.STANDARD)
+        openSettings()
+        click("Connect")
+        status("Connected. Pushed local data to server.")
+        server.namespaces["playlists"] = JsonArray(emptyList())
+        sync.get().pull(false)
+        status("Sync cancelled: playlist overwrite requires confirmation.")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+        click("Force Pull from Server")
+        status("Confirm playlist overwrite")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+        click("Cancel")
+        assertEquals(listOf("Keep after reset"), playlists.customPlaylists.first().map { it.name })
+    }
+
 
     @Test fun unreachableServerReportsExactStatusAndKeepsLocalPlaylist() = runBlocking {
         playlists.create("Offline safe", PlaylistType.STANDARD)

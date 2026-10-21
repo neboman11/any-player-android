@@ -70,7 +70,7 @@ class AndroidAutoSyncTest {
         }
         // Before the drive the phone pushed "song one, paused"; the server and the merge base agree on it.
         server.appState = FakeSyncServer.appState(songs[0], songs, "paused")
-        base.set(SyncBase.APP_STATE, server.target, appStateSignature(songs[0], songs, false, "off"))
+        base.set(SyncBase.APP_STATE, syncBaseTarget(syncSettings.awaitLoaded()), appStateSignature(songs[0], songs, false, "off"))
     }
 
     @After fun tearDown() {

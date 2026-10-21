@@ -2,6 +2,9 @@ package com.anyplayer.android.sync
 
 import android.content.Context
 import com.anyplayer.android.core.model.Track
+import com.anyplayer.android.data.net.normalizeSyncServerAuthToken
+import com.anyplayer.android.data.net.normalizeSyncServerBaseUrl
+import com.anyplayer.android.data.settings.SyncPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -17,7 +20,7 @@ import kotlinx.serialization.json.*
  * and so that applying a remote copy is never echoed back as a local change.
  */
 enum class SyncBase(internal val keyPrefix: String) {
-    /** [appStateSignature]. Unprefixed keys predate the other domains. */
+    /** [appStateSignature]. Legacy URL-only bases are deliberately not reused. */
     APP_STATE(""),
     /** [playlistsSignature] of the exported playlists JSON. */
     PLAYLISTS("playlists_"),
@@ -26,9 +29,12 @@ enum class SyncBase(internal val keyPrefix: String) {
 }
 
 interface SyncBaseStore {
-    /** [target] is the normalized server base URL; a base recorded for another target is ignored. */
+    /** [target] includes the normalized server URL and a one-way hash of its normalized credential. */
     suspend fun get(domain: SyncBase, target: String): String?
     suspend fun set(domain: SyncBase, target: String, signature: String)
+    suspend fun version(target: String): Long?
+    suspend fun recordVersion(target: String, version: Long)
+    suspend fun clear(target: String)
 }
 
 @Singleton
@@ -40,13 +46,31 @@ class SharedPreferencesSyncBaseStore @Inject constructor(@ApplicationContext pri
     override suspend fun set(domain: SyncBase, target: String, signature: String) = withContext(Dispatchers.IO) {
         prefs.edit().putString(domain.keyPrefix + KEY_TARGET, target).putString(domain.keyPrefix + KEY_SIGNATURE, signature).apply()
     }
+    override suspend fun version(target: String): Long? = withContext(Dispatchers.IO) {
+        prefs.getLong("version_$target", -1).takeIf { it >= 0 }
+    }
+    override suspend fun recordVersion(target: String, version: Long) = withContext(Dispatchers.IO) {
+        prefs.edit().putLong("version_$target", version).apply()
+    }
+    override suspend fun clear(target: String) = withContext(Dispatchers.IO) {
+        val editor = prefs.edit().remove("version_$target")
+        SyncBase.entries.forEach { domain ->
+            if (prefs.getString(domain.keyPrefix + KEY_TARGET, null) == target) {
+                editor.remove(domain.keyPrefix + KEY_TARGET).remove(domain.keyPrefix + KEY_SIGNATURE)
+            }
+        }
+        editor.apply()
+    }
     private companion object {
-        // The file name predates the playlists and settings bases; kept so existing app-state bases survive.
+        // Retain the file name, but URL-only legacy targets never match a credential-keyed target.
         const val FILE = "sync_app_state_base"
         const val KEY_TARGET = "target"
         const val KEY_SIGNATURE = "signature"
     }
 }
+
+internal fun syncBaseTarget(preferences: SyncPreferences): String =
+    normalizeSyncServerBaseUrl(preferences.serverTarget) + "#" + sha256(normalizeSyncServerAuthToken(preferences.authToken))
 
 internal fun sameTrack(a: Track, b: Track) = a.id == b.id && a.source == b.source
 
